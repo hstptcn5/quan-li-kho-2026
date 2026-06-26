@@ -1,8 +1,8 @@
-# nhathuoc.py — Pharmacy Manager (Desktop — Local)
-# Base Unit Only + Level 2 UI (ttkbootstrap)
-# - Giá bán chuyển sang tab Nhập hàng (cập nhật khi bấm "Nhập")
-# - Combobox auto-dropdown khi gõ tìm
-# - Theme tươi + phông lớn hơn
+# quanly_xnt.py — Quản lý Xuất Nhập Tồn thuốc, vaccine, VTYT (Desktop — Local)
+# Dành cho Trung tâm Kiểm soát bệnh tật (CDC)
+# - Xuất kho / Cấp phát theo nguyên tắc FEFO
+# - Quản lý thuốc, vaccine, vật tư y tế
+# - Tích hợp mã vạch, báo cáo XNT, sao lưu tự động
 
 import sqlite3
 import tkinter as tk
@@ -57,8 +57,8 @@ try:
 except ImportError:
     PDF_AVAILABLE = False
 # ==== App info ====
-APP_NAME     = "Quản lý kho hàng hóa"
-APP_VERSION  = "1.0.0"
+APP_NAME     = "Quản lý XNT thuốc, vaccine và VTYT"
+APP_VERSION  = "2.0.0"
 AUTHOR_NAME  = "Hồ Sỷ Thoảng"
 AUTHOR_EMAIL = "hstptcn5@gmail.com"
 AUTHOR_PHONE = "0329381189"
@@ -68,10 +68,10 @@ AUTHOR_SITE  = "x/yoshinokuna"
 # ==== App data paths (per-user, có quyền ghi) ====
 if os.name == 'nt':
     base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
-    APP_DIR = os.path.join(base, 'Nhathuoc')
+    APP_DIR = os.path.join(base, 'QuanLyXNT')
 else:
     base = os.environ.get('XDG_DATA_HOME', os.path.join(os.path.expanduser('~'), '.local', 'share'))
-    APP_DIR = os.path.join(base, 'nhathuoc')
+    APP_DIR = os.path.join(base, 'quanlyxnt')
 
 os.makedirs(APP_DIR, exist_ok=True)
 
@@ -82,10 +82,16 @@ BACKUP_DIR = os.path.join(APP_DIR, 'backups')
 os.makedirs(BACKUP_DIR, exist_ok=True)
 
 # Di trú DB cũ (nếu tồn tại cạnh file .py/.exe) sang APP_DIR lần đầu
-OLD_DB = os.path.join(os.path.dirname(__file__), 'pharm.db')
-if not os.path.exists(DB_PATH) and os.path.exists(OLD_DB):
-    import shutil
-    shutil.copy2(OLD_DB, DB_PATH)
+for _old_name in ('pharm.db',):
+    _old_db = os.path.join(os.path.dirname(__file__), _old_name)
+    if not os.path.exists(DB_PATH) and os.path.exists(_old_db):
+        shutil.copy2(_old_db, DB_PATH)
+        break
+# Cũng migrate từ thư mục Nhathuoc cũ nếu có
+_old_app_dir = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Nhathuoc')
+_old_db_path = os.path.join(_old_app_dir, 'pharm.db')
+if not os.path.exists(DB_PATH) and os.path.exists(_old_db_path):
+    shutil.copy2(_old_db_path, DB_PATH)
 # ==== end paths ====
 
 
@@ -97,7 +103,7 @@ CREATE TABLE IF NOT EXISTS products (
   name TEXT NOT NULL,
   defaultUnit TEXT NOT NULL,
   barcode TEXT,
-  productType TEXT DEFAULT 'general',
+  productType TEXT DEFAULT 'thuoc',
   registrationNumber TEXT,
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -127,7 +133,39 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   qty REAL NOT NULL,
   type TEXT NOT NULL,
   cost REAL,
+  receivingUnit TEXT,
+  reason TEXT,
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Bảng đơn vị nhận (cấp phát cho ai)
+CREATE TABLE IF NOT EXISTS receiving_units (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  address TEXT,
+  note TEXT,
+  createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Bảng phiếu xuất kho
+CREATE TABLE IF NOT EXISTS dispatch_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  noteNumber TEXT,
+  receivingUnit TEXT NOT NULL,
+  reason TEXT DEFAULT 'Cấp phát',
+  note TEXT,
+  createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dispatch_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dispatchId INTEGER NOT NULL REFERENCES dispatch_notes(id) ON DELETE CASCADE,
+  productId INTEGER NOT NULL REFERENCES products(id),
+  batchId INTEGER,
+  unitCode TEXT NOT NULL,
+  qty REAL NOT NULL,
+  lotNo TEXT,
+  expiryDate TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sales (
@@ -201,11 +239,20 @@ class DB:
         if not self._has_column('stock_movements', 'cost'):
             self.conn.execute("ALTER TABLE stock_movements ADD COLUMN cost REAL")
 
+        # Thêm các trường mới cho stock_movements (v2.0)
+        if not self._has_column('stock_movements', 'receivingUnit'):
+            self.conn.execute("ALTER TABLE stock_movements ADD COLUMN receivingUnit TEXT")
+        if not self._has_column('stock_movements', 'reason'):
+            self.conn.execute("ALTER TABLE stock_movements ADD COLUMN reason TEXT")
+
         # Thêm các trường mới cho products
         if not self._has_column('products', 'productType'):
-            self.conn.execute("ALTER TABLE products ADD COLUMN productType TEXT DEFAULT 'general'")
+            self.conn.execute("ALTER TABLE products ADD COLUMN productType TEXT DEFAULT 'thuoc'")
         if not self._has_column('products', 'registrationNumber'):
             self.conn.execute("ALTER TABLE products ADD COLUMN registrationNumber TEXT")
+
+        # Migrate productType cũ: 'general' → 'thuoc', 'medicine' → 'thuoc'
+        self.conn.execute("UPDATE products SET productType='thuoc' WHERE productType IN ('general', 'medicine')")
 
         self.conn.execute("CREATE TABLE IF NOT EXISTS sales (id INTEGER PRIMARY KEY AUTOINCREMENT)")
         for col, ddl in [
@@ -423,6 +470,126 @@ class DB:
             return sale_id, finalized, total, change
         except Exception:
             self.conn.rollback(); raise
+
+    # dispatch (Xuất kho / Cấp phát — FEFO)
+    def dispatch(self, items, receiving_unit: str, reason: str = 'Cấp phát', note: str = ''):
+        """
+        Xuất kho / cấp phát hàng theo FEFO.
+        items: list of {'productId', 'unitCode', 'qty'}
+        receiving_unit: tên đơn vị nhận (VD: TYT Phường X)
+        reason: Cấp phát / Hủy / Chuyển kho
+        """
+        dispatch_details = []
+        try:
+            self.conn.execute("BEGIN")
+
+            # Tạo phiếu xuất kho
+            note_number = f"PXK-{dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
+            cur = self.conn.execute(
+                "INSERT INTO dispatch_notes(noteNumber, receivingUnit, reason, note) VALUES(?,?,?,?)",
+                (note_number, receiving_unit, reason, note)
+            )
+            dispatch_id = cur.lastrowid
+
+            for it in items:
+                to_base, _ = self.unit_info(it['productId'], it['unitCode'])
+                if to_base is None:
+                    raise Exception(f"Sản phẩm #{it['productId']} chưa có đơn vị cơ sở")
+                need_base = float(it['qty']) * to_base
+
+                # FEFO: lấy lô có hạn gần nhất
+                lots = self.q('''
+                  SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo FROM (
+                    SELECT sm.batchId, SUM(sm.qty*1) AS qtyBase
+                    FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
+                  ) v JOIN batches b ON b.id=v.batchId
+                  WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
+                  ORDER BY DATE(b.expiryDate)
+                ''', (it['productId'],))
+
+                for lot in lots:
+                    if need_base <= 0:
+                        break
+                    take_base = min(need_base, float(lot['qtyBase']))
+                    take_in_unit = take_base / to_base
+                    self.conn.execute(
+                        "INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, receivingUnit, reason) VALUES(?,?,?,?, 'DISPATCH', ?,?)",
+                        (it['productId'], lot['batchId'], it['unitCode'], -take_in_unit, receiving_unit, reason)
+                    )
+                    # Ghi chi tiết phiếu xuất
+                    self.conn.execute(
+                        "INSERT INTO dispatch_items(dispatchId, productId, batchId, unitCode, qty, lotNo, expiryDate) VALUES(?,?,?,?,?,?,?)",
+                        (dispatch_id, it['productId'], lot['batchId'], it['unitCode'], take_in_unit, lot['lotNo'], lot['expiryDate'])
+                    )
+                    dispatch_details.append({
+                        'productId': it['productId'],
+                        'productName': it.get('productName', f"#{it['productId']}"),
+                        'unitCode': it['unitCode'],
+                        'qty': take_in_unit,
+                        'lotNo': lot['lotNo'],
+                        'expiryDate': lot['expiryDate'],
+                        'batchId': lot['batchId']
+                    })
+                    need_base -= take_base
+
+                if need_base > 0:
+                    raise Exception(f"Không đủ tồn kho cho sản phẩm #{it['productId']}")
+
+            # Lưu đơn vị nhận vào bảng receiving_units (nếu chưa có)
+            self._save_receiving_unit(receiving_unit)
+
+            self.conn.commit()
+            return dispatch_id, note_number, dispatch_details
+
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def _save_receiving_unit(self, name: str):
+        """Lưu đơn vị nhận mới (nếu chưa có) để autocomplete lần sau"""
+        if not name or not name.strip():
+            return
+        try:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO receiving_units(name) VALUES(?)",
+                (name.strip(),)
+            )
+        except Exception:
+            pass
+
+    def get_receiving_units(self):
+        """Lấy danh sách đơn vị nhận đã lưu"""
+        return [r['name'] for r in self.q("SELECT name FROM receiving_units ORDER BY name")]
+
+    def get_dispatch_notes(self, start_date: str = None, end_date: str = None):
+        """Lấy danh sách phiếu xuất kho"""
+        if start_date and end_date:
+            return self.q('''
+                SELECT dn.*, COUNT(di.id) as item_count
+                FROM dispatch_notes dn
+                LEFT JOIN dispatch_items di ON di.dispatchId = dn.id
+                WHERE DATE(dn.createdAt) BETWEEN DATE(?) AND DATE(?)
+                GROUP BY dn.id
+                ORDER BY dn.createdAt DESC
+            ''', (start_date, end_date))
+        return self.q('''
+            SELECT dn.*, COUNT(di.id) as item_count
+            FROM dispatch_notes dn
+            LEFT JOIN dispatch_items di ON di.dispatchId = dn.id
+            GROUP BY dn.id
+            ORDER BY dn.createdAt DESC
+            LIMIT 50
+        ''')
+
+    def get_dispatch_detail(self, dispatch_id: int):
+        """Lấy chi tiết phiếu xuất kho"""
+        return self.q('''
+            SELECT di.*, p.name as productName
+            FROM dispatch_items di
+            JOIN products p ON p.id = di.productId
+            WHERE di.dispatchId = ?
+            ORDER BY p.name
+        ''', (dispatch_id,))
 
 # ---------------- Backup Manager ----------------
 class BackupManager:
@@ -756,7 +923,7 @@ class ReportManager:
         self.db_path = db_path
         
     def get_revenue_report(self, start_date: str, end_date: str, group_by: str = 'day') -> list:
-        """Báo cáo doanh thu theo ngày/tháng/năm"""
+        """Thống kê phiếu xuất kho theo ngày/tháng/năm (Thay cho báo cáo doanh thu cũ)"""
         try:
             db = DB(self.db_path)
             
@@ -775,12 +942,13 @@ class ReportManager:
             sql = f'''
             SELECT 
                 {date_format} as period,
-                COUNT(*) as total_orders,
-                SUM(total) as total_revenue,
-                SUM(paid) as total_paid,
-                AVG(total) as avg_order_value
-            FROM sales 
-            WHERE DATE(createdAt) BETWEEN DATE(?) AND DATE(?)
+                COUNT(DISTINCT dn.id) as total_orders, -- Số lượng phiếu xuất
+                SUM(di.qty) as total_revenue,          -- Tổng số lượng sản phẩm xuất
+                COUNT(di.id) as total_paid,            -- Số lượng danh mục mặt hàng xuất
+                AVG(di.qty) as avg_order_value         -- Số lượng TB trên mỗi dòng
+            FROM dispatch_notes dn
+            LEFT JOIN dispatch_items di ON dn.id = di.dispatchId
+            WHERE DATE(dn.createdAt) BETWEEN DATE(?) AND DATE(?)
             GROUP BY {group_format}
             ORDER BY period
             '''
@@ -788,55 +956,37 @@ class ReportManager:
             return db.q(sql, (start_date, end_date))
             
         except Exception as e:
-            raise Exception(f"Lỗi tạo báo cáo doanh thu: {str(e)}")
+            raise Exception(f"Lỗi thống kê xuất kho: {str(e)}")
     
     def get_profit_report(self, start_date: str, end_date: str) -> list:
-        """Báo cáo lợi nhuận"""
+        """Thống kê cấp phát theo đơn vị nhận (Thay cho báo cáo lợi nhuận cũ)"""
         try:
             db = DB(self.db_path)
             
             sql = '''
             SELECT 
-                DATE(s.createdAt) as sale_date,
-                p.name as product_name,
-                si.qty,
-                si.price as sell_price,
-                COALESCE(
-                    (SELECT sm.cost FROM stock_movements sm 
-                     WHERE sm.productId = si.productId 
-                       AND sm.type = 'PURCHASE' 
-                       AND sm.cost IS NOT NULL
-                     ORDER BY sm.createdAt DESC LIMIT 1), 0
-                ) as cost_price,
-                (si.qty * si.price) as revenue,
-                (si.qty * COALESCE(
-                    (SELECT sm.cost FROM stock_movements sm 
-                     WHERE sm.productId = si.productId 
-                       AND sm.type = 'PURCHASE' 
-                       AND sm.cost IS NOT NULL
-                     ORDER BY sm.createdAt DESC LIMIT 1), 0
-                )) as cost,
-                (si.qty * si.price) - (si.qty * COALESCE(
-                    (SELECT sm.cost FROM stock_movements sm 
-                     WHERE sm.productId = si.productId 
-                       AND sm.type = 'PURCHASE' 
-                       AND sm.cost IS NOT NULL
-                     ORDER BY sm.createdAt DESC LIMIT 1), 0
-                )) as profit
-            FROM sales s
-            JOIN sale_items si ON s.id = si.saleId
-            JOIN products p ON si.productId = p.id
-            WHERE DATE(s.createdAt) BETWEEN DATE(?) AND DATE(?)
-            ORDER BY s.createdAt DESC
+                DATE(dn.createdAt) as sale_date,       -- Ngày xuất
+                dn.receivingUnit as product_name,       -- Tên đơn vị nhận (hiển thị ở cột sản phẩm)
+                COUNT(DISTINCT dn.id) as qty,          -- Số lượng phiếu nhận
+                0 as sell_price,
+                0 as cost_price,
+                SUM(di.qty) as revenue,                -- Tổng số lượng sản phẩm nhận
+                COUNT(di.id) as cost,                  -- Số lượng loại sản phẩm nhận
+                SUM(di.qty) as profit                  -- Tổng số lượng
+            FROM dispatch_notes dn
+            LEFT JOIN dispatch_items di ON dn.id = di.dispatchId
+            WHERE DATE(dn.createdAt) BETWEEN DATE(?) AND DATE(?)
+            GROUP BY DATE(dn.createdAt), dn.receivingUnit
+            ORDER BY dn.createdAt DESC
             '''
             
             return db.q(sql, (start_date, end_date))
             
         except Exception as e:
-            raise Exception(f"Lỗi tạo báo cáo lợi nhuận: {str(e)}")
+            raise Exception(f"Lỗi thống kê theo đơn vị nhận: {str(e)}")
     
     def get_top_products(self, start_date: str, end_date: str, limit: int = 10) -> list:
-        """Top sản phẩm bán chạy"""
+        """Top sản phẩm cấp phát nhiều nhất (Thay cho top sản phẩm bán chạy)"""
         try:
             db = DB(self.db_path)
             
@@ -844,14 +994,14 @@ class ReportManager:
             SELECT 
                 p.id as product_id,
                 p.name as product_name,
-                SUM(si.qty) as total_qty,
-                COUNT(DISTINCT s.id) as total_orders,
-                SUM(si.qty * si.price) as total_revenue,
-                AVG(si.price) as avg_price
-            FROM sales s
-            JOIN sale_items si ON s.id = si.saleId
-            JOIN products p ON si.productId = p.id
-            WHERE DATE(s.createdAt) BETWEEN DATE(?) AND DATE(?)
+                SUM(di.qty) as total_qty,              -- Tổng số lượng cấp
+                COUNT(DISTINCT dn.id) as total_orders, -- Số lượng phiếu xuất chứa sản phẩm này
+                SUM(di.qty) as total_revenue,          -- Tổng số lượng (để hiển thị)
+                0 as avg_price
+            FROM dispatch_notes dn
+            JOIN dispatch_items di ON dn.id = di.dispatchId
+            JOIN products p ON di.productId = p.id
+            WHERE DATE(dn.createdAt) BETWEEN DATE(?) AND DATE(?)
             GROUP BY p.id, p.name
             ORDER BY total_qty DESC
             LIMIT ?
@@ -860,23 +1010,24 @@ class ReportManager:
             return db.q(sql, (start_date, end_date, limit))
             
         except Exception as e:
-            raise Exception(f"Lỗi tạo báo cáo top sản phẩm: {str(e)}")
+            raise Exception(f"Lỗi thống kê top sản phẩm: {str(e)}")
     
     def get_daily_sales_summary(self, start_date: str, end_date: str) -> dict:
-        """Tóm tắt bán hàng theo ngày"""
+        """Tóm tắt cấp phát theo ngày (Thay cho tóm tắt bán hàng cũ)"""
         try:
             db = DB(self.db_path)
             
             # Tổng quan
             summary_sql = '''
             SELECT 
-                COUNT(*) as total_orders,
-                SUM(total) as total_revenue,
-                AVG(total) as avg_order_value,
-                MIN(total) as min_order,
-                MAX(total) as max_order
-            FROM sales 
-            WHERE DATE(createdAt) BETWEEN DATE(?) AND DATE(?)
+                COUNT(DISTINCT dn.id) as total_orders, -- Tổng số phiếu
+                SUM(di.qty) as total_revenue,          -- Tổng số lượng xuất
+                AVG(di.qty) as avg_order_value,
+                MIN(di.qty) as min_order,
+                MAX(di.qty) as max_order
+            FROM dispatch_notes dn
+            LEFT JOIN dispatch_items di ON dn.id = di.dispatchId
+            WHERE DATE(dn.createdAt) BETWEEN DATE(?) AND DATE(?)
             '''
             
             summary_result = db.q(summary_sql, (start_date, end_date))
@@ -888,15 +1039,16 @@ class ReportManager:
                 'max_order': 0
             }
             
-            # Doanh thu theo ngày
+            # Số phiếu và số lượng theo ngày
             daily_sql = '''
             SELECT 
-                DATE(createdAt) as sale_date,
-                COUNT(*) as orders,
-                SUM(total) as revenue
-            FROM sales 
-            WHERE DATE(createdAt) BETWEEN DATE(?) AND DATE(?)
-            GROUP BY DATE(createdAt)
+                DATE(dn.createdAt) as sale_date,
+                COUNT(DISTINCT dn.id) as orders,
+                SUM(di.qty) as revenue
+            FROM dispatch_notes dn
+            LEFT JOIN dispatch_items di ON dn.id = di.dispatchId
+            WHERE DATE(dn.createdAt) BETWEEN DATE(?) AND DATE(?)
+            GROUP BY DATE(dn.createdAt)
             ORDER BY sale_date
             '''
             
@@ -908,33 +1060,30 @@ class ReportManager:
             }
             
         except Exception as e:
-            raise Exception(f"Lỗi tạo tóm tắt bán hàng: {str(e)}")
+            raise Exception(f"Lỗi tạo tóm tắt cấp phát: {str(e)}")
     
     def get_category_performance(self, start_date: str, end_date: str) -> list:
-        """Hiệu suất theo danh mục (nếu có)"""
+        """Hiệu suất cấp phát theo phân loại sản phẩm (thuoc, vaccine, vtyt, khac)"""
         try:
             db = DB(self.db_path)
             
-            # Tạm thời sử dụng đơn vị cơ sở làm "danh mục"
             sql = '''
             SELECT 
-                p.defaultUnit as category,
-                COUNT(DISTINCT si.productId) as product_count,
-                SUM(si.qty) as total_qty,
-                SUM(si.qty * si.price) as total_revenue,
-                AVG(si.price) as avg_price
-            FROM sales s
-            JOIN sale_items si ON s.id = si.saleId
-            JOIN products p ON si.productId = p.id
-            WHERE DATE(s.createdAt) BETWEEN DATE(?) AND DATE(?)
-            GROUP BY p.defaultUnit
-            ORDER BY total_revenue DESC
+                p.productType as category,             -- Phân loại sản phẩm
+                COUNT(DISTINCT di.productId) as product_count,
+                SUM(di.qty) as total_qty,
+                SUM(di.qty) as total_revenue,
+                0 as avg_price
+            FROM dispatch_notes dn
+            JOIN dispatch_items di ON dn.id = di.dispatchId
+            JOIN products p ON di.productId = p.id
+            WHERE DATE(dn.createdAt) BETWEEN DATE(?) AND DATE(?)
+            GROUP BY p.productType
+            ORDER BY total_qty DESC
             '''
-            
             return db.q(sql, (start_date, end_date))
-            
         except Exception as e:
-            raise Exception(f"Lỗi tạo báo cáo danh mục: {str(e)}")
+            raise Exception(f"Lỗi thống kê hiệu suất theo phân loại: {str(e)}")
 
 # ---------------- Medicine Catalog Manager ----------------
 class MedicineCatalogManager:
@@ -1212,7 +1361,7 @@ class App(tb.Window):
         # Tạo các tab frames
         self.tab_products = tb.Frame(self.nb)
         self.tab_purchase = tb.Frame(self.nb)
-        self.tab_pos = tb.Frame(self.nb)
+        self.tab_dispatch = tb.Frame(self.nb)
         self.tab_stock = tb.Frame(self.nb)
         self.tab_alerts = tb.Frame(self.nb)
         self.tab_report = tb.Frame(self.nb)
@@ -1222,11 +1371,11 @@ class App(tb.Window):
         # Thêm tabs với labels đẹp hơn
         tabs_config = [
             (self.tab_products, "🏷️ Sản phẩm"),
-            (self.tab_purchase, "📦 Nhập hàng"),
-            (self.tab_pos, "🧾 POS"),
+            (self.tab_purchase, "📦 Nhập kho"),
+            (self.tab_dispatch, "📤 Xuất kho / Cấp phát"),
             (self.tab_stock, "📊 Tồn kho"),
             (self.tab_alerts, "⏰ Hết hạn"),
-            (self.tab_report, "📄 Báo cáo"),
+            (self.tab_report, "📄 Báo cáo XNT"),
             (self.tab_backup, "💾 Backup"),
             (self.tab_advanced_reports, "📈 Báo cáo nâng cao")
         ]
@@ -1237,7 +1386,7 @@ class App(tb.Window):
         # Tạo toolbar sau khi đã có các tabs
         self.create_toolbar()
         
-        self.build_products_tab(); self.build_purchase_tab(); self.build_pos_tab()
+        self.build_products_tab(); self.build_purchase_tab(); self.build_dispatch_tab()
         self.build_stock_tab(); self.build_alerts_tab(); self.build_report_tab()
         self.build_backup_tab(); self.build_advanced_reports_tab()
         # Status bar với thông tin chi tiết hơn
@@ -1246,7 +1395,7 @@ class App(tb.Window):
         
         # Status chính
         self.status = tb.Label(status_frame, anchor='w', font=('Segoe UI', 9),
-            text='Sẵn sàng • F1-F8: Chuyển tab • F9: In hóa đơn • Ctrl+F: Tìm kiếm')
+            text='Sẵn sàng • F1-F8: Chuyển tab • F9: In phiếu xuất kho • Ctrl+F: Tìm kiếm')
         self.status.pack(side='left')
         
         # Thông tin database
@@ -1274,15 +1423,15 @@ class App(tb.Window):
         # Hotkeys
         self.bind('<F1>', lambda e: self.nb.select(self.tab_products))
         self.bind('<F2>', lambda e: self.nb.select(self.tab_purchase))
-        self.bind('<F3>', lambda e: (self.nb.select(self.tab_pos), self.search_pos.focus_set()))
+        self.bind('<F3>', lambda e: self.nb.select(self.tab_dispatch))
         self.bind('<F4>', lambda e: self.nb.select(self.tab_stock))
         self.bind('<F5>', lambda e: self.nb.select(self.tab_alerts))
         self.bind('<F6>', lambda e: self.nb.select(self.tab_report))
         self.bind('<F7>', lambda e: self.nb.select(self.tab_backup))
         self.bind('<F8>', lambda e: self.nb.select(self.tab_advanced_reports))
         self.bind('<Control-f>', lambda e: self.focus_search())
-        self.bind('<F9>', lambda e: self.print_invoice())
-        self.bind('<Control-Return>', lambda e: self.checkout_cart())
+        self.bind('<F9>', lambda e: self.print_dispatch_note())
+        self.bind('<Control-Return>', lambda e: self.confirm_dispatch())
 
     def create_toolbar(self):
         tbbar = tb.Frame(self); tbbar.pack(fill='x', padx=8, pady=(8,8))
@@ -1295,10 +1444,10 @@ class App(tb.Window):
         buttons_config = [
             ('🏷️ Sản phẩm', 'primary', self.tab_products, 'F1'),
             ('📦 Nhập hàng', 'success', self.tab_purchase, 'F2'),
-            ('🧾 POS', 'warning', self.tab_pos, 'F3'),
+            ('📤 Xuất kho', 'warning', self.tab_dispatch, 'F3'),
             ('📊 Tồn kho', 'info', self.tab_stock, 'F4'),
             ('⏰ Hết hạn', 'danger', self.tab_alerts, 'F5'),
-            ('📄 Báo cáo', 'secondary', self.tab_report, 'F6'),
+            ('📄 Báo cáo XNT', 'secondary', self.tab_report, 'F6'),
             ('💾 Backup', 'dark', self.tab_backup, 'F7'),
             ('📈 Báo cáo nâng cao', 'primary', self.tab_advanced_reports, 'F8')
         ]
@@ -1313,11 +1462,11 @@ class App(tb.Window):
         # Spacer
         tb.Label(tbbar, text='').pack(side='left', expand=True)
         
-        # Nút in hóa đơn
-        print_btn = tb.Button(tbbar, text='🖨️ In hóa đơn', bootstyle='outline-primary',
-                             command=self.print_invoice)
+        # Nút in phiếu xuất kho
+        print_btn = tb.Button(tbbar, text='🖨️ In phiếu xuất kho', bootstyle='outline-primary',
+                             command=self.print_dispatch_note)
         print_btn.pack(side='right', padx=4)
-        self.create_tooltip(print_btn, "In hóa đơn (F9)")
+        self.create_tooltip(print_btn, "In phiếu xuất kho (F9)")
         
         # Nút backup nhanh
         backup_btn = tb.Button(tbbar, text='💾 Backup nhanh', bootstyle='outline-success',
@@ -1366,28 +1515,12 @@ class App(tb.Window):
             messagebox.showerror('Lỗi', str(e))
 
     def show_about(self):
-        # Lấy trạng thái license (nếu có LicenseManager)
-        lic_text = 'Chưa kích hoạt'
-        try:
-            data = LicenseManager().load()
-            lic_text = f"Khách hàng: {data.get('customer','(n/a)')}"
-        except Exception:
-            pass
-
-        fp = None
-        try:
-            fp = machine_fingerprint()
-        except Exception:
-            fp = '(không có)'
-
         info = (
             f"{APP_NAME} v{APP_VERSION}\n"
             f"Tác giả: {AUTHOR_NAME}\n"
             f"Điện thoại: {AUTHOR_PHONE}\n"
             f"Email: {AUTHOR_EMAIL}\n"
             f"Website: {AUTHOR_SITE}\n\n"
-            f"Fingerprint máy: {fp}\n"
-            f"License: {lic_text}\n"
             f"Thư mục dữ liệu: {APP_DIR}"
         )
         if messagebox.askyesno("Giới thiệu", info + "\n\nMở website tác giả?"):
@@ -1460,8 +1593,8 @@ class App(tb.Window):
         self.suggestions_listbox.bind('<Down>', self.on_suggestion_down)
         
         tb.Label(f1, text='Loại sản phẩm:').grid(row=0, column=2, sticky='w', padx=6, pady=6)
-        self.p_type = tb.Combobox(f1, values=['general', 'medicine'], state='readonly', width=12)
-        self.p_type.set('general')
+        self.p_type = tb.Combobox(f1, values=['thuoc', 'vaccine', 'vtyt', 'khac'], state='readonly', width=12)
+        self.p_type.set('thuoc')
         self.p_type.grid(row=0, column=3, padx=6, pady=6)
         self.p_type.bind('<<ComboboxSelected>>', self.on_product_type_change)
         
@@ -1505,7 +1638,7 @@ class App(tb.Window):
         base = self.p_base.get().strip() or 'vien'
         bc = self.p_barcode.get().strip() or None
         product_type = self.p_type.get()
-        reg_number = self.p_reg_number.get().strip() or None if product_type == 'medicine' else None
+        reg_number = self.p_reg_number.get().strip() or None if product_type in ('thuoc', 'vaccine') else None
         
         if not name: 
             messagebox.showerror('Lỗi','Nhập tên sản phẩm')
@@ -1527,14 +1660,14 @@ class App(tb.Window):
         self.p_name.delete(0, tk.END)
         self.p_barcode.delete(0, tk.END)
         self.p_reg_number.delete(0, tk.END)
-        self.p_type.set('general')
+        self.p_type.set('thuoc')
         self.on_product_type_change()
         self.hide_suggestions()
 
     def on_product_type_change(self, event=None):
         """Xử lý khi thay đổi loại sản phẩm"""
         product_type = self.p_type.get()
-        if product_type == 'medicine':
+        if product_type in ('thuoc', 'vaccine'):
             self.p_reg_label.grid()
             self.p_reg_number.grid()
         else:
@@ -1614,7 +1747,7 @@ class App(tb.Window):
                 # Điền thông tin vào form
                 self.p_name.delete(0, tk.END)
                 self.p_name.insert(0, medicine['name'])
-                self.p_type.set('medicine')
+                self.p_type.set('thuoc')
                 self.on_product_type_change()
                 
                 # Điền số đăng ký
@@ -1810,7 +1943,7 @@ class App(tb.Window):
             # Điền vào form sản phẩm
             self.p_name.delete(0, tk.END)
             self.p_name.insert(0, medicine_name)
-            self.p_type.set('medicine')
+            self.p_type.set('thuoc')
             self.on_product_type_change()
             self.p_reg_number.delete(0, tk.END)
             self.p_reg_number.insert(0, reg_number)
@@ -2076,101 +2209,137 @@ Hiện tại bạn vẫn có thể:
             self.toast('Đã nhập hàng & cập nhật giá bán'); self.refresh_stock()
         except Exception as e: messagebox.showerror('Lỗi', str(e))
 
-    # -------- POS --------
-    def build_pos_tab(self):
-        frm = self.tab_pos
+    # -------- Xuất kho / Cấp phát (Dispatch) --------
+    def build_dispatch_tab(self):
+        frm = self.tab_dispatch
 
         # Header với title đẹp
         header_frame = tb.Frame(frm)
         header_frame.pack(fill='x', padx=8, pady=(8,4))
         
-        title_label = tb.Label(header_frame, text='🧾 Bán hàng POS', 
+        title_label = tb.Label(header_frame, text='📤 Xuất kho / Cấp phát', 
                               font=('Segoe UI', 14, 'bold'), bootstyle='warning')
         title_label.pack(anchor='w')
         
-        subtitle_label = tb.Label(header_frame, text='Quét barcode hoặc tìm sản phẩm để bán', 
+        subtitle_label = tb.Label(header_frame, text='Cấp phát thuốc, vaccine và vật tư y tế cho các đơn vị tuyến dưới theo nguyên tắc FEFO', 
                                  font=('Segoe UI', 9), bootstyle='secondary')
         subtitle_label.pack(anchor='w')
 
-        # --- Hàng điều khiển trên cùng
-        top = tb.Frame(frm); top.pack(fill='x', padx=8, pady=8)
+        # --- Khung thông tin phiếu xuất
+        info_note = tb.Labelframe(frm, text='📝 Thông tin phiếu xuất kho', bootstyle='light')
+        info_note.pack(fill='x', padx=8, pady=8)
+
+        # Đơn vị nhận
+        tb.Label(info_note, text='Đơn vị nhận:').grid(row=0, column=0, padx=6, pady=6, sticky='w')
+        self.cmb_receiving_unit = tb.Combobox(info_note, width=30)
+        self.cmb_receiving_unit.grid(row=0, column=1, padx=6, pady=6, sticky='w')
+        self.refresh_receiving_units_combo()
+
+        # Lý do xuất
+        tb.Label(info_note, text='Lý do xuất:').grid(row=0, column=2, padx=6, pady=6, sticky='w')
+        self.cmb_reason = tb.Combobox(info_note, values=['Cấp phát', 'Hủy kho', 'Chuyển kho', 'Khác'], width=15, state='readonly')
+        self.cmb_reason.set('Cấp phát')
+        self.cmb_reason.grid(row=0, column=3, padx=6, pady=6, sticky='w')
+
+        # Ghi chú
+        tb.Label(info_note, text='Ghi chú:').grid(row=0, column=4, padx=6, pady=6, sticky='w')
+        self.ent_dispatch_note = tb.Entry(info_note, width=40)
+        self.ent_dispatch_note.grid(row=0, column=5, padx=6, pady=6, sticky='ew')
+        info_note.columnconfigure(5, weight=1)
+
+        # --- Hàng điều khiển chọn sản phẩm
+        top = tb.Frame(frm)
+        top.pack(fill='x', padx=8, pady=4)
 
         tb.Label(top, text='Barcode:').pack(side='left')
-        self.ent_barcode = tb.Entry(top, width=18); self.ent_barcode.pack(side='left', padx=6)
-        self.ent_barcode.bind('<Return>', lambda e: self.scan_and_add())
-        self.ent_barcode.bind('<KP_Enter>', lambda e: self.scan_and_add())
+        self.ent_barcode = tb.Entry(top, width=18)
+        self.ent_barcode.pack(side='left', padx=6)
+        self.ent_barcode.bind('<Return>', lambda e: self.scan_and_add_dispatch())
+        self.ent_barcode.bind('<KP_Enter>', lambda e: self.scan_and_add_dispatch())
         
         # Nút quét barcode bằng camera
         if BARCODE_AVAILABLE:
-            tb.Button(top, text='📷 Quét', command=self.open_barcode_scanner, 
+            tb.Button(top, text='📷 Quét', command=self.open_barcode_scanner_dispatch, 
                      bootstyle='info', width=8).pack(side='left', padx=6)
         else:
             tb.Button(top, text='📷 Quét', command=self.show_barcode_install_info, 
                      bootstyle='secondary', width=8).pack(side='left', padx=6)
 
         tb.Label(top, text='Tìm tên:').pack(side='left')
-        self.search_pos = tb.Entry(top, width=30); self.search_pos.pack(side='left', padx=6)
+        self.search_pos = tb.Entry(top, width=30)
+        self.search_pos.pack(side='left', padx=6)
 
         tb.Label(top, text='Chọn:').pack(side='left')
-        self.cmb_prod_pos = tb.Combobox(top, state='readonly', width=50); self.cmb_prod_pos.pack(side='left', padx=6)
+        self.cmb_prod_pos = tb.Combobox(top, state='readonly', width=45)
+        self.cmb_prod_pos.pack(side='left', padx=6)
 
-        tb.Label(top, text='SL:').pack(side='left')
-        self.ent_qty_pos = tb.Entry(top, width=8); self.ent_qty_pos.insert(0, '1'); self.ent_qty_pos.pack(side='left', padx=6)
+        tb.Label(top, text='SL xuất:').pack(side='left')
+        self.ent_qty_pos = tb.Entry(top, width=8)
+        self.ent_qty_pos.insert(0, '1')
+        self.ent_qty_pos.pack(side='left', padx=6)
         self._numberize(self.ent_qty_pos)
 
-        # --- Bind sau khi đã tạo ĐỦ widget
-        self.search_pos.bind('<KeyRelease>', lambda e: self.filter_product_list_pos())
-        # Bấm mũi tên xuống để mở dropdown và chuyển focus sang combobox
+        # --- Bind sự kiện
+        self.search_pos.bind('<KeyRelease>', lambda e: self.filter_product_list_dispatch())
         self.search_pos.bind('<Down>', lambda e: (self.cmb_prod_pos.focus_set(),
                                                   self.cmb_prod_pos.event_generate('<Alt-Down>')))
 
-        self.cmb_prod_pos.bind('<<ComboboxSelected>>', lambda e: self.update_pos_price_and_unit())
-        self.cmb_prod_pos.bind('<Escape>', lambda e: self.search_pos.focus_set())   # quay lại ô tìm
-        self.cmb_prod_pos.bind('<Return>', lambda e: self.ent_qty_pos.focus_set())  # sang ô SL
+        self.cmb_prod_pos.bind('<<ComboboxSelected>>', lambda e: self.update_dispatch_unit_label())
+        self.cmb_prod_pos.bind('<Escape>', lambda e: self.search_pos.focus_set())
+        self.cmb_prod_pos.bind('<Return>', lambda e: self.ent_qty_pos.focus_set())
 
         # --- Nút tác vụ
-        btns = tb.Frame(frm); btns.pack(fill='x', padx=8, pady=(0, 8))
-        tb.Button(btns, text='+ Thêm vào giỏ', bootstyle='secondary', command=self.add_to_cart).pack(side='left', padx=4)
-        tb.Button(btns, text='Xóa dòng', bootstyle='warning', command=self.remove_selected_cart_item).pack(side='left', padx=4)
-        tb.Button(btns, text='Xóa giỏ', bootstyle='danger', command=self.clear_cart).pack(side='left', padx=4)
-        tb.Button(btns, text='Thanh toán', bootstyle='success', command=self.checkout_cart).pack(side='left', padx=8)
-        tb.Button(btns, text='In hoá đơn', bootstyle='info', command=self.print_invoice).pack(side='left', padx=8)
+        btns = tb.Frame(frm)
+        btns.pack(fill='x', padx=8, pady=8)
+        tb.Button(btns, text='+ Thêm vào danh sách xuất', bootstyle='secondary', command=self.add_to_dispatch_cart).pack(side='left', padx=4)
+        tb.Button(btns, text='Xóa dòng', bootstyle='warning', command=self.remove_selected_dispatch_item).pack(side='left', padx=4)
+        tb.Button(btns, text='Xóa danh sách', bootstyle='danger', command=self.clear_dispatch_cart).pack(side='left', padx=4)
+        tb.Button(btns, text='Xác nhận xuất kho', bootstyle='success', command=self.confirm_dispatch).pack(side='left', padx=8)
+        tb.Button(btns, text='In phiếu xuất kho', bootstyle='info', command=self.print_dispatch_note).pack(side='left', padx=8)
 
-        # --- Info tổng
-        info = tb.Labelframe(frm, text='Tổng kết', bootstyle='light'); info.pack(fill='x', padx=8, pady=(0, 8))
-        self.lbl_unit_pos = tb.Label(info, text='Đơn vị: -'); self.lbl_unit_pos.pack(side='left', padx=(8, 12))
-        self.lbl_price = tb.Label(info, text='Đơn giá: 0', font=('Segoe UI', 12)); self.lbl_price.pack(side='left', padx=(0, 12))
-        self.lbl_total = tb.Label(info, text='Tổng tiền: 0', font=('Segoe UI', 15, 'bold')); self.lbl_total.pack(side='left', padx=12)
-
-        # --- Bảng giỏ
-        cols = ('productId', 'productName', 'unitCode', 'qty', 'price', 'amount')
+        # --- Info tổng quan đơn vị
+        info = tb.Frame(frm)
+        info.pack(fill='x', padx=8, pady=(0, 4))
+        self.lbl_unit_pos = tb.Label(info, text='Đơn vị tính: -', font=('Segoe UI', 10))
+        self.lbl_unit_pos.pack(side='left', padx=(8, 12))
+        
+        # Bảng giỏ hàng xuất
+        cols = ('productId', 'productName', 'unitCode', 'qty')
         self.tree_cart = tb.Treeview(frm, columns=cols, show='headings', height=10)
         for c, w, t, anchor in [
             ('productId', 70, 'PID', 'center'),
-            ('productName', 320, 'Tên hàng', 'w'),
-            ('unitCode', 80, 'ĐV', 'center'),
-            ('qty', 80, 'SL', 'e'),
-            ('price', 120, 'Đơn giá', 'e'),
-            ('amount', 120, 'Thành tiền', 'e')
+            ('productName', 450, 'Tên hàng hóa', 'w'),
+            ('unitCode', 120, 'ĐVT', 'center'),
+            ('qty', 150, 'Số lượng xuất', 'e')
         ]:
             self.tree_cart.heading(c, text=t, command=(lambda col=c: self.sort_tree(self.tree_cart, col)))
             self.tree_cart.column(c, width=w, anchor=anchor)
         self.tree_cart.tag_configure('odd', background='#f6f8fa')
         self.tree_cart.pack(fill='both', expand=True, padx=8, pady=8)
 
-        self.ent_qty_pos.bind('<Return>', lambda e: self.add_to_cart())
+        self.ent_qty_pos.bind('<Return>', lambda e: self.add_to_dispatch_cart())
+        self.cart_dispatch = []
+        self.last_dispatch_items = []
+        self.last_dispatch_info = {}
 
-    def update_pos_price_and_unit(self):
+    def refresh_receiving_units_combo(self):
+        """Cập nhật danh sách đơn vị nhận vào combobox"""
+        try:
+            units = self.db.get_receiving_units()
+            self.cmb_receiving_unit['values'] = units
+        except Exception as e:
+            print(f"Lỗi refresh đơn vị nhận: {e}")
+
+    def update_dispatch_unit_label(self):
         sel = self.cmb_prod_pos.get()
         if not sel:
-            self.lbl_unit_pos.config(text='Đơn vị: -'); self.lbl_price.config(text='Đơn giá: 0'); return
+            self.lbl_unit_pos.config(text='Đơn vị tính: -')
+            return
         pid = int(sel.split(' — ')[0])
         du = self.db.default_unit_of(pid) or '-'
-        price = self.db.unit_price(pid, du)
-        self.lbl_unit_pos.config(text=f'Đơn vị: {du}')
-        self.lbl_price.config(text=f'Đơn giá: {price:,.0f}')
+        self.lbl_unit_pos.config(text=f'Đơn vị tính: {du}')
 
-    def fill_product_by_barcode(self, only_select=False):
+    def fill_product_by_barcode_dispatch(self, only_select=False):
         bc = self.ent_barcode.get().strip()
         if not bc:
             return False
@@ -2183,105 +2352,267 @@ Hiện tại bạn vẫn có thể:
         if target not in self.cmb_prod_pos['values']:
             self.cmb_prod_pos['values'] = list(self.cmb_prod_pos['values']) + [target]
         self.cmb_prod_pos.set(target)
-        self.update_pos_price_and_unit()
+        self.update_dispatch_unit_label()
         return True
 
+    def scan_and_add_dispatch(self):
+        ok = self.fill_product_by_barcode_dispatch(only_select=True)
+        if ok:
+            self.ent_qty_pos.delete(0, tk.END)
+            self.ent_qty_pos.insert(0, '1')
+            self.add_to_dispatch_cart()
+            self.ent_barcode.delete(0, tk.END)
+        self.after(50, lambda: self.ent_barcode.focus_set())
 
-    def filter_product_list_pos(self):
+    def open_barcode_scanner_dispatch(self):
+        if not BARCODE_AVAILABLE:
+            self.show_barcode_install_info()
+            return
+        try:
+            def on_barcode_scanned(barcode_data):
+                self.ent_barcode.delete(0, tk.END)
+                self.ent_barcode.insert(0, barcode_data)
+                self.after(100, self.scan_and_add_dispatch)
+            self.barcode_scanner = BarcodeScanner(self, callback=on_barcode_scanned)
+            self.barcode_scanner.start_scan()
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không thể mở barcode scanner: {e}")
+
+    def filter_product_list_dispatch(self):
         kw = (self.search_pos.get() or '').strip().lower()
         opts = [f"{p['id']} — {p['name']}" for p in self._products if kw in p['name'].lower()]
         self.cmb_prod_pos['values'] = opts
         if opts:
             self.cmb_prod_pos.current(0)
-            self.update_pos_price_and_unit()
+            self.update_dispatch_unit_label()
 
-
-    # -------- Cart --------
-    def add_to_cart(self):
+    def add_to_dispatch_cart(self):
         sel = self.cmb_prod_pos.get()
-        if not sel: messagebox.showerror('Lỗi', 'Chọn sản phẩm'); return
+        if not sel:
+            messagebox.showerror('Lỗi', 'Chọn sản phẩm để xuất'); return
         pid = int(sel.split(' — ')[0])
         unit = self.db.default_unit_of(pid) or 'vien'
-        try: qty = float(self.ent_qty_pos.get())
-        except: qty = 0
-        if qty <= 0: messagebox.showerror('Lỗi', 'Số lượng > 0'); return
-        name = self.name_by_id(pid)
-        price = self.db.unit_price(pid, unit)
-
-        merged = False
-        for it in self.cart:
-            if it['productId']==pid and it['unitCode']==unit and abs(it['price']-price) < 1e-6:
-                it['qty'] = round(it['qty']+qty, 4); merged=True; break
-        if not merged:
-            self.cart.append({'productId': pid, 'productName': name, 'unitCode': unit, 'qty': qty, 'price': price})
-
-        self.refresh_cart_view()
-        self.ent_qty_pos.delete(0, tk.END); self.ent_qty_pos.insert(0, '1'); self.ent_qty_pos.focus_set()
-
-    def remove_selected_cart_item(self):
-        sel = self.tree_cart.selection()
-        if not sel: return
-        idx = self.tree_cart.index(sel[0])
-        if 0 <= idx < len(self.cart): self.cart.pop(idx); self.refresh_cart_view()
-
-    def clear_cart(self):
-        if self.cart and messagebox.askyesno('Xác nhận','Xóa toàn bộ giỏ hàng?'):
-            self.cart = []; self.refresh_cart_view()
-
-    def refresh_cart_view(self):
-        for i in self.tree_cart.get_children(): self.tree_cart.delete(i)
-        total = 0.0
-        for idx, it in enumerate(self.cart):
-            amount = round(it['qty']*it['price'], 2); total += amount
-            self.tree_cart.insert('', 'end',
-                values=(it['productId'], it['productName'], it['unitCode'], it['qty'], f"{it['price']:,.0f}", f"{amount:,.0f}"),
-                tags=('odd',) if idx%2 else ())
-        self.lbl_total.config(text=f'Tổng tiền: {total:,.0f}')
-
-    def checkout_cart(self):
-        if not self.cart: messagebox.showwarning('Chưa có dữ liệu','Giỏ hàng trống'); return
-        total = round(sum(it['qty']*it['price'] for it in self.cart), 2)
-        paid_str = simpledialog.askstring('Thanh toán', f'Tổng cộng: {total:,.0f}\nKhách đưa (đ):', initialvalue=f'{int(total):d}')
-        if paid_str is None: return
-        try: paid = float(paid_str.replace(',', '').strip())
-        except: messagebox.showerror('Lỗi','Số tiền không hợp lệ'); return
         try:
-            sale_id, finalized, total_, change_ = self.db.record_sale(self.cart, paid, '')
-            self.last_sale_items = finalized; self.cart = []; self.refresh_cart_view(); self.refresh_stock()
-            messagebox.showinfo('Thành công', f'Đã thanh toán hóa đơn #{sale_id}\nTiền thối: {change_:,.0f} đ')
-        except Exception as e: messagebox.showerror('Lỗi', str(e))
+            qty = float(self.ent_qty_pos.get())
+        except:
+            qty = 0
+        if qty <= 0:
+            messagebox.showerror('Lỗi', 'Số lượng xuất phải > 0'); return
+        
+        name = self.name_by_id(pid)
+        
+        merged = False
+        for it in self.cart_dispatch:
+            if it['productId'] == pid and it['unitCode'] == unit:
+                it['qty'] = round(it['qty'] + qty, 4)
+                merged = True
+                break
+        if not merged:
+            self.cart_dispatch.append({
+                'productId': pid,
+                'productName': name,
+                'unitCode': unit,
+                'qty': qty
+            })
+
+        self.refresh_dispatch_cart_view()
+        self.ent_qty_pos.delete(0, tk.END)
+        self.ent_qty_pos.insert(0, '1')
+        self.ent_qty_pos.focus_set()
+
+    def remove_selected_dispatch_item(self):
+        sel = self.tree_cart.selection()
+        if not sel:
+            return
+        idx = self.tree_cart.index(sel[0])
+        if 0 <= idx < len(self.cart_dispatch):
+            self.cart_dispatch.pop(idx)
+            self.refresh_dispatch_cart_view()
+
+    def clear_dispatch_cart(self):
+        if self.cart_dispatch and messagebox.askyesno('Xác nhận', 'Xóa toàn bộ danh sách xuất kho?'):
+            self.cart_dispatch = []
+            self.refresh_dispatch_cart_view()
+
+    def refresh_dispatch_cart_view(self):
+        for i in self.tree_cart.get_children():
+            self.tree_cart.delete(i)
+        for idx, it in enumerate(self.cart_dispatch):
+            self.tree_cart.insert('', 'end',
+                values=(it['productId'], it['productName'], it['unitCode'], f"{it['qty']:g}"),
+                tags=('odd',) if idx % 2 else ())
+
+    def confirm_dispatch(self):
+        if not self.cart_dispatch:
+            messagebox.showwarning('Chưa có dữ liệu', 'Danh sách xuất kho trống'); return
+        
+        receiving_unit = self.cmb_receiving_unit.get().strip()
+        if not receiving_unit:
+            messagebox.showwarning('Thiếu thông tin', 'Vui lòng nhập Đơn vị nhận'); return
+        
+        reason = self.cmb_reason.get().strip()
+        note = self.ent_dispatch_note.get().strip()
+
+        if not messagebox.askyesno('Xác nhận', f'Bạn có chắc chắn muốn xuất kho cho:\nĐơn vị: {receiving_unit}\nLý do: {reason}?'):
+            return
+
+        try:
+            dispatch_id, note_number, details = self.db.dispatch(self.cart_dispatch, receiving_unit, reason, note)
+            self.last_dispatch_items = details
+            self.last_dispatch_info = {
+                'id': dispatch_id,
+                'noteNumber': note_number,
+                'receivingUnit': receiving_unit,
+                'reason': reason,
+                'note': note,
+                'createdAt': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            self.cart_dispatch = []
+            self.refresh_dispatch_cart_view()
+            self.refresh_stock()
+            self.refresh_receiving_units_combo()
+            messagebox.showinfo('Thành công', f'Đã xuất kho thành công!\nSố phiếu: {note_number}')
+            
+            # Tự động hỏi in phiếu xuất kho
+            if messagebox.askyesno('In phiếu', 'Bạn có muốn in phiếu xuất kho ngay bây giờ?'):
+                self.print_dispatch_note()
+                
+        except Exception as e:
+            messagebox.showerror('Lỗi', f'Lỗi xuất kho: {str(e)}')
 
     def name_by_id(self, pid):
         for p in self._products:
-            if p['id']==pid: return p['name']
+            if p['id'] == pid:
+                return p['name']
         return f'#{pid}'
 
-    def print_invoice(self):
-        if not self.last_sale_items:
-            messagebox.showwarning('Chưa có dữ liệu','Hãy bán hàng trước khi in'); return
-        now = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        total = sum(i['qty']*i['price'] for i in self.last_sale_items)
-        rows_html = ''.join([f"<tr><td>{i['productName']}</td><td style='text-align:center'>{i['unitCode']}</td>"
-                             f"<td style='text-align:right'>{i['qty']}</td><td style='text-align:right'>{i['price']:,.0f}</td>"
-                             f"<td style='text-align:right'>{i['qty']*i['price']:,.0f}</td></tr>" for i in self.last_sale_items])
+    def print_dispatch_note(self):
+        if not self.last_dispatch_items:
+            messagebox.showwarning('Chưa có dữ liệu', 'Hãy thực hiện xuất kho trước khi in phiếu'); return
+        
+        info = self.last_dispatch_info
+        now = dt.datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+        
+        rows_html = ''
+        for idx, item in enumerate(self.last_dispatch_items, 1):
+            rows_html += f"""
+            <tr>
+                <td style='text-align:center'>{idx}</td>
+                <td>{item['productName']}</td>
+                <td style='text-align:center'>{item['unitCode']}</td>
+                <td style='text-align:right'>{item['qty']:g}</td>
+                <td style='text-align:center'>{item['lotNo']}</td>
+                <td style='text-align:center'>{item['expiryDate']}</td>
+                <td></td>
+            </tr>
+            """
+
         html = f"""
-        <html><head><meta charset='utf-8'><style>
-        body{{font-family:Arial;}} table{{width:100%;border-collapse:collapse}}
-        td,th{{border:1px solid #999;padding:6px;font-size:12px}}
-        h2{{margin:0 0 6px 0}} .right{{text-align:right}}
-        @media print{{ @page{{ size: A5; margin:10mm }} }}
-        </style></head><body>
-        <h2>HÓA ĐƠN BÁN HÀNG</h2>
-        <div>Thời gian: {now}</div>
-        <table><thead><tr><th>Tên hàng</th><th>ĐV</th><th>SL</th><th>Đơn giá</th><th>Thành tiền</th></tr></thead>
-        <tbody>{rows_html}</tbody>
-        <tfoot><tr><td colspan='4' class='right'><b>Tổng cộng</b></td><td class='right'><b>{total:,.0f}</b></td></tr></tfoot>
-        </table>
-        <p>Cảm ơn quý khách!</p>
-        <script>window.onload=()=>window.print()</script>
-        </body></html>"""
-        tmp = os.path.join(tempfile.gettempdir(), f"invoice_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
-        with open(tmp, 'w', encoding='utf-8') as f: f.write(html)
+        <html>
+        <head>
+            <meta charset='utf-8'>
+            <style>
+                body {{ font-family: 'Times New Roman', Times, serif; margin: 20px; color: #000; }}
+                .header-table {{ width: 100%; border: none; margin-bottom: 20px; }}
+                .header-table td {{ border: none; padding: 2px; }}
+                .title {{ text-align: center; font-size: 18px; font-weight: bold; margin-bottom: 5px; text-transform: uppercase; }}
+                .subtitle {{ text-align: center; font-size: 14px; font-style: italic; margin-bottom: 15px; }}
+                table.data {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
+                table.data th, table.data td {{ border: 1px solid #000; padding: 6px; font-size: 13px; }}
+                table.data th {{ font-weight: bold; text-align: center; background-color: #f2f2f2; }}
+                .right {{ text-align: right; }}
+                .center {{ text-align: center; }}
+                .footer-table {{ width: 100%; border: none; margin-top: 30px; }}
+                .footer-table td {{ border: none; text-align: center; font-size: 14px; width: 25%; }}
+                .footer-space {{ height: 70px; }}
+                @media print {{
+                    @page {{ size: A4; margin: 15mm; }}
+                    body {{ margin: 0; }}
+                }}
+            </style>
+        </head>
+        <body>
+            <table class='header-table'>
+                <tr>
+                    <td style='width: 50%; font-weight: bold; font-size: 13px;'>
+                        SỞ Y TẾ THÀNH PHỐ CẦN THƠ<br>
+                        TRUNG TÂM KIỂM SOÁT BỆNH TẬT (CDC)
+                    </td>
+                    <td style='width: 50%; text-align: right; font-size: 13px;'>
+                        <b>Mẫu số: C31-HD</b><br>
+                        (Ban hành theo Thông tư số 107/2017/TT-BTC)
+                    </td>
+                </tr>
+            </table>
+
+            <div class='title'>PHIẾU XUẤT KHO</div>
+            <div class='subtitle'>Số: {info['noteNumber']}</div>
+
+            <table class='header-table' style='margin-bottom: 10px;'>
+                <tr>
+                    <td style='width: 15%;'>- Đơn vị nhận:</td>
+                    <td style='font-weight: bold;'>{info['receivingUnit']}</td>
+                </tr>
+                <tr>
+                    <td>- Lý do xuất:</td>
+                    <td>{info['reason']}</td>
+                </tr>
+                <tr>
+                    <td>- Kho xuất:</td>
+                    <td>Kho Dược CDC Cần Thơ</td>
+                </tr>
+                <tr>
+                    <td>- Ghi chú:</td>
+                    <td>{info['note'] or 'Không'}</td>
+                </tr>
+            </table>
+
+            <table class='data'>
+                <thead>
+                    <tr>
+                        <th style='width: 5%;'>STT</th>
+                        <th style='width: 40%;'>Tên thuốc, vaccine, VTYT</th>
+                        <th style='width: 10%;'>ĐVT</th>
+                        <th style='width: 12%;'>Số lượng</th>
+                        <th style='width: 15%;'>Số lô</th>
+                        <th style='width: 13%;'>Hạn dùng</th>
+                        <th style='width: 5%;'>Ghi chú</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows_html}
+                </tbody>
+            </table>
+
+            <div style='text-align: right; margin-top: 15px; font-style: italic; font-size: 13px;'>
+                Cần Thơ, ngày {dt.datetime.now().strftime('%d')} tháng {dt.datetime.now().strftime('%m')} năm {dt.datetime.now().strftime('%Y')}
+            </div>
+
+            <table class='footer-table'>
+                <tr>
+                    <td><b>Người lập phiếu</b><br><span style='font-size:12px; font-style:italic;'>(Ký, họ tên)</span></td>
+                    <td><b>Người nhận hàng</b><br><span style='font-size:12px; font-style:italic;'>(Ký, họ tên)</span></td>
+                    <td><b>Thủ kho</b><br><span style='font-size:12px; font-style:italic;'>(Ký, họ tên)</span></td>
+                    <td><b>Lãnh đạo đơn vị</b><br><span style='font-size:12px; font-style:italic;'>(Ký, đóng dấu)</span></td>
+                </tr>
+                <tr class='footer-space'>
+                    <td></td><td></td><td></td><td></td>
+                </tr>
+                <tr>
+                    <td><br><b>{AUTHOR_NAME}</b></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                </tr>
+            </table>
+
+            <script>window.onload = () => {{ window.print(); }}</script>
+        </body>
+        </html>
+        """
+        tmp = os.path.join(tempfile.gettempdir(), f"dispatch_note_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(html)
         webbrowser.open('file://' + tmp)
 
     # -------- Stock --------
@@ -2567,13 +2898,13 @@ Hiện tại bạn vẫn có thể:
         btn_frame = tb.Frame(control_frame)
         btn_frame.pack(fill='x', padx=8, pady=(0,8))
         
-        tb.Button(btn_frame, text='💰 Báo cáo doanh thu', bootstyle='success',
+        tb.Button(btn_frame, text='📤 Thống kê phiếu xuất', bootstyle='success',
                   command=self.show_revenue_report).pack(side='left', padx=4)
-        tb.Button(btn_frame, text='📊 Báo cáo lợi nhuận', bootstyle='info',
+        tb.Button(btn_frame, text='🏢 Thống kê theo đơn vị nhận', bootstyle='info',
                   command=self.show_profit_report).pack(side='left', padx=4)
-        tb.Button(btn_frame, text='🏆 Top sản phẩm', bootstyle='warning',
+        tb.Button(btn_frame, text='🏆 Top sản phẩm cấp phát', bootstyle='warning',
                   command=self.show_top_products_report).pack(side='left', padx=4)
-        tb.Button(btn_frame, text='📈 Biểu đồ doanh thu', bootstyle='primary',
+        tb.Button(btn_frame, text='📈 Biểu đồ cấp phát', bootstyle='primary',
                   command=self.show_revenue_chart).pack(side='left', padx=4)
         
         # Hàng 3: Nút xuất báo cáo
@@ -2608,11 +2939,15 @@ Hiện tại bạn vẫn có thể:
         self.adv_chart_tab = tb.Frame(self.adv_report_nb)
         self.adv_report_nb.add(self.adv_chart_tab, text='📈 Biểu đồ')
         
+        # Thống kê báo cáo hiện tại
+        self.current_report_type = 'dispatch'
+        self.current_report_group_by = 'day'
+        
         # Load tóm tắt ban đầu
         self.load_advanced_summary()
 
     def load_advanced_summary(self):
-        """Load tóm tắt báo cáo nâng cao"""
+        """Load tóm tắt báo cáo cấp phát"""
         try:
             # Clear summary tab
             for widget in self.adv_summary_tab.winfo_children():
@@ -2633,7 +2968,7 @@ Hiện tại bạn vẫn có thể:
             main_frame.pack(fill='both', expand=True, padx=20, pady=20)
             
             # Title
-            title_label = tb.Label(main_frame, text="TÓM TẮT BÁO CÁO", 
+            title_label = tb.Label(main_frame, text="TÓM TẮT THÔNG TIN CẤP PHÁT KHO", 
                                   font=('Segoe UI', 16, 'bold'), bootstyle='primary')
             title_label.pack(pady=(0, 20))
             
@@ -2641,44 +2976,44 @@ Hiện tại bạn vẫn có thể:
             kpi_frame = tb.Frame(main_frame)
             kpi_frame.pack(fill='x', pady=(0, 20))
             
-            # Card 1: Tổng đơn hàng
-            card1 = tb.Labelframe(kpi_frame, text='Tổng đơn hàng', bootstyle='info')
+            # Card 1: Tổng phiếu xuất
+            card1 = tb.Labelframe(kpi_frame, text='Tổng số phiếu xuất', bootstyle='info')
             card1.pack(side='left', fill='both', expand=True, padx=(0, 10))
             total_orders = summary.get('total_orders', 0) or 0
             tb.Label(card1, text=f"{total_orders:,}", 
                     font=('Segoe UI', 24, 'bold'), bootstyle='info').pack(pady=10)
             
-            # Card 2: Tổng doanh thu
-            card2 = tb.Labelframe(kpi_frame, text='Tổng doanh thu', bootstyle='success')
+            # Card 2: Tổng số lượng xuất
+            card2 = tb.Labelframe(kpi_frame, text='Tổng số lượng xuất', bootstyle='success')
             card2.pack(side='left', fill='both', expand=True, padx=(0, 10))
             total_revenue = summary.get('total_revenue', 0) or 0
-            tb.Label(card2, text=f"{total_revenue:,.0f} đ", 
+            tb.Label(card2, text=f"{total_revenue:,.0f}", 
                     font=('Segoe UI', 24, 'bold'), bootstyle='success').pack(pady=10)
             
-            # Card 3: Giá trị đơn hàng TB
-            card3 = tb.Labelframe(kpi_frame, text='Đơn hàng TB', bootstyle='warning')
+            # Card 3: Số lượng TB/phiếu
+            card3 = tb.Labelframe(kpi_frame, text='SL trung bình/phiếu', bootstyle='warning')
             card3.pack(side='left', fill='both', expand=True, padx=(0, 10))
             avg_order = summary.get('avg_order_value', 0) or 0
-            tb.Label(card3, text=f"{avg_order:,.0f} đ", 
+            tb.Label(card3, text=f"{avg_order:,.1f}", 
                     font=('Segoe UI', 24, 'bold'), bootstyle='warning').pack(pady=10)
             
-            # Card 4: Đơn hàng lớn nhất
-            card4 = tb.Labelframe(kpi_frame, text='Đơn hàng lớn nhất', bootstyle='danger')
+            # Card 4: Phiếu xuất lớn nhất
+            card4 = tb.Labelframe(kpi_frame, text='Phiếu xuất lớn nhất', bootstyle='danger')
             card4.pack(side='left', fill='both', expand=True)
             max_order = summary.get('max_order', 0) or 0
-            tb.Label(card4, text=f"{max_order:,.0f} đ", 
+            tb.Label(card4, text=f"{max_order:,.0f}", 
                     font=('Segoe UI', 24, 'bold'), bootstyle='danger').pack(pady=10)
             
-            # Bảng doanh thu theo ngày
-            daily_frame = tb.Labelframe(main_frame, text='Doanh thu theo ngày', bootstyle='light')
+            # Bảng cấp phát theo ngày
+            daily_frame = tb.Labelframe(main_frame, text='Cấp phát theo ngày', bootstyle='light')
             daily_frame.pack(fill='both', expand=True)
             
             cols = ('date', 'orders', 'revenue')
             daily_tree = tb.Treeview(daily_frame, columns=cols, show='headings', height=8)
             for c, w, t, anchor in [
                 ('date', 120, 'Ngày', 'center'),
-                ('orders', 100, 'Số đơn', 'e'),
-                ('revenue', 150, 'Doanh thu', 'e')
+                ('orders', 100, 'Số phiếu', 'e'),
+                ('revenue', 150, 'Tổng số lượng xuất', 'e')
             ]:
                 daily_tree.heading(c, text=t)
                 daily_tree.column(c, width=w, anchor=anchor)
@@ -2694,14 +3029,14 @@ Hiện tại bạn vẫn có thể:
                 daily_tree.insert('', 'end', values=(
                     row.get('sale_date', ''),
                     f"{orders:,}",
-                    f"{revenue:,.0f} đ"
+                    f"{revenue:,.0f}"
                 ), tags=('odd',) if idx % 2 else ())
                 
         except Exception as e:
             messagebox.showerror('Lỗi', f'Không thể load tóm tắt: {str(e)}')
 
     def show_revenue_report(self):
-        """Hiển thị báo cáo doanh thu"""
+        """Hiển thị báo cáo cấp phát"""
         try:
             start_date = self.adv_de_from.entry.get().strip()
             end_date = self.adv_de_to.entry.get().strip()
@@ -2712,7 +3047,7 @@ Hiện tại bạn vẫn có thể:
             
             # Tạo dialog chọn loại báo cáo
             dialog = tb.Toplevel(self)
-            dialog.title("Báo cáo doanh thu")
+            dialog.title("Báo cáo cấp phát")
             dialog.geometry("300x200")
             dialog.transient(self)
             dialog.grab_set()
@@ -2738,6 +3073,8 @@ Hiện tại bạn vẫn có thể:
                 try:
                     group_by = group_var.get()
                     data = self.report_manager.get_revenue_report(start_date, end_date, group_by)
+                    self.current_report_type = 'dispatch'
+                    self.current_report_group_by = group_by
                     self.display_revenue_report(data, group_by)
                     dialog.destroy()
                 except Exception as e:
@@ -2755,7 +3092,7 @@ Hiện tại bạn vẫn có thể:
             messagebox.showerror('Lỗi', str(e))
 
     def display_revenue_report(self, data, group_by):
-        """Hiển thị báo cáo doanh thu"""
+        """Hiển thị báo cáo cấp phát"""
         try:
             # Clear detail tab
             for widget in self.adv_detail_tab.winfo_children():
@@ -2766,7 +3103,7 @@ Hiện tại bạn vẫn có thể:
             
             # Title
             period_text = {'day': 'ngày', 'month': 'tháng', 'year': 'năm'}
-            title = f"BÁO CÁO DOANH THU THEO {period_text[group_by].upper()}"
+            title = f"BÁO CÁO CẤP PHÁT KHO THEO {period_text[group_by].upper()}"
             tb.Label(main_frame, text=title, 
                     font=('Segoe UI', 14, 'bold'), bootstyle='primary').pack(pady=(0, 15))
             
@@ -2776,10 +3113,10 @@ Hiện tại bạn vẫn có thể:
             
             for c, w, t, anchor in [
                 ('period', 120, 'Thời gian', 'center'),
-                ('orders', 100, 'Số đơn', 'e'),
-                ('revenue', 150, 'Doanh thu', 'e'),
-                ('paid', 150, 'Đã thu', 'e'),
-                ('avg_order', 150, 'Đơn TB', 'e')
+                ('orders', 120, 'Số phiếu xuất', 'e'),
+                ('revenue', 150, 'Tổng số lượng xuất', 'e'),
+                ('paid', 150, 'Số loại sản phẩm', 'e'),
+                ('avg_order', 150, 'SL trung bình/phiếu', 'e')
             ]:
                 tree.heading(c, text=t)
                 tree.column(c, width=w, anchor=anchor)
@@ -2803,9 +3140,9 @@ Hiện tại bạn vẫn có thể:
                 tree.insert('', 'end', values=(
                     row.get('period', ''),
                     f"{orders:,}",
-                    f"{revenue:,.0f} đ",
-                    f"{paid:,.0f} đ",
-                    f"{avg_order:,.0f} đ"
+                    f"{revenue:,.0f}",
+                    f"{paid:,}",
+                    f"{avg_order:,.1f}"
                 ), tags=('odd',) if idx % 2 else ())
             
             # Dòng tổng
@@ -2813,9 +3150,9 @@ Hiện tại bạn vẫn có thể:
                 tree.insert('', 'end', values=(
                     'TỔNG',
                     f"{total_orders:,}",
-                    f"{total_revenue:,.0f} đ",
-                    f"{total_paid:,.0f} đ",
-                    f"{total_revenue/total_orders:,.0f} đ" if total_orders > 0 else "0 đ"
+                    f"{total_revenue:,.0f}",
+                    f"{total_paid:,}",
+                    f"{total_revenue/total_orders:,.1f}" if total_orders > 0 else "0"
                 ), tags=('total',))
             
             # Chuyển sang tab chi tiết
@@ -2825,7 +3162,7 @@ Hiện tại bạn vẫn có thể:
             messagebox.showerror('Lỗi', str(e))
 
     def show_profit_report(self):
-        """Hiển thị báo cáo lợi nhuận"""
+        """Hiển thị thống kê cấp phát theo đơn vị nhận"""
         try:
             start_date = self.adv_de_from.entry.get().strip()
             end_date = self.adv_de_to.entry.get().strip()
@@ -2835,13 +3172,14 @@ Hiện tại bạn vẫn có thể:
                 return
             
             data = self.report_manager.get_profit_report(start_date, end_date)
+            self.current_report_type = 'receiving_unit'
             self.display_profit_report(data)
             
         except Exception as e:
             messagebox.showerror('Lỗi', str(e))
 
     def display_profit_report(self, data):
-        """Hiển thị báo cáo lợi nhuận"""
+        """Hiển thị thống kê cấp phát theo đơn vị nhận"""
         try:
             # Clear detail tab
             for widget in self.adv_detail_tab.winfo_children():
@@ -2851,71 +3189,55 @@ Hiện tại bạn vẫn có thể:
             main_frame.pack(fill='both', expand=True, padx=10, pady=10)
             
             # Title
-            tb.Label(main_frame, text="BÁO CÁO LỢI NHUẬN", 
+            tb.Label(main_frame, text="THỐNG KÊ CẤP PHÁT THEO ĐƠN VỊ NHẬN", 
                     font=('Segoe UI', 14, 'bold'), bootstyle='primary').pack(pady=(0, 15))
             
             # Bảng dữ liệu
-            cols = ('date', 'product', 'qty', 'sell_price', 'cost_price', 'revenue', 'cost', 'profit')
+            cols = ('date', 'unit', 'notes_count', 'total_qty', 'items_count')
             tree = tb.Treeview(main_frame, columns=cols, show='headings', height=15)
             
             for c, w, t, anchor in [
-                ('date', 100, 'Ngày', 'center'),
-                ('product', 200, 'Sản phẩm', 'w'),
-                ('qty', 80, 'SL', 'e'),
-                ('sell_price', 100, 'Giá bán', 'e'),
-                ('cost_price', 100, 'Giá nhập', 'e'),
-                ('revenue', 120, 'Doanh thu', 'e'),
-                ('cost', 120, 'Chi phí', 'e'),
-                ('profit', 120, 'Lợi nhuận', 'e')
+                ('date', 120, 'Ngày xuất', 'center'),
+                ('unit', 300, 'Đơn vị nhận', 'w'),
+                ('notes_count', 130, 'Số phiếu nhận', 'e'),
+                ('total_qty', 150, 'Tổng số lượng nhận', 'e'),
+                ('items_count', 150, 'Số loại sản phẩm nhận', 'e')
             ]:
                 tree.heading(c, text=t)
                 tree.column(c, width=w, anchor=anchor)
             
             tree.tag_configure('odd', background='#f6f8fa')
-            tree.tag_configure('profit_positive', foreground='#2e7d32')
-            tree.tag_configure('profit_negative', foreground='#d32f2f')
             tree.tag_configure('total', background='#e8f5e9', font=('Segoe UI', 10, 'bold'))
             tree.pack(fill='both', expand=True)
             
             # Load dữ liệu
-            total_revenue = total_cost = total_profit = 0
+            total_notes = total_qty_sum = 0
             for idx, row in enumerate(data):
-                revenue = row.get('revenue', 0) or 0
-                cost = row.get('cost', 0) or 0
-                profit = row.get('profit', 0) or 0
-                qty = row.get('qty', 0) or 0
-                sell_price = row.get('sell_price', 0) or 0
-                cost_price = row.get('cost_price', 0) or 0
-                product_name = row.get('product_name', '') or ''
+                unit_name = row.get('product_name', '') or ''
+                notes_count = row.get('qty', 0) or 0
+                total_qty = row.get('revenue', 0) or 0
+                items_count = row.get('cost', 0) or 0
                 
-                total_revenue += revenue
-                total_cost += cost
-                total_profit += profit
+                total_notes += notes_count
+                total_qty_sum += total_qty
                 
                 tags = ['odd'] if idx % 2 else []
-                if profit > 0:
-                    tags.append('profit_positive')
-                elif profit < 0:
-                    tags.append('profit_negative')
                 
                 tree.insert('', 'end', values=(
                     row.get('sale_date', ''),
-                    product_name[:30] + '...' if len(product_name) > 30 else product_name,
-                    f"{qty:,.0f}",
-                    f"{sell_price:,.0f} đ",
-                    f"{cost_price:,.0f} đ",
-                    f"{revenue:,.0f} đ",
-                    f"{cost:,.0f} đ",
-                    f"{profit:,.0f} đ"
+                    unit_name,
+                    f"{notes_count:,}",
+                    f"{total_qty:,.0f}",
+                    f"{items_count:,}"
                 ), tags=tags)
             
             # Dòng tổng
             if data:
                 tree.insert('', 'end', values=(
-                    'TỔNG', '', '', '', '',
-                    f"{total_revenue:,.0f} đ",
-                    f"{total_cost:,.0f} đ",
-                    f"{total_profit:,.0f} đ"
+                    'TỔNG', '',
+                    f"{total_notes:,}",
+                    f"{total_qty_sum:,.0f}",
+                    ''
                 ), tags=('total',))
             
             # Chuyển sang tab chi tiết
@@ -2925,7 +3247,7 @@ Hiện tại bạn vẫn có thể:
             messagebox.showerror('Lỗi', str(e))
 
     def show_top_products_report(self):
-        """Hiển thị báo cáo top sản phẩm"""
+        """Hiển thị báo cáo top sản phẩm cấp phát"""
         try:
             start_date = self.adv_de_from.entry.get().strip()
             end_date = self.adv_de_to.entry.get().strip()
@@ -2935,13 +3257,14 @@ Hiện tại bạn vẫn có thể:
                 return
             
             data = self.report_manager.get_top_products(start_date, end_date, 20)
+            self.current_report_type = 'top_products'
             self.display_top_products_report(data)
             
         except Exception as e:
             messagebox.showerror('Lỗi', str(e))
 
     def display_top_products_report(self, data):
-        """Hiển thị báo cáo top sản phẩm"""
+        """Hiển thị báo cáo top sản phẩm cấp phát"""
         try:
             # Clear detail tab
             for widget in self.adv_detail_tab.winfo_children():
@@ -2951,20 +3274,18 @@ Hiện tại bạn vẫn có thể:
             main_frame.pack(fill='both', expand=True, padx=10, pady=10)
             
             # Title
-            tb.Label(main_frame, text="TOP SẢN PHẨM BÁN CHẠY", 
+            tb.Label(main_frame, text="TOP SẢN PHẨM CẤP PHÁT NHIỀU NHẤT", 
                     font=('Segoe UI', 14, 'bold'), bootstyle='primary').pack(pady=(0, 15))
             
             # Bảng dữ liệu
-            cols = ('rank', 'product', 'qty', 'orders', 'revenue', 'avg_price')
+            cols = ('rank', 'product', 'qty', 'orders')
             tree = tb.Treeview(main_frame, columns=cols, show='headings', height=15)
             
             for c, w, t, anchor in [
-                ('rank', 60, 'Hạng', 'center'),
-                ('product', 300, 'Sản phẩm', 'w'),
-                ('qty', 100, 'Tổng SL', 'e'),
-                ('orders', 100, 'Số đơn', 'e'),
-                ('revenue', 150, 'Doanh thu', 'e'),
-                ('avg_price', 120, 'Giá TB', 'e')
+                ('rank', 80, 'Hạng', 'center'),
+                ('product', 450, 'Sản phẩm', 'w'),
+                ('qty', 200, 'Tổng SL cấp', 'e'),
+                ('orders', 200, 'Số phiếu xuất', 'e')
             ]:
                 tree.heading(c, text=t)
                 tree.column(c, width=w, anchor=anchor)
@@ -2983,16 +3304,12 @@ Hiện tại bạn vẫn có thể:
                 product_name = row.get('product_name', '') or ''
                 total_qty = row.get('total_qty', 0) or 0
                 total_orders = row.get('total_orders', 0) or 0
-                total_revenue = row.get('total_revenue', 0) or 0
-                avg_price = row.get('avg_price', 0) or 0
                 
                 tree.insert('', 'end', values=(
                     f"#{rank}",
                     product_name,
                     f"{total_qty:,.0f}",
-                    f"{total_orders:,}",
-                    f"{total_revenue:,.0f} đ",
-                    f"{avg_price:,.0f} đ"
+                    f"{total_orders:,}"
                 ), tags=tags)
             
             # Chuyển sang tab chi tiết
@@ -3002,7 +3319,7 @@ Hiện tại bạn vẫn có thể:
             messagebox.showerror('Lỗi', str(e))
 
     def show_revenue_chart(self):
-        """Hiển thị biểu đồ doanh thu"""
+        """Hiển thị biểu đồ cấp phát"""
         if not MATPLOTLIB_AVAILABLE:
             messagebox.showerror('Lỗi', 'Thư viện matplotlib chưa được cài đặt. Vui lòng chạy: pip install matplotlib')
             return
@@ -3049,13 +3366,13 @@ Hiện tại bạn vẫn có thể:
                 # Không có dữ liệu để vẽ
                 ax.text(0.5, 0.5, 'Không có dữ liệu để hiển thị biểu đồ', 
                        ha='center', va='center', transform=ax.transAxes, fontsize=14)
-                ax.set_title('Biểu đồ doanh thu theo ngày')
+                ax.set_title('Biểu đồ cấp phát theo ngày')
             else:
-                # Vẽ biểu đồ doanh thu
-                ax.plot(dates, revenues, marker='o', linewidth=2, markersize=6, color='#2e7d32', label='Doanh thu')
+                # Vẽ biểu đồ cấp phát
+                ax.plot(dates, revenues, marker='o', linewidth=2, markersize=6, color='#2e7d32', label='Số lượng cấp')
                 ax.set_xlabel('Ngày')
-                ax.set_ylabel('Doanh thu (VNĐ)')
-                ax.set_title('Biểu đồ doanh thu theo ngày')
+                ax.set_ylabel('Số lượng cấp phát')
+                ax.set_title('Biểu đồ cấp phát theo ngày')
                 ax.grid(True, alpha=0.3)
                 ax.legend()
             
@@ -3238,27 +3555,83 @@ Hiện tại bạn vẫn có thể:
             # Xác định loại báo cáo dựa trên tab hiện tại
             if 'Tóm tắt' in tab_text:
                 # Báo cáo tóm tắt
-                summary = self.report_manager.get_daily_sales_summary(start_date, end_date)
+                summary_data = self.report_manager.get_daily_sales_summary(start_date, end_date)
+                summary = summary_data['summary']
+                data_list = [
+                    ['Tổng số phiếu xuất', summary.get('total_orders', 0)],
+                    ['Tổng số lượng xuất', summary.get('total_revenue', 0)],
+                    ['Số lượng TB/phiếu', round(summary.get('avg_order_value', 0), 1)],
+                    ['Phiếu xuất lớn nhất', summary.get('max_order', 0)]
+                ]
                 return {
                     'title': f'Báo cáo tóm tắt từ {start_date} đến {end_date}',
-                    'data': [summary],
+                    'data': data_list,
                     'headers': ['Chỉ số', 'Giá trị']
                 }
             elif 'Chi tiết' in tab_text:
-                # Báo cáo chi tiết - lấy báo cáo doanh thu
-                data = self.report_manager.get_revenue_report(start_date, end_date, 'day')
-                return {
-                    'title': f'Báo cáo doanh thu chi tiết từ {start_date} đến {end_date}',
-                    'data': data,
-                    'headers': ['Ngày', 'Số đơn hàng', 'Tổng doanh thu', 'Tổng thanh toán', 'Giá trị TB/đơn']
-                }
+                if self.current_report_type == 'dispatch':
+                    data = self.report_manager.get_revenue_report(start_date, end_date, self.current_report_group_by)
+                    data_list = []
+                    for row in data:
+                        data_list.append([
+                            row.get('period', ''),
+                            row.get('total_orders', 0),
+                            row.get('total_revenue', 0),
+                            row.get('total_paid', 0),
+                            round(row.get('avg_order_value', 0), 1)
+                        ])
+                    return {
+                        'title': f'Báo cáo cấp phát chi tiết từ {start_date} đến {end_date}',
+                        'data': data_list,
+                        'headers': ['Thời gian', 'Số phiếu xuất', 'Tổng số lượng xuất', 'Số loại sản phẩm', 'SL trung bình/phiếu']
+                    }
+                elif self.current_report_type == 'receiving_unit':
+                    data = self.report_manager.get_profit_report(start_date, end_date)
+                    data_list = []
+                    for row in data:
+                        data_list.append([
+                            row.get('sale_date', ''),
+                            row.get('product_name', ''),
+                            row.get('qty', 0),
+                            row.get('revenue', 0),
+                            row.get('cost', 0)
+                        ])
+                    return {
+                        'title': f'Thống kê cấp phát theo đơn vị nhận từ {start_date} đến {end_date}',
+                        'data': data_list,
+                        'headers': ['Ngày xuất', 'Đơn vị nhận', 'Số phiếu nhận', 'Tổng số lượng nhận', 'Số loại sản phẩm nhận']
+                    }
+                elif self.current_report_type == 'top_products':
+                    data = self.report_manager.get_top_products(start_date, end_date, 20)
+                    data_list = []
+                    for idx, row in enumerate(data):
+                        data_list.append([
+                            f"#{idx+1}",
+                            row.get('product_name', ''),
+                            row.get('total_qty', 0),
+                            row.get('total_orders', 0)
+                        ])
+                    return {
+                        'title': f'Top sản phẩm cấp phát nhiều nhất từ {start_date} đến {end_date}',
+                        'data': data_list,
+                        'headers': ['Hạng', 'Sản phẩm', 'Tổng SL cấp', 'Số phiếu xuất']
+                    }
             else:
-                # Mặc định là báo cáo doanh thu
+                # Mặc định là báo cáo cấp phát
                 data = self.report_manager.get_revenue_report(start_date, end_date, 'day')
+                data_list = []
+                for row in data:
+                    data_list.append([
+                        row.get('period', ''),
+                        row.get('total_orders', 0),
+                        row.get('total_revenue', 0),
+                        row.get('total_paid', 0),
+                        round(row.get('avg_order_value', 0), 1)
+                    ])
                 return {
-                    'title': f'Báo cáo doanh thu từ {start_date} đến {end_date}',
-                    'data': data,
-                    'headers': ['Ngày', 'Số đơn hàng', 'Tổng doanh thu', 'Tổng thanh toán', 'Giá trị TB/đơn']
+                    'title': f'Báo cáo cấp phát từ {start_date} đến {end_date}',
+                    'data': data_list,
+                    'headers': ['Thời gian', 'Số phiếu xuất', 'Tổng số lượng xuất', 'Số loại sản phẩm', 'SL trung bình/phiếu']
                 }
                 
         except Exception as e:
@@ -3620,28 +3993,6 @@ class BarcodeScanner:
 # --- /Barcode Scanner ---
 
 if __name__ == '__main__':
-    import tkinter as tk
-    tkroot = tk.Tk(); tkroot.withdraw()
-
-    lm = LicenseManager()
-    try:
-        lm.load()
-    except Exception:
-        fp = machine_fingerprint()
-        # copy fingerprint vào clipboard cho tiện
-        try:
-            tkroot.clipboard_clear(); tkroot.clipboard_append(fp)
-        except Exception:
-            pass
-        messagebox.showinfo("Kích hoạt bản quyền",
-                            f"Fingerprint máy: {fp}\n(đã copy vào clipboard)\n\nGửi mã này cho người bán để nhận license vĩnh viễn.")
-        try:
-            lm.prompt_and_save(tkroot)  # cho nhập license ngay nếu đã có
-        except Exception as e2:
-            messagebox.showerror("License", str(e2))
-            raise SystemExit(1)
-
-    tkroot.destroy()
     app = App()
     app.mainloop()
 
