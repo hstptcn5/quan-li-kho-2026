@@ -51,6 +51,10 @@
   - Tích hợp tính năng **Lịch sử phiếu nhập** và in lại phiếu nhập cũ trong tab Báo cáo nâng cao (`show_purchase_history`, `reprint_selected_purchase`).
   - Cập nhật nút bấm giao diện và an toàn hóa hàm `refresh_stock` bằng `hasattr`.
   - Cấu trúc lại bảng chữ ký PDF phiếu xuất kho (`print_dispatch_note`) thành 5 cột cân đối, thêm Kế toán trưởng, loại bỏ tên in sẵn.
+  - **Sửa lỗi crash** khi khởi động liên quan đến `update_pos_price_and_unit` (thay thế bằng `update_dispatch_unit_label`).
+  - **Nâng cấp Báo cáo XNT**: Bổ sung hiển thị và xuất báo cáo XNT chi tiết theo từng **Số lô** và **Hạn sử dụng** của sản phẩm (nhóm theo `productId` + `batchId` và sắp xếp theo FEFO).
+  - **Thêm tính năng Biên bản kiểm kê**: Bổ sung nút **`Biên bản kiểm kê (PDF)`** (mẫu C33-HD) cho phép kết xuất biên bản kiểm kê kho tại thời điểm tùy chọn có sẵn cột Số lượng sổ sách và ô trống để đếm thực tế.
+  - **Đồng bộ màu sắc giao diện**: Chuyển tất cả các nút tab trên thanh Toolbar chính thành màu xanh dương nhạt (`info`) đồng điệu với theme Flatly.
 
 ---
 
@@ -65,3 +69,21 @@
    - Thêm tính năng đăng nhập cho các tài khoản: `Thủ kho`, `Kế toán`, `Admin` để ghi nhận chính xác ai là người lập phiếu nhập/xuất kho (tự động điền vào mục Người lập phiếu trên PDF).
 4. **Nhập dữ liệu từ Excel (Import Excel)**:
    - Hỗ trợ import danh mục sản phẩm hoặc danh sách hàng nhập từ file Excel mẫu của Sở Y tế để tiết kiệm thời gian nhập liệu ban đầu cho cán bộ kho.
+
+---
+
+## 📦 4. Hướng dẫn Đóng gói Phần mềm (.exe) cho Thủ kho
+
+Để đóng gói toàn bộ mã nguồn Python thành một file chạy `.exe` duy nhất trên Windows (không cần máy cài đặt Python hay thư viện), bạn hãy mở cửa sổ dòng lệnh (Terminal/Command Prompt/PowerShell) tại thư mục dự án và chạy lần lượt 2 lệnh sau:
+
+```bash
+# Bước 1: Cài đặt thư viện pyinstaller
+pip install pyinstaller
+
+# Bước 2: Tiến hành đóng gói ứng dụng
+pyinstaller --noconfirm --onefile --windowed --name "QuanLyKhoCDC" nhathuoc2.py
+```
+
+- Sau khi lệnh chạy xong, file chạy **`QuanLyKhoCDC.exe`** sẽ nằm trong thư mục **`dist/`** của thư mục dự án.
+- Bạn chỉ cần copy file `QuanLyKhoCDC.exe` này gửi cho thủ kho sử dụng kiểm thử trực tiếp!
+

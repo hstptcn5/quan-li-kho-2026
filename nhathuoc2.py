@@ -381,6 +381,9 @@ class DB:
         SELECT
           p.id   AS productId,
           p.name AS productName,
+          p.defaultUnit AS unit,
+          b.lotNo AS lotNo,
+          b.expiryDate AS expiryDate,
 
           COALESCE(ROUND(SUM(CASE
             WHEN DATE(sm.createdAt) < DATE(?) THEN sm.qty * 1
@@ -399,9 +402,10 @@ class DB:
             ELSE 0 END), 4), 0) AS closing
         FROM products p
         LEFT JOIN stock_movements sm ON sm.productId = p.id
-        GROUP BY p.id, p.name
+        LEFT JOIN batches b ON sm.batchId = b.id
+        GROUP BY p.id, p.name, b.id, b.lotNo, b.expiryDate
         HAVING opening <> 0 OR inbound <> 0 OR outbound <> 0 OR closing <> 0
-        ORDER BY LOWER(p.name)
+        ORDER BY LOWER(p.name), b.expiryDate ASC
         '''
         params = (start_date, start_date, end_date, start_date, end_date, end_date)
         return self.q(sql, params)
@@ -1569,14 +1573,14 @@ class App(tb.Window):
         
         # Các nút chính với style cải thiện
         buttons_config = [
-            ('🏷️ Sản phẩm', 'primary', self.tab_products, 'F1'),
-            ('📦 Nhập hàng', 'success', self.tab_purchase, 'F2'),
-            ('📤 Xuất kho', 'warning', self.tab_dispatch, 'F3'),
+            ('🏷️ Sản phẩm', 'info', self.tab_products, 'F1'),
+            ('📦 Nhập hàng', 'info', self.tab_purchase, 'F2'),
+            ('📤 Xuất kho', 'info', self.tab_dispatch, 'F3'),
             ('📊 Tồn kho', 'info', self.tab_stock, 'F4'),
-            ('⏰ Hết hạn', 'danger', self.tab_alerts, 'F5'),
-            ('📄 Báo cáo XNT', 'secondary', self.tab_report, 'F6'),
-            ('💾 Backup', 'dark', self.tab_backup, 'F7'),
-            ('📈 Báo cáo nâng cao', 'primary', self.tab_advanced_reports, 'F8')
+            ('⏰ Hết hạn', 'info', self.tab_alerts, 'F5'),
+            ('📄 Báo cáo XNT', 'info', self.tab_report, 'F6'),
+            ('💾 Backup', 'info', self.tab_backup, 'F7'),
+            ('📈 Báo cáo nâng cao', 'info', self.tab_advanced_reports, 'F8')
         ]
         
         for text, style, tab, shortcut in buttons_config:
@@ -3405,17 +3409,21 @@ Hiện tại bạn vẫn có thể:
 
         tb.Button(top, text='Làm mới', bootstyle='primary', command=self.refresh_report).pack(side='left', padx=6)
         tb.Button(top, text='Xuất CSV…', bootstyle='info', command=self.export_report_csv).pack(side='left', padx=6)
+        tb.Button(top, text='Xuất PDF…', bootstyle='danger', command=self.export_report_pdf).pack(side='left', padx=6)
+        tb.Button(top, text='Biên bản kiểm kê (PDF)', bootstyle='warning', command=self.print_inventory_check_pdf).pack(side='left', padx=6)
 
         # Bảng Xuất–Nhập–Tồn
-        cols = ('product','productName','opening','inbound','outbound','closing')
+        cols = ('product','productName','lotNo','expiryDate','opening','inbound','outbound','closing')
         self.tree_report = tb.Treeview(frm, columns=cols, show='headings')
         for c, w, t, anchor in [
-            ('product',80,'PID','center'),
-            ('productName',500,'Tên thuốc','w'),
-            ('opening',120,'Tồn đầu kỳ','e'),
-            ('inbound',120,'Nhập','e'),
-            ('outbound',120,'Xuất','e'),
-            ('closing',120,'Tồn cuối kỳ','e'),
+            ('product',50,'PID','center'),
+            ('productName',300,'Tên thuốc/vaccine/VTYT','w'),
+            ('lotNo',100,'Số lô','center'),
+            ('expiryDate',100,'Hạn sử dụng','center'),
+            ('opening',100,'Tồn đầu kỳ','e'),
+            ('inbound',100,'Nhập','e'),
+            ('outbound',100,'Xuất','e'),
+            ('closing',100,'Tồn cuối kỳ','e'),
         ]:
             self.tree_report.heading(c, text=t, command=(lambda col=c: self.sort_tree(self.tree_report, col)))
             self.tree_report.column(c, width=w, anchor=anchor)
@@ -4411,6 +4419,475 @@ Hiện tại bạn vẫn có thể:
 
         self.toast('Đã lưu báo cáo X–N–T')
 
+    def export_report_pdf(self):
+        start_s = self.de_from.entry.get().strip() if hasattr(self, 'de_from') else ''
+        end_s   = self.de_to.entry.get().strip() if hasattr(self, 'de_to') else ''
+        if not start_s or not end_s:
+            messagebox.showwarning('Thiếu ngày', 'Chọn đủ Từ ngày và Đến ngày'); return
+
+        rows = self.db.xnt_report(start_s, end_s)
+        if not rows:
+            messagebox.showinfo('Thông báo', 'Không có dữ liệu báo cáo trong khoảng thời gian này'); return
+
+        path = filedialog.asksaveasfilename(
+            defaultextension='.pdf',
+            filetypes=[('PDF files', '*.pdf'), ('All files', '*.*')],
+            initialfile=f'bao_cao_xuat_nhap_ton_{start_s}_to_{end_s}.pdf'
+        )
+        if not path:
+            return
+
+        try:
+            import reportlab
+        except ImportError:
+            response = messagebox.askyesno(
+                "Thiếu thư viện", 
+                "Hệ thống thiếu thư viện 'reportlab' để xuất PDF.\nBạn có muốn tự động cài đặt không? (Quá trình này mất khoảng vài giây)"
+            )
+            if response:
+                import subprocess
+                import sys
+                try:
+                    self.toast("Đang cài đặt thư viện reportlab, vui lòng đợi...")
+                    subprocess.run([sys.executable, "-m", "pip", "install", "reportlab"], check=True)
+                    self.toast("Đã cài đặt reportlab thành công!")
+                except Exception as ex:
+                    messagebox.showerror("Lỗi cài đặt", f"Không thể tự động cài đặt reportlab: {str(ex)}\nHãy chạy lệnh 'pip install reportlab' trong terminal."); return
+            else:
+                return
+
+        try:
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib import colors
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            
+            try:
+                pdfmetrics.registerFont(TTFont('TimesNewRoman', "C:\\Windows\\Fonts\\times.ttf"))
+                pdfmetrics.registerFont(TTFont('TimesNewRoman-Bold', "C:\\Windows\\Fonts\\timesbd.ttf"))
+                pdfmetrics.registerFont(TTFont('TimesNewRoman-Italic', "C:\\Windows\\Fonts\\timesi.ttf"))
+                font_normal = 'TimesNewRoman'
+                font_bold = 'TimesNewRoman-Bold'
+                font_italic = 'TimesNewRoman-Italic'
+            except Exception:
+                font_normal = 'Helvetica'
+                font_bold = 'Helvetica-Bold'
+                font_italic = 'Helvetica-Oblique'
+                
+            # Đặt trang nằm ngang (landscape) để bảng rộng rãi
+            doc = SimpleDocTemplate(path, pagesize=landscape(A4), rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+            story = []
+            
+            styles = getSampleStyleSheet()
+            
+            style_header_left = ParagraphStyle(
+                'HeaderLeft', parent=styles['Normal'], fontName=font_bold, fontSize=10, leading=14, alignment=0
+            )
+            style_header_right = ParagraphStyle(
+                'HeaderRight', parent=styles['Normal'], fontName=font_normal, fontSize=10, leading=14, alignment=2
+            )
+            style_title = ParagraphStyle(
+                'Title', parent=styles['Heading1'], fontName=font_bold, fontSize=16, leading=20, alignment=1, spaceAfter=5
+            )
+            style_subtitle = ParagraphStyle(
+                'Subtitle', parent=styles['Normal'], fontName=font_bold, fontSize=11, leading=14, alignment=1, spaceAfter=15
+            )
+            style_table_header = ParagraphStyle(
+                'TableHeader', parent=styles['Normal'], fontName=font_bold, fontSize=9, leading=11, alignment=1, textColor=colors.black
+            )
+            style_cell = ParagraphStyle(
+                'Cell', parent=styles['Normal'], fontName=font_normal, fontSize=9, leading=11, alignment=0
+            )
+            style_cell_center = ParagraphStyle(
+                'CellCenter', parent=styles['Normal'], fontName=font_normal, fontSize=9, leading=11, alignment=1
+            )
+            style_cell_right = ParagraphStyle(
+                'CellRight', parent=styles['Normal'], fontName=font_normal, fontSize=9, leading=11, alignment=2
+            )
+            
+            # Header
+            header_data = [
+                [
+                    Paragraph("SỞ Y TẾ THÀNH PHỐ CẦN THƠ<br/>TRUNG TÂM KIỂM SOÁT BỆNH TẬT (CDC)", style_header_left),
+                    Paragraph("<b>Mẫu số: C30-HD</b><br/><i>(Ban hành theo Thông tư số 107/2017/TT-BTC)</i>", style_header_right)
+                ]
+            ]
+            header_table = Table(header_data, colWidths=[400, 362])
+            header_table.setStyle(TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('RIGHTPADDING', (0,0), (-1,-1), 0),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+            ]))
+            story.append(header_table)
+            story.append(Spacer(1, 10))
+            
+            # Title
+            story.append(Paragraph("BÁO CÁO XUẤT - NHẬP - TỒN KHO THUỐC, VACCINE & VẬT TƯ Y TẾ", style_title))
+            
+            # Định dạng ngày
+            try:
+                start_dt = dt.datetime.strptime(start_s, '%Y-%m-%d')
+                end_dt = dt.datetime.strptime(end_s, '%Y-%m-%d')
+                date_range_str = f"Từ ngày {start_dt.strftime('%d/%m/%Y')} đến ngày {end_dt.strftime('%d/%m/%Y')}"
+            except Exception:
+                date_range_str = f"Từ ngày {start_s} đến ngày {end_s}"
+                
+            story.append(Paragraph(date_range_str, style_subtitle))
+            story.append(Spacer(1, 10))
+            
+            # Table items
+            table_data = [
+                [
+                    Paragraph("STT", style_table_header),
+                    Paragraph("Mã SP", style_table_header),
+                    Paragraph("Tên thuốc, vaccine, VTYT", style_table_header),
+                    Paragraph("ĐVT", style_table_header),
+                    Paragraph("Số lô", style_table_header),
+                    Paragraph("Hạn dùng", style_table_header),
+                    Paragraph("Tồn đầu", style_table_header),
+                    Paragraph("Nhập", style_table_header),
+                    Paragraph("Xuất", style_table_header),
+                    Paragraph("Tồn cuối", style_table_header)
+                ]
+            ]
+            
+            tot_open = tot_in = tot_out = tot_close = 0.0
+            for idx, r in enumerate(rows, 1):
+                o_val = float(r['opening'])
+                i_val = float(r['inbound'])
+                ou_val = float(r['outbound'])
+                c_val = float(r['closing'])
+                
+                tot_open += o_val
+                tot_in += i_val
+                tot_out += ou_val
+                tot_close += c_val
+                
+                table_data.append([
+                    Paragraph(str(idx), style_cell_center),
+                    Paragraph(str(r['productId']), style_cell_center),
+                    Paragraph(r['productName'], style_cell),
+                    Paragraph(r['unit'] or '-', style_cell_center),
+                    Paragraph(r['lotNo'] or '', style_cell_center),
+                    Paragraph(r['expiryDate'] or '', style_cell_center),
+                    Paragraph(f"{o_val:g}", style_cell_right),
+                    Paragraph(f"{i_val:g}", style_cell_right),
+                    Paragraph(f"{ou_val:g}", style_cell_right),
+                    Paragraph(f"{c_val:g}", style_cell_right)
+                ])
+                
+            # Thêm dòng tổng cộng
+            table_data.append([
+                Paragraph("<b>Tổng cộng</b>", style_cell_center),
+                Paragraph("", style_cell_center),
+                Paragraph("", style_cell),
+                Paragraph("", style_cell_center),
+                Paragraph("", style_cell_center),
+                Paragraph("", style_cell_center),
+                Paragraph(f"<b>{tot_open:g}</b>", style_cell_right),
+                Paragraph(f"<b>{tot_in:g}</b>", style_cell_right),
+                Paragraph(f"<b>{tot_out:g}</b>", style_cell_right),
+                Paragraph(f"<b>{tot_close:g}</b>", style_cell_right)
+            ])
+            
+            col_widths = [25, 45, 257, 45, 65, 65, 65, 65, 65, 65]
+            items_table = Table(table_data, colWidths=col_widths)
+            items_table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f2f2f2')),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                ('SPAN', (0, -1), (5, -1)),
+                ('TOPPADDING', (0,0), (-1,-1), 5),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+            ]))
+            story.append(items_table)
+            story.append(Spacer(1, 20))
+            
+            # Ký tên
+            date_right_style = ParagraphStyle(
+                'DateRight', parent=styles['Normal'], fontName=font_italic, fontSize=11, alignment=2, spaceAfter=10
+            )
+            sig_title_style = ParagraphStyle(
+                'SigTitle', parent=styles['Normal'], fontName=font_bold, fontSize=11, alignment=1
+            )
+            sig_sub_style = ParagraphStyle(
+                'SigSub', parent=styles['Normal'], fontName=font_italic, fontSize=9, alignment=1
+            )
+            
+            now_dt = dt.datetime.now()
+            story.append(Paragraph(f"Cần Thơ, ngày {now_dt.strftime('%d')} tháng {now_dt.strftime('%m')} năm {now_dt.strftime('%Y')}", date_right_style))
+            
+            sig_headers = [
+                [
+                    Paragraph("<b>Người lập báo cáo</b>", sig_title_style),
+                    Paragraph("<b>Thủ kho</b>", sig_title_style),
+                    Paragraph("<b>Kế toán trưởng</b>", sig_title_style),
+                    Paragraph("<b>Thủ trưởng đơn vị</b>", sig_title_style)
+                ],
+                [
+                    Paragraph("(Ký, họ tên)", sig_sub_style),
+                    Paragraph("(Ký, họ tên)", sig_sub_style),
+                    Paragraph("(Ký, họ tên)", sig_sub_style),
+                    Paragraph("(Ký, đóng dấu)", sig_sub_style)
+                ]
+            ]
+            sig_table = Table(sig_headers, colWidths=[190, 190, 190, 190])
+            sig_table.setStyle(TableStyle([
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+            ]))
+            story.append(sig_table)
+            story.append(Spacer(1, 60))
+            
+            doc.build(story)
+            os.startfile(path)
+            self.toast("Đã xuất báo cáo XNT ra PDF và mở file thành công")
+            
+        except Exception as e:
+            messagebox.showerror("Lỗi in PDF", f"Không thể xuất báo cáo PDF: {str(e)}")
+
+    def print_inventory_check_pdf(self):
+        end_s = self.de_to.entry.get().strip() if hasattr(self, 'de_to') else ''
+        if not end_s:
+            messagebox.showwarning('Thiếu ngày', 'Hãy chọn ngày đến (ngày kết thúc kiểm kê) ở ô Đến ngày'); return
+
+        rows = self.db.xnt_report('2000-01-01', end_s)
+        items = [r for r in rows if float(r['closing']) > 0]
+        
+        if not items:
+            messagebox.showinfo('Thông báo', 'Không có sản phẩm nào có số dư tồn kho tại ngày này để kiểm kê.'); return
+
+        path = filedialog.asksaveasfilename(
+            defaultextension='.pdf',
+            filetypes=[('PDF files', '*.pdf'), ('All files', '*.*')],
+            initialfile=f'bien_ban_kiem_ke_kho_{end_s}.pdf'
+        )
+        if not path:
+            return
+
+        try:
+            import reportlab
+        except ImportError:
+            response = messagebox.askyesno(
+                "Thiếu thư viện", 
+                "Hệ thống thiếu thư viện 'reportlab' để xuất PDF.\nBạn có muốn tự động cài đặt không?"
+            )
+            if response:
+                import subprocess, sys
+                try:
+                    subprocess.run([sys.executable, "-m", "pip", "install", "reportlab"], check=True)
+                    self.toast("Đã cài đặt reportlab thành công!")
+                except Exception as ex:
+                    messagebox.showerror("Lỗi cài đặt", f"Không thể cài đặt reportlab: {str(ex)}"); return
+            else:
+                return
+
+        try:
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib import colors
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            
+            try:
+                pdfmetrics.registerFont(TTFont('TimesNewRoman', "C:\\Windows\\Fonts\\times.ttf"))
+                pdfmetrics.registerFont(TTFont('TimesNewRoman-Bold', "C:\\Windows\\Fonts\\timesbd.ttf"))
+                pdfmetrics.registerFont(TTFont('TimesNewRoman-Italic', "C:\\Windows\\Fonts\\timesi.ttf"))
+                font_normal = 'TimesNewRoman'
+                font_bold = 'TimesNewRoman-Bold'
+                font_italic = 'TimesNewRoman-Italic'
+            except Exception:
+                font_normal = 'Helvetica'
+                font_bold = 'Helvetica-Bold'
+                font_italic = 'Helvetica-Oblique'
+                
+            doc = SimpleDocTemplate(path, pagesize=landscape(A4), rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+            story = []
+            
+            styles = getSampleStyleSheet()
+            
+            style_header_left = ParagraphStyle(
+                'HeaderLeft', parent=styles['Normal'], fontName=font_bold, fontSize=10, leading=14, alignment=0
+            )
+            style_header_right = ParagraphStyle(
+                'HeaderRight', parent=styles['Normal'], fontName=font_normal, fontSize=10, leading=14, alignment=2
+            )
+            style_title = ParagraphStyle(
+                'Title', parent=styles['Heading1'], fontName=font_bold, fontSize=16, leading=20, alignment=1, spaceAfter=5
+            )
+            style_subtitle = ParagraphStyle(
+                'Subtitle', parent=styles['Normal'], fontName=font_bold, fontSize=11, leading=14, alignment=1, spaceAfter=10
+            )
+            style_text_bold = ParagraphStyle(
+                'TextBold', parent=styles['Normal'], fontName=font_bold, fontSize=10, leading=14
+            )
+            style_text_normal = ParagraphStyle(
+                'TextNormal', parent=styles['Normal'], fontName=font_normal, fontSize=10, leading=15
+            )
+            style_table_header = ParagraphStyle(
+                'TableHeader', parent=styles['Normal'], fontName=font_bold, fontSize=9, leading=11, alignment=1
+            )
+            style_cell = ParagraphStyle(
+                'Cell', parent=styles['Normal'], fontName=font_normal, fontSize=9, leading=11, alignment=0
+            )
+            style_cell_center = ParagraphStyle(
+                'CellCenter', parent=styles['Normal'], fontName=font_normal, fontSize=9, leading=11, alignment=1
+            )
+            style_cell_right = ParagraphStyle(
+                'CellRight', parent=styles['Normal'], fontName=font_normal, fontSize=9, leading=11, alignment=2
+            )
+            
+            # Header
+            header_data = [
+                [
+                    Paragraph("SỞ Y TẾ THÀNH PHỐ CẦN THƠ<br/>TRUNG TÂM KIỂM SOÁT BỆNH TẬT (CDC)", style_header_left),
+                    Paragraph("<b>Mẫu số: C33-HD</b><br/><i>(Ban hành theo Thông tư số 107/2017/TT-BTC)</i>", style_header_right)
+                ]
+            ]
+            header_table = Table(header_data, colWidths=[400, 362])
+            header_table.setStyle(TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('RIGHTPADDING', (0,0), (-1,-1), 0),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+            ]))
+            story.append(header_table)
+            story.append(Spacer(1, 10))
+            
+            # Title
+            story.append(Paragraph("BIÊN BẢN KIỂM KÊ THUỐC, VACCINE & VẬT TƯ Y TẾ", style_title))
+            
+            try:
+                check_dt = dt.datetime.strptime(end_s, '%Y-%m-%d')
+                date_str = f"Thời điểm kiểm kê: 24 giờ 00 phút ngày {check_dt.strftime('%d/%m/%Y')}"
+            except Exception:
+                date_str = f"Thời điểm kiểm kê: ngày {end_s}"
+                
+            story.append(Paragraph(date_str, style_subtitle))
+            
+            # Ban kiểm kê
+            story.append(Paragraph("<b>BAN KIỂM KÊ GỒM:</b>", style_text_bold))
+            story.append(Paragraph(
+                "1. Ông/Bà: .................... Chức danh: .................... Đại diện Ban Giám đốc (Trưởng ban)<br/>"
+                "2. Ông/Bà: .................... Chức danh: .................... Kế toán trưởng (Thành viên)<br/>"
+                "3. Ông/Bà: .................... Chức danh: .................... Thủ kho (Thành viên)<br/>"
+                "4. Ông/Bà: .................... Chức danh: .................... Trưởng khoa Dược (Thành viên)",
+                style_text_normal
+            ))
+            story.append(Spacer(1, 10))
+            
+            # Table items
+            table_data = [
+                [
+                    Paragraph("STT", style_table_header),
+                    Paragraph("Mã SP", style_table_header),
+                    Paragraph("Tên thuốc, vaccine, VTYT", style_table_header),
+                    Paragraph("ĐVT", style_table_header),
+                    Paragraph("Số lô", style_table_header),
+                    Paragraph("Hạn dùng", style_table_header),
+                    Paragraph("Số lượng<br/>sổ sách", style_table_header),
+                    Paragraph("Số lượng<br/>thực tế", style_table_header),
+                    Paragraph("Chênh lệch<br/>(Thừa/Thiếu)", style_table_header),
+                    Paragraph("Ghi chú", style_table_header)
+                ]
+            ]
+            
+            tot_books = 0.0
+            for idx, r in enumerate(items, 1):
+                c_val = float(r['closing'])
+                tot_books += c_val
+                
+                table_data.append([
+                    Paragraph(str(idx), style_cell_center),
+                    Paragraph(str(r['productId']), style_cell_center),
+                    Paragraph(r['productName'], style_cell),
+                    Paragraph(r['unit'] or '-', style_cell_center),
+                    Paragraph(r['lotNo'] or '', style_cell_center),
+                    Paragraph(r['expiryDate'] or '', style_cell_center),
+                    Paragraph(f"{c_val:g}", style_cell_right),
+                    Paragraph("", style_cell_center),
+                    Paragraph("", style_cell_center),
+                    Paragraph("", style_cell_center)
+                ])
+                
+            # Dòng tổng cộng
+            table_data.append([
+                Paragraph("<b>Tổng cộng</b>", style_cell_center),
+                Paragraph("", style_cell_center),
+                Paragraph("", style_cell),
+                Paragraph("", style_cell_center),
+                Paragraph("", style_cell_center),
+                Paragraph("", style_cell_center),
+                Paragraph(f"<b>{tot_books:g}</b>", style_cell_right),
+                Paragraph("", style_cell_center),
+                Paragraph("", style_cell_center),
+                Paragraph("", style_cell_center)
+            ])
+            
+            col_widths = [25, 45, 292, 40, 60, 60, 60, 60, 60, 60]
+            items_table = Table(table_data, colWidths=col_widths)
+            items_table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f2f2f2')),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                ('SPAN', (0, -1), (5, -1)),
+                ('TOPPADDING', (0,0), (-1,-1), 5),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+            ]))
+            story.append(items_table)
+            story.append(Spacer(1, 20))
+            
+            # Ký tên
+            date_right_style = ParagraphStyle(
+                'DateRight', parent=styles['Normal'], fontName=font_italic, fontSize=11, alignment=2, spaceAfter=10
+            )
+            sig_title_style = ParagraphStyle(
+                'SigTitle', parent=styles['Normal'], fontName=font_bold, fontSize=11, alignment=1
+            )
+            sig_sub_style = ParagraphStyle(
+                'SigSub', parent=styles['Normal'], fontName=font_italic, fontSize=9, alignment=1
+            )
+            
+            now_dt = dt.datetime.now()
+            story.append(Paragraph(f"Cần Thơ, ngày {now_dt.strftime('%d')} tháng {now_dt.strftime('%m')} năm {now_dt.strftime('%Y')}", date_right_style))
+            
+            sig_headers = [
+                [
+                    Paragraph("<b>Người lập biểu</b>", sig_title_style),
+                    Paragraph("<b>Thủ kho</b>", sig_title_style),
+                    Paragraph("<b>Kế toán trưởng</b>", sig_title_style),
+                    Paragraph("<b>Thủ trưởng đơn vị</b>", sig_title_style)
+                ],
+                [
+                    Paragraph("(Ký, họ tên)", sig_sub_style),
+                    Paragraph("(Ký, họ tên)", sig_sub_style),
+                    Paragraph("(Ký, họ tên)", sig_sub_style),
+                    Paragraph("(Ký, đóng dấu)", sig_sub_style)
+                ]
+            ]
+            sig_table = Table(sig_headers, colWidths=[190, 190, 190, 190])
+            sig_table.setStyle(TableStyle([
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+            ]))
+            story.append(sig_table)
+            story.append(Spacer(1, 60))
+            
+            doc.build(story)
+            os.startfile(path)
+            self.toast("Đã in biên bản kiểm kê ra PDF thành công")
+            
+        except Exception as e:
+            messagebox.showerror("Lỗi in PDF", f"Không thể xuất biên bản kiểm kê: {str(e)}")
+
     def export_current_report_excel(self):
         """Xuất báo cáo hiện tại ra Excel"""
         try:
@@ -4641,7 +5118,7 @@ Hiện tại bạn vẫn có thể:
         if opts:
             self.cmb_prod.current(0); self.cmb_prod_pos.current(0)
             self.update_purchase_unit_and_price()
-            self.update_pos_price_and_unit()
+            self.update_dispatch_unit_label()
 
     def _fill_tree(self, tree: tb.Treeview, rows):
         for i in tree.get_children(): tree.delete(i)
@@ -4687,8 +5164,14 @@ Hiện tại bạn vẫn có thể:
                 '',
                 'end',
                 values=(
-                    r['productId'], r['productName'],
-                    r['opening'], r['inbound'], r['outbound'], r['closing']
+                    r['productId'], 
+                    r['productName'],
+                    r['lotNo'] or '',
+                    r['expiryDate'] or '',
+                    f"{r['opening']:g}", 
+                    f"{r['inbound']:g}", 
+                    f"{r['outbound']:g}", 
+                    f"{r['closing']:g}"
                 ),
                 tags=(tag,)
             )
@@ -4697,7 +5180,7 @@ Hiện tại bạn vẫn có thể:
         if rows:
             self.tree_report.insert(
                 '', 'end',
-                values=('', 'TỔNG', round(tot_open,4), round(tot_in,4), round(tot_out,4), round(tot_close,4)),
+                values=('', 'TỔNG CỘNG', '', '', f"{tot_open:g}", f"{tot_in:g}", f"{tot_out:g}", f"{tot_close:g}"),
                 tags=('total',)
             )
 
