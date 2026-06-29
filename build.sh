@@ -41,12 +41,22 @@ if [ $? -ne 0 ]; then
 fi
 
 echo
+echo "Locating pyzbar package..."
+PYZBAR_DIR=$(python3 -c "import os, pyzbar; print(os.path.dirname(pyzbar.__file__))" 2>/dev/null)
+if [ -z "$PYZBAR_DIR" ]; then
+    echo "ERROR: Could not locate pyzbar package directory."
+    exit 1
+fi
+echo "PyZbar package located at: $PYZBAR_DIR"
+
+echo
 echo "Building main application..."
 pyinstaller \
     --onefile \
     --windowed \
     --name="QuanLyKho" \
     --add-data="thuoc.csv:." \
+    --add-data="${PYZBAR_DIR}:pyzbar" \
     --hidden-import=pandas \
     --hidden-import=matplotlib \
     --hidden-import=cv2 \
@@ -57,6 +67,7 @@ pyinstaller \
     --hidden-import=schedule \
     --hidden-import=PIL \
     --hidden-import=openpyxl \
+    --hidden-import=qrcode \
     --distpath="dist" \
     --workpath="build" \
     nhathuoc2.py

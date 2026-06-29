@@ -14,10 +14,10 @@ if errorlevel 1 (
 )
 
 REM Check if PyInstaller is installed
-pip show pyinstaller >nul 2>&1
+python -m pip show pyinstaller >nul 2>&1
 if errorlevel 1 (
     echo Installing PyInstaller...
-    pip install pyinstaller
+    python -m pip install pyinstaller
     if errorlevel 1 (
         echo ERROR: Failed to install PyInstaller
         pause
@@ -33,12 +33,24 @@ if exist "*.spec" del "*.spec"
 
 echo.
 echo Installing dependencies...
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 if errorlevel 1 (
     echo ERROR: Failed to install dependencies
     pause
     exit /b 1
 )
+
+echo.
+echo Locating pyzbar package...
+set PYZBAR_DIR=
+for /f "delims=" %%i in ('python -c "import os, pyzbar; print(os.path.dirname(pyzbar.__file__))" 2^>nul') do set PYZBAR_DIR=%%i
+
+if "%PYZBAR_DIR%"=="" (
+    echo ERROR: Could not locate pyzbar package directory.
+    pause
+    exit /b 1
+)
+echo PyZbar package located at: %PYZBAR_DIR%
 
 echo.
 echo Building main application...
@@ -47,6 +59,7 @@ pyinstaller ^
     --windowed ^
     --name="QuanLyKho" ^
     --add-data="thuoc.csv;." ^
+    --add-data="%PYZBAR_DIR%;pyzbar" ^
     --hidden-import=pandas ^
     --hidden-import=matplotlib ^
     --hidden-import=cv2 ^
@@ -57,6 +70,7 @@ pyinstaller ^
     --hidden-import=schedule ^
     --hidden-import=PIL ^
     --hidden-import=openpyxl ^
+    --hidden-import=qrcode ^
     --distpath="dist" ^
     --workpath="build" ^
     nhathuoc2.py

@@ -74,16 +74,25 @@
 
 ## 📦 4. Hướng dẫn Đóng gói Phần mềm (.exe) cho Thủ kho
 
-Để đóng gói toàn bộ mã nguồn Python thành một file chạy `.exe` duy nhất trên Windows (không cần máy cài đặt Python hay thư viện), bạn hãy mở cửa sổ dòng lệnh (Terminal/Command Prompt/PowerShell) tại thư mục dự án và chạy lần lượt 2 lệnh sau:
+Để đóng gói ứng dụng thành file `.exe` duy nhất trên Windows, bạn **không nên** chạy lệnh `pyinstaller` thô vì thư viện quét mã vạch `pyzbar` yêu cầu các file DLL đi kèm (`libiconv.dll` và `libzbar-64.dll`). Nếu thiếu, phần mềm khi chạy sẽ báo lỗi `FileNotFoundError: Could not find module 'libiconv.dll'`.
 
+Hệ thống đã được cấu hình để tự động tìm kiếm và đóng gói các DLL này. Bạn có 2 cách đóng gói:
+
+### Cách 1: Sử dụng file `build.bat` (Khuyên dùng)
+File `build.bat` đã được cấu hình đầy đủ để cài đặt thư viện cần thiết, tự dò tìm thư mục cài đặt `pyzbar` để copy DLL, đính kèm file dữ liệu `thuoc.csv` và đóng gói cả 3 công cụ (`QuanLyKho.exe`, `LicenseGenerator.exe`, `KeyCreator.exe`).
+1. Kích đúp vào file **`build.bat`** tại thư mục dự án (hoặc chạy trong CMD/PowerShell: `.\build.bat`).
+2. Chờ chương trình tự động thực hiện và nhấn một phím bất kỳ để hoàn tất.
+3. Toàn bộ file chạy và tài liệu hướng dẫn sẽ nằm trong thư mục **`dist/`**.
+
+### Cách 2: Đóng gói bằng file cấu hình `.spec`
+Nếu bạn chỉ muốn đóng gói riêng lẻ ứng dụng chính bằng dòng lệnh PyInstaller, hãy sử dụng file cấu hình **`QuanLyKhoCDC.spec`** đã được tùy biến sẵn:
 ```bash
-# Bước 1: Cài đặt thư viện pyinstaller
-pip install pyinstaller
+# Bước 1: Cài đặt các thư viện liên quan
+pip install -r requirements.txt
 
-# Bước 2: Tiến hành đóng gói ứng dụng
-pyinstaller --noconfirm --onefile --windowed --name "QuanLyKhoCDC" nhathuoc2.py
+# Bước 2: Đóng gói ứng dụng thông qua spec file
+pyinstaller --noconfirm QuanLyKhoCDC.spec
 ```
+File **`QuanLyKhoCDC.exe`** sau khi đóng gói sẽ nằm trong thư mục **`dist/`**.
 
-- Sau khi lệnh chạy xong, file chạy **`QuanLyKhoCDC.exe`** sẽ nằm trong thư mục **`dist/`** của thư mục dự án.
-- Bạn chỉ cần copy file `QuanLyKhoCDC.exe` này gửi cho thủ kho sử dụng kiểm thử trực tiếp!
 

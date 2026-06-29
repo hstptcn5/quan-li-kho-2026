@@ -1422,6 +1422,11 @@ class App(tb.Window):
 
         self.make_style()
         
+        # Thiết lập Server kiểm kho di động
+        self.mobile_server = None
+        self.after(1000, self.start_mobile_server_bg)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        
         # Tạo UI sau khi window đã sẵn sàng
         self.after(100, self.initialize_ui)
         
@@ -1444,6 +1449,23 @@ class App(tb.Window):
         self.title(f'{APP_NAME} — v{APP_VERSION} — Lỗi khởi tạo')
         tb.Label(self, text="Có lỗi xảy ra khi khởi tạo giao diện. Vui lòng khởi động lại ứng dụng.", 
                 font=('Segoe UI', 12)).pack(expand=True)
+
+    def start_mobile_server_bg(self):
+        """Khởi động Web Server chạy ngầm cho điện thoại di động kết nối"""
+        try:
+            self.mobile_server = MobileInventoryServer(self.db, host="0.0.0.0", port=5000)
+            self.mobile_server.start()
+        except Exception as e:
+            print(f"Lỗi khởi động máy chủ di động: {e}")
+
+    def on_close(self):
+        """Đóng ứng dụng và giải phóng máy chủ di động"""
+        if hasattr(self, 'mobile_server') and self.mobile_server:
+            try:
+                self.mobile_server.stop()
+            except:
+                pass
+        self.destroy()
 
     # theme & fonts
     def make_style(self):
@@ -1498,6 +1520,7 @@ class App(tb.Window):
         self.tab_report = tb.Frame(self.nb)
         self.tab_backup = tb.Frame(self.nb)
         self.tab_advanced_reports = tb.Frame(self.nb)
+        self.tab_mobile = tb.Frame(self.nb)
         
         # Thêm tabs với labels đẹp hơn
         tabs_config = [
@@ -1508,7 +1531,8 @@ class App(tb.Window):
             (self.tab_alerts, "⏰ Hết hạn"),
             (self.tab_report, "📄 Báo cáo XNT"),
             (self.tab_backup, "💾 Backup"),
-            (self.tab_advanced_reports, "📈 Báo cáo nâng cao")
+            (self.tab_advanced_reports, "📈 Báo cáo nâng cao"),
+            (self.tab_mobile, "📱 Kiểm kho di động")
         ]
         
         for tab, label in tabs_config:
@@ -1519,7 +1543,7 @@ class App(tb.Window):
         
         self.build_products_tab(); self.build_purchase_tab(); self.build_dispatch_tab()
         self.build_stock_tab(); self.build_alerts_tab(); self.build_report_tab()
-        self.build_backup_tab(); self.build_advanced_reports_tab()
+        self.build_backup_tab(); self.build_advanced_reports_tab(); self.build_mobile_tab()
         # Status bar với thông tin chi tiết hơn
         status_frame = tb.Frame(self)
         status_frame.pack(fill='x', side='bottom', padx=8, pady=4)
@@ -1560,6 +1584,7 @@ class App(tb.Window):
         self.bind('<F6>', lambda e: self.nb.select(self.tab_report))
         self.bind('<F7>', lambda e: self.nb.select(self.tab_backup))
         self.bind('<F8>', lambda e: self.nb.select(self.tab_advanced_reports))
+        self.bind('<F10>', lambda e: self.nb.select(self.tab_mobile))
         self.bind('<Control-f>', lambda e: self.focus_search())
         self.bind('<F9>', lambda e: self.print_dispatch_note())
         self.bind('<Control-Return>', lambda e: self.confirm_dispatch())
@@ -1580,7 +1605,8 @@ class App(tb.Window):
             ('⏰ Hết hạn', 'info', self.tab_alerts, 'F5'),
             ('📄 Báo cáo XNT', 'info', self.tab_report, 'F6'),
             ('💾 Backup', 'info', self.tab_backup, 'F7'),
-            ('📈 Báo cáo nâng cao', 'info', self.tab_advanced_reports, 'F8')
+            ('📈 Báo cáo nâng cao', 'info', self.tab_advanced_reports, 'F8'),
+            ('📱 Kiểm kho di động', 'info', self.tab_mobile, 'F10')
         ]
         
         for text, style, tab, shortcut in buttons_config:
@@ -1780,6 +1806,8 @@ class App(tb.Window):
         btns = tb.Frame(frm)
         btns.pack(fill='x', padx=8, pady=8)
         tb.Button(btns, text='💾 Lưu sản phẩm', bootstyle='primary', command=self.save_product).pack(side='right')
+        tb.Button(btns, text='📋 Tải Excel mẫu', bootstyle='outline-info', command=self.export_import_template).pack(side='left', padx=4)
+        tb.Button(btns, text='📥 Nhập hàng loạt (Excel)', bootstyle='success', command=self.bulk_import_from_excel).pack(side='left', padx=4)
         
         # Thiết lập ban đầu
         self.on_product_source_change()
@@ -3781,6 +3809,198 @@ Hiện tại bạn vẫn có thể:
         except Exception as e:
             messagebox.showerror('Lỗi', f'Không thể load tóm tắt: {str(e)}')
 
+    def build_mobile_tab(self):
+        """Xây dựng giao diện cho Tab Kiểm kho di động"""
+        # Xóa các widget cũ
+        for widget in self.tab_mobile.winfo_children():
+            widget.destroy()
+            
+        main_frame = tb.Frame(self.tab_mobile)
+        main_frame.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(0, weight=1)
+        
+        # --- CỘT TRÁI: ĐIỀU KHIỂN & TRẠNG THÁI ---
+        left_frame = tb.LabelFrame(main_frame, text="⚙️ Cấu hình máy chủ di động", padding=15)
+        left_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 10))
+        
+        # Trạng thái máy chủ
+        status_lbl_frame = tb.Frame(left_frame)
+        status_lbl_frame.pack(fill='x', pady=10)
+        
+        tb.Label(status_lbl_frame, text="Trạng thái máy chủ:", font=('Segoe UI', 11, 'bold')).pack(side='left')
+        
+        self.mobile_status_val = tb.Label(status_lbl_frame, font=('Segoe UI', 11, 'bold'))
+        self.mobile_status_val.pack(side='left', padx=10)
+        
+        # Điều khiển nút
+        self.btn_toggle_server = tb.Button(left_frame, command=self.toggle_mobile_server, bootstyle='success')
+        self.btn_toggle_server.pack(fill='x', pady=10)
+        
+        # Đường link kết nối
+        link_frame = tb.Frame(left_frame)
+        link_frame.pack(fill='x', pady=10)
+        
+        tb.Label(link_frame, text="Địa chỉ kết nối LAN:", font=('Segoe UI', 10, 'bold')).pack(anchor='w')
+        
+        self.mobile_url_val = tb.Entry(link_frame, font=('Segoe UI', 10), state='readonly')
+        self.mobile_url_val.pack(fill='x', pady=5)
+        
+        def copy_url():
+            url = self.mobile_url_val.get()
+            if url:
+                self.clipboard_clear()
+                self.clipboard_append(url)
+                self.toast("Đã copy đường dẫn kết nối vào clipboard!")
+                
+        def open_browser():
+            url = self.mobile_url_val.get()
+            if url:
+                import webbrowser
+                webbrowser.open(url)
+                
+        btn_copy = tb.Button(link_frame, text="📋 Sao chép liên kết", command=copy_url, bootstyle='outline-info')
+        btn_copy.pack(side='left', padx=2)
+        
+        btn_open = tb.Button(link_frame, text="🌐 Mở trên PC (Test)", command=open_browser, bootstyle='outline-secondary')
+        btn_open.pack(side='left', padx=2)
+        
+        # Hướng dẫn chi tiết
+        help_text = (
+            "💡 Hướng dẫn sử dụng:\n"
+            "1. Đảm bảo máy tính và điện thoại di động cùng kết nối chung một mạng Wi-Fi cục bộ.\n"
+            "2. Khởi động máy chủ bằng nút phía trên (nếu đang dừng).\n"
+            "3. Lấy điện thoại di động quét mã QR ở ô bên phải để mở liên kết.\n"
+            "4. Cấp quyền truy cập Camera cho trình duyệt trên điện thoại nếu được hỏi.\n"
+            "5. Đưa camera điện thoại quét mã vạch sản phẩm để kiểm tra số tồn tức thì."
+        )
+        tb.Label(left_frame, text=help_text, font=('Segoe UI', 9), justify='left', 
+                 wraplength=450, bootstyle='secondary').pack(anchor='w', pady=15)
+                 
+        # --- CỘT PHẢI: MÃ QR ---
+        right_frame = tb.LabelFrame(main_frame, text="📱 Quét mã QR để kết nối", padding=15)
+        right_frame.grid(row=0, column=1, sticky='nsew', padx=(10, 0))
+        
+        # Canvas vẽ QR Code
+        self.qr_canvas = tk.Canvas(right_frame, width=260, height=260, bg='white', relief='ridge', borderwidth=1)
+        self.qr_canvas.pack(pady=10)
+        
+        self.qr_help_lbl = tb.Label(right_frame, text="Đang tạo mã QR kết nối...", font=('Segoe UI', 10), justify='center')
+        self.qr_help_lbl.pack(pady=5)
+        
+        # Cập nhật UI ban đầu
+        self.update_mobile_server_ui()
+
+    def toggle_mobile_server(self):
+        """Khởi động hoặc dừng máy chủ di động"""
+        if self.mobile_server and self.mobile_server.is_running:
+            try:
+                self.mobile_server.stop()
+                self.toast("Đã dừng máy chủ di động")
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Không thể dừng máy chủ: {e}")
+        else:
+            try:
+                self.mobile_server = MobileInventoryServer(self.db, host="0.0.0.0", port=5000)
+                self.mobile_server.start()
+                self.toast("Đã khởi động máy chủ di động")
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Không thể khởi động máy chủ: {e}")
+        
+        self.update_mobile_server_ui()
+
+    def update_mobile_server_ui(self):
+        """Cập nhật trạng thái giao diện và vẽ lại mã QR kết nối"""
+        if not hasattr(self, 'mobile_status_val') or not self.mobile_status_val:
+            return
+        if not hasattr(self, 'mobile_url_val') or not self.mobile_url_val:
+            return
+        if not hasattr(self, 'btn_toggle_server') or not self.btn_toggle_server:
+            return
+        if not hasattr(self, 'qr_help_lbl') or not self.qr_help_lbl:
+            return
+        if not hasattr(self, 'qr_canvas') or not self.qr_canvas:
+            return
+            
+        ip = get_local_ip()
+        port = 5000
+        if self.mobile_server:
+            port = self.mobile_server.port
+            
+        url = f"http://{ip}:{port}"
+        
+        self.mobile_url_val.config(state='normal')
+        self.mobile_url_val.delete(0, 'end')
+        self.mobile_url_val.insert(0, url)
+        self.mobile_url_val.config(state='readonly')
+        
+        if self.mobile_server and self.mobile_server.is_running:
+            self.mobile_status_val.config(text="ĐANG CHẠY", bootstyle='success')
+            self.btn_toggle_server.config(text="⏹️ Dừng máy chủ di động", bootstyle='danger')
+            self.qr_help_lbl.config(text="Mở Zalo hoặc quét QR bằng điện thoại để truy cập", bootstyle='success')
+            self.draw_qr_code(url)
+        else:
+            self.mobile_status_val.config(text="ĐÃ DỪNG", bootstyle='danger')
+            self.btn_toggle_server.config(text="▶️ Khởi động máy chủ di động", bootstyle='success')
+            self.qr_help_lbl.config(text="Vui lòng khởi động máy chủ để hiển thị mã QR", bootstyle='warning')
+            self.qr_canvas.delete("all")
+            self.qr_canvas.create_text(130, 130, text="MÁY CHỦ\nĐANG DỪNG", fill='gray', font=('Segoe UI', 14, 'bold'), justify='center')
+
+    def draw_qr_code(self, url):
+        """Vẽ mã QR lên Canvas"""
+        global QR_CODE_AVAILABLE, qrcode
+        self.qr_canvas.delete("all")
+        
+        if not QR_CODE_AVAILABLE:
+            try:
+                import qrcode
+                QR_CODE_AVAILABLE = True
+            except ImportError:
+                pass
+                
+        if not QR_CODE_AVAILABLE:
+            self.qr_canvas.create_text(130, 100, text="Thiếu thư viện 'qrcode'\nđể hiển thị mã QR", 
+                                       fill='red', font=('Segoe UI', 10, 'bold'), justify='center')
+                                       
+            def auto_install_qr():
+                import subprocess, sys
+                try:
+                    subprocess.run([sys.executable, "-m", "pip", "install", "qrcode"], check=True)
+                    global QR_CODE_AVAILABLE
+                    QR_CODE_AVAILABLE = True
+                    self.toast("Đã cài đặt thành công thư viện qrcode!")
+                    self.update_mobile_server_ui()
+                except Exception as ex:
+                    messagebox.showerror("Lỗi cài đặt", f"Không thể tự động cài đặt: {str(ex)}")
+            
+            btn_install = tb.Button(self.qr_canvas, text="🔧 Cài đặt qrcode", command=auto_install_qr, bootstyle='warning-outline')
+            self.qr_canvas.create_window(130, 160, window=btn_install)
+            return
+
+        try:
+            qr = qrcode.QRCode(version=1, box_size=1, border=1)
+            qr.add_data(url)
+            qr.make(fit=True)
+            matrix = qr.get_matrix()
+            
+            num_rows = len(matrix)
+            block_size = min(220 // num_rows, 10)
+            offset_x = (260 - num_rows * block_size) // 2
+            offset_y = (260 - num_rows * block_size) // 2
+            
+            for r in range(num_rows):
+                for c in range(num_rows):
+                    if matrix[r][c]:
+                        x1 = offset_x + c * block_size
+                        y1 = offset_y + r * block_size
+                        x2 = x1 + block_size
+                        y2 = y1 + block_size
+                        self.qr_canvas.create_rectangle(x1, y1, x2, y2, fill="black", outline="black")
+        except Exception as e:
+            self.qr_canvas.create_text(130, 130, text=f"Lỗi vẽ QR:\n{str(e)}", fill='red', font=('Segoe UI', 10), justify='center')
+
     def show_purchase_history(self):
         """Hiển thị lịch sử các phiếu nhập kho đã được tạo"""
         try:
@@ -3849,8 +4069,69 @@ Hiện tại bạn vẫn có thể:
                 purchase_id = int(val[0])
                 self.reprint_selected_purchase(purchase_id)
                 
+            def on_delete_purchase():
+                sel = tree.selection()
+                if not sel:
+                    messagebox.showwarning("Chưa chọn dòng", "Vui lòng chọn một phiếu nhập kho trong danh sách để xóa!"); return
+                val = tree.item(sel[0])['values']
+                purchase_id = int(val[0])
+                note_num = val[1]
+                
+                confirm = messagebox.askyesno(
+                    "Xác nhận xóa", 
+                    f"Bạn có chắc chắn muốn xóa phiếu nhập số '{note_num}'?\n\n"
+                    "Lưu ý: Hành động này sẽ trừ số lượng tồn kho tương ứng của các sản phẩm trong phiếu này và không thể hoàn tác!"
+                )
+                if not confirm:
+                    return
+                
+                try:
+                    # Bắt đầu transaction
+                    self.db.conn.execute("BEGIN TRANSACTION")
+                    
+                    # Lấy thông tin phiếu nhập
+                    note_rows = self.db.q("SELECT createdAt FROM purchase_notes WHERE id=?", (purchase_id,))
+                    if not note_rows:
+                        raise Exception("Không tìm thấy phiếu nhập kho trong cơ sở dữ liệu")
+                    note_created_at = note_rows[0]['createdAt']
+                    
+                    # Lấy danh sách hàng hóa trong phiếu
+                    items = self.db.q("SELECT productId, batchId, unitCode, qty FROM purchase_items WHERE purchaseId=?", (purchase_id,))
+                    
+                    # Xóa các stock movements tương ứng
+                    for it in items:
+                        self.db.conn.execute(
+                            "DELETE FROM stock_movements WHERE productId=? AND batchId=? AND unitCode=? AND qty=? AND type='PURCHASE' AND createdAt=?",
+                            (it['productId'], it['batchId'], it['unitCode'], float(it['qty']), note_created_at)
+                        )
+                    
+                    # Xóa phiếu nhập (foreign keys ON DELETE CASCADE sẽ tự động xóa purchase_items)
+                    self.db.conn.execute("DELETE FROM purchase_notes WHERE id=?", (purchase_id,))
+                    
+                    self.db.conn.commit()
+                    
+                    # Cập nhật lại UI
+                    self.toast(f"Đã xóa phiếu nhập {note_num} thành công")
+                    self.refresh_products()
+                    self.refresh_stock()
+                    self.refresh_alerts()
+                    self.refresh_report()
+                    
+                    # Tải lại lịch sử phiếu nhập
+                    self.show_purchase_history()
+                    
+                except Exception as ex:
+                    try:
+                        self.db.conn.rollback()
+                    except:
+                        pass
+                    messagebox.showerror("Lỗi", f"Không thể xóa phiếu nhập: {str(ex)}")
+
             tb.Button(ctrl_btn_frame, text="📄 Xem chi tiết & In lại phiếu PDF", bootstyle='info',
                       command=on_reprint).pack(side='left', padx=5)
+            
+            tb.Button(ctrl_btn_frame, text="🗑️ Xóa phiếu nhập", bootstyle='danger-outline',
+                      command=on_delete_purchase).pack(side='left', padx=5)
             
             # Double click để in luôn
             tree.bind("<Double-1>", lambda e: on_reprint())
@@ -3973,8 +4254,69 @@ Hiện tại bạn vẫn có thể:
                 dispatch_id = int(val[0])
                 self.reprint_selected_dispatch(dispatch_id)
                 
+            def on_delete_dispatch():
+                sel = tree.selection()
+                if not sel:
+                    messagebox.showwarning("Chưa chọn dòng", "Vui lòng chọn một phiếu xuất kho trong danh sách để xóa!"); return
+                val = tree.item(sel[0])['values']
+                dispatch_id = int(val[0])
+                note_num = val[1]
+                
+                confirm = messagebox.askyesno(
+                    "Xác nhận xóa", 
+                    f"Bạn có chắc chắn muốn xóa phiếu xuất số '{note_num}'?\n\n"
+                    "Lưu ý: Hành động này sẽ cộng hoàn lại số lượng tồn kho tương ứng của các sản phẩm trong phiếu này và không thể hoàn tác!"
+                )
+                if not confirm:
+                    return
+                
+                try:
+                    # Bắt đầu transaction
+                    self.db.conn.execute("BEGIN TRANSACTION")
+                    
+                    # Lấy thông tin phiếu xuất
+                    note_rows = self.db.q("SELECT createdAt FROM dispatch_notes WHERE id=?", (dispatch_id,))
+                    if not note_rows:
+                        raise Exception("Không tìm thấy phiếu xuất kho trong cơ sở dữ liệu")
+                    note_created_at = note_rows[0]['createdAt']
+                    
+                    # Lấy danh sách hàng hóa trong phiếu
+                    items = self.db.q("SELECT productId, batchId, unitCode, qty FROM dispatch_items WHERE dispatchId=?", (dispatch_id,))
+                    
+                    # Xóa các stock movements tương ứng
+                    for it in items:
+                        self.db.conn.execute(
+                            "DELETE FROM stock_movements WHERE productId=? AND batchId=? AND unitCode=? AND qty=? AND type='DISPATCH' AND createdAt=?",
+                            (it['productId'], it['batchId'], it['unitCode'], -float(it['qty']), note_created_at)
+                        )
+                    
+                    # Xóa phiếu xuất (foreign keys ON DELETE CASCADE sẽ tự động xóa dispatch_items)
+                    self.db.conn.execute("DELETE FROM dispatch_notes WHERE id=?", (dispatch_id,))
+                    
+                    self.db.conn.commit()
+                    
+                    # Cập nhật lại UI
+                    self.toast(f"Đã xóa phiếu xuất {note_num} thành công")
+                    self.refresh_products()
+                    self.refresh_stock()
+                    self.refresh_alerts()
+                    self.refresh_report()
+                    
+                    # Tải lại lịch sử phiếu xuất
+                    self.show_dispatch_history()
+                    
+                except Exception as ex:
+                    try:
+                        self.db.conn.rollback()
+                    except:
+                        pass
+                    messagebox.showerror("Lỗi", f"Không thể xóa phiếu xuất: {str(ex)}")
+
             tb.Button(ctrl_btn_frame, text="📄 Xem chi tiết & In lại phiếu PDF", bootstyle='info',
                       command=on_reprint).pack(side='left', padx=5)
+            
+            tb.Button(ctrl_btn_frame, text="🗑️ Xóa phiếu xuất", bootstyle='danger-outline',
+                      command=on_delete_dispatch).pack(side='left', padx=5)
             
             # Double click để in luôn
             tree.bind("<Double-1>", lambda e: on_reprint())
@@ -5215,6 +5557,492 @@ Hiện tại bạn vẫn có thể:
         except Exception as e:
             print(f"Lỗi khi tự động load danh mục thuốc: {e}")
 
+    def export_import_template(self):
+        """Xuất file mẫu Excel để nhập dữ liệu hàng loạt"""
+        global pd, PANDAS_AVAILABLE
+        if not PANDAS_AVAILABLE:
+            response = messagebox.askyesno(
+                "Thiếu thư viện", 
+                "Hệ thống thiếu thư viện 'pandas' và 'openpyxl' để xử lý Excel.\nBạn có muốn tự động cài đặt không? (Quá trình này mất khoảng vài giây)"
+            )
+            if response:
+                import subprocess, sys
+                try:
+                    self.toast("Đang cài đặt thư viện pandas và openpyxl...")
+                    subprocess.run([sys.executable, "-m", "pip", "install", "pandas", "openpyxl"], check=True)
+                    import pandas as pd
+                    PANDAS_AVAILABLE = True
+                    self.toast("Đã cài đặt thành công!")
+                except Exception as ex:
+                    messagebox.showerror("Lỗi cài đặt", f"Không thể tự động cài đặt: {str(ex)}\nHãy chạy lệnh 'pip install pandas openpyxl' trong terminal."); return
+            else:
+                return
+        
+        try:
+            path = filedialog.asksaveasfilename(
+                defaultextension='.xlsx',
+                filetypes=[('Excel files', '*.xlsx'), ('CSV files', '*.csv'), ('All files', '*.*')],
+                initialfile='mau_nhap_lieu_hang_loat.xlsx',
+                title='Chọn nơi lưu file mẫu'
+            )
+            if not path:
+                return
+
+            headers = [
+                'Tên sản phẩm',
+                'Đơn vị cơ sở',
+                'Mã vạch (Barcode)',
+                'Loại sản phẩm (thuoc/vaccine/vtyt/khac)',
+                'Số đăng ký',
+                'Đơn vị quy đổi 1',
+                'Tỷ lệ quy đổi 1',
+                'Giá bán đơn vị quy đổi 1',
+                'Đơn vị quy đổi 2',
+                'Tỷ lệ quy đổi 2',
+                'Giá bán đơn vị quy đổi 2',
+                'Đơn vị quy đổi 3',
+                'Tỷ lệ quy đổi 3',
+                'Giá bán đơn vị quy đổi 3',
+                'Số lô',
+                'Hạn sử dụng (YYYY-MM-DD)',
+                'Số lượng tồn (Đơn vị cơ sở)',
+                'Giá nhập (Đơn vị cơ sở)'
+            ]
+
+            sample_data = [
+                [
+                    'Paracetamol 500mg',
+                    'vien',
+                    '8931234567890',
+                    'thuoc',
+                    'VD-12345-20',
+                    'vi',
+                    10,
+                    15000,
+                    'hop',
+                    100,
+                    140000,
+                    '',
+                    '',
+                    '',
+                    'LOT123',
+                    '2027-12-31',
+                    500,
+                    1200
+                ],
+                [
+                    'Vaccine Quinvaxem',
+                    'lo',
+                    '8930987654321',
+                    'vaccine',
+                    'QLSP-987-19',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    'B2209',
+                    '2026-09-30',
+                    50,
+                    150000
+                ]
+            ]
+
+            if path.lower().endswith('.csv'):
+                df = pd.DataFrame(sample_data, columns=headers)
+                df.to_csv(path, index=False, encoding='utf-8-sig')
+            else:
+                df = pd.DataFrame(sample_data, columns=headers)
+                with pd.ExcelWriter(path, engine='openpyxl') as writer:
+                    df.to_excel(writer, sheet_name='Sheet1', index=False)
+                    worksheet = writer.sheets['Sheet1']
+                    
+                    for column in worksheet.columns:
+                        max_length = 0
+                        column_letter = column[0].column_letter
+                        for cell in column:
+                            try:
+                                if len(str(cell.value)) > max_length:
+                                    max_length = len(str(cell.value))
+                            except:
+                                pass
+                        adjusted_width = min(max_length + 3, 50)
+                        worksheet.column_dimensions[column_letter].width = adjusted_width
+                    
+                    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+                    header_font = Font(name='Segoe UI', size=11, bold=True, color='FFFFFF')
+                    header_fill = PatternFill(start_color="2B579A", end_color="2B579A", fill_type="solid")
+                    header_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    
+                    thin_border = Border(
+                        left=Side(style='thin', color='DDDDDD'),
+                        right=Side(style='thin', color='DDDDDD'),
+                        top=Side(style='thin', color='DDDDDD'),
+                        bottom=Side(style='thin', color='DDDDDD')
+                    )
+
+                    worksheet.row_dimensions[1].height = 28
+                    
+                    for cell in worksheet[1]:
+                        cell.font = header_font
+                        cell.fill = header_fill
+                        cell.alignment = header_align
+                        cell.border = thin_border
+                    
+                    data_font = Font(name='Segoe UI', size=10)
+                    for row in range(2, worksheet.max_row + 1):
+                        worksheet.row_dimensions[row].height = 20
+                        for col in range(1, worksheet.max_column + 1):
+                            cell = worksheet.cell(row=row, column=col)
+                            cell.font = data_font
+                            cell.border = thin_border
+                            if col in [7, 8, 10, 11, 13, 14, 17, 18]:
+                                cell.alignment = Alignment(horizontal='right')
+                            elif col in [2, 4, 15, 16]:
+                                cell.alignment = Alignment(horizontal='center')
+                            else:
+                                cell.alignment = Alignment(horizontal='left')
+
+            self.toast('Đã tải file Excel mẫu thành công')
+            
+        except Exception as e:
+            messagebox.showerror('Lỗi', f'Không thể xuất file mẫu: {str(e)}')
+
+    def bulk_import_from_excel(self):
+        """Nhập sản phẩm và tồn kho hàng loạt từ file Excel/CSV"""
+        global pd, PANDAS_AVAILABLE
+        if not PANDAS_AVAILABLE:
+            response = messagebox.askyesno(
+                "Thiếu thư viện", 
+                "Hệ thống thiếu thư viện 'pandas' và 'openpyxl' để xử lý Excel.\nBạn có muốn tự động cài đặt không? (Quá trình này mất khoảng vài giây)"
+            )
+            if response:
+                import subprocess, sys
+                try:
+                    self.toast("Đang cài đặt thư viện pandas và openpyxl...")
+                    subprocess.run([sys.executable, "-m", "pip", "install", "pandas", "openpyxl"], check=True)
+                    import pandas as pd
+                    PANDAS_AVAILABLE = True
+                    self.toast("Đã cài đặt thành công!")
+                except Exception as ex:
+                    messagebox.showerror("Lỗi cài đặt", f"Không thể tự động cài đặt: {str(ex)}\nHãy chạy lệnh 'pip install pandas openpyxl' trong terminal."); return
+            else:
+                return
+        
+        try:
+            path = filedialog.askopenfilename(
+                title="Chọn file Excel hoặc CSV để nhập hàng loạt",
+                filetypes=[
+                    ('Excel/CSV files', '*.xlsx;*.xls;*.csv'),
+                    ('Excel files', '*.xlsx;*.xls'),
+                    ('CSV files', '*.csv'),
+                    ('All files', '*.*')
+                ]
+            )
+            if not path:
+                return
+            
+            if path.lower().endswith('.csv'):
+                df = pd.read_csv(path, encoding='utf-8')
+            else:
+                df = pd.read_excel(path)
+            
+            df.columns = df.columns.str.strip()
+            
+            required_cols = ['Tên sản phẩm', 'Đơn vị cơ sở']
+            missing = [c for c in required_cols if c not in df.columns]
+            if missing:
+                messagebox.showerror('Lỗi định dạng', f'File thiếu các cột bắt buộc: {", ".join(missing)}')
+                return
+            
+            if df.empty:
+                messagebox.showwarning('Cảnh báo', 'File Excel/CSV không có dữ liệu')
+                return
+            
+            total_rows = len(df)
+            imported_products = 0
+            updated_products = 0
+            imported_units = 0
+            imported_stock = 0
+            errors = []
+            
+            def parse_import_date(val):
+                if pd.isna(val) or val is None:
+                    return None
+                if isinstance(val, (dt.datetime, dt.date)):
+                    return val.strftime('%Y-%m-%d')
+                val_str = str(val).strip()
+                if not val_str or val_str.lower() in ('nan', 'none', 'null', ''):
+                    return None
+                for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d', '%d-%m-%Y'):
+                    try:
+                        return dt.datetime.strptime(val_str, fmt).strftime('%Y-%m-%d')
+                    except ValueError:
+                        continue
+                try:
+                    val_float = float(val_str)
+                    d = dt.datetime(1899, 12, 30) + dt.timedelta(days=int(val_float))
+                    return d.strftime('%Y-%m-%d')
+                except:
+                    pass
+                return val_str
+
+            self.db.conn.execute("BEGIN TRANSACTION")
+            
+            purchase_id = None
+            note_number = f"PNK-INITIAL-{dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
+            created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            has_stock_data = False
+            for idx, row in df.iterrows():
+                lot_no = str(row.get('Số lô', '')).strip()
+                if lot_no and lot_no.lower() not in ('nan', 'none', ''):
+                    has_stock_data = True
+                    break
+            
+            if has_stock_data:
+                cur = self.db.conn.execute(
+                    "INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt) VALUES(?,?,?,?,?)",
+                    (note_number, "Nhập kho ban đầu", "Nhập kho ban đầu", "Nhập hàng loạt từ Excel", created_at)
+                )
+                purchase_id = cur.lastrowid
+            
+            for idx, row in df.iterrows():
+                row_num = idx + 2
+                
+                name = str(row.get('Tên sản phẩm', '')).strip()
+                if not name or name.lower() == 'nan':
+                    errors.append(f"Dòng {row_num}: Tên sản phẩm trống")
+                    continue
+                
+                default_unit = str(row.get('Đơn vị cơ sở', '')).strip()
+                if not default_unit or default_unit.lower() == 'nan':
+                    errors.append(f"Dòng {row_num}: Đơn vị cơ sở trống")
+                    continue
+                
+                barcode = str(row.get('Mã vạch (Barcode)', '')).strip()
+                if not barcode or barcode.lower() in ('nan', 'none', ''):
+                    barcode = None
+                
+                product_type = str(row.get('Loại sản phẩm (thuoc/vaccine/vtyt/khac)', '')).strip().lower()
+                if not product_type or product_type not in ('thuoc', 'vaccine', 'vtyt', 'khac'):
+                    product_type = 'thuoc'
+                
+                reg_num = str(row.get('Số đăng ký', '')).strip()
+                if not reg_num or reg_num.lower() in ('nan', 'none', ''):
+                    reg_num = None
+                
+                prod_row = self.db.q("SELECT id, defaultUnit FROM products WHERE name = ?", (name,))
+                is_new = False
+                if prod_row:
+                    product_id_db = prod_row[0]['id']
+                    self.db.conn.execute(
+                        "UPDATE products SET barcode=COALESCE(?, barcode), productType=?, registrationNumber=COALESCE(?, registrationNumber) WHERE id=?",
+                        (barcode, product_type, reg_num, product_id_db)
+                    )
+                    updated_products += 1
+                else:
+                    if barcode:
+                        prod_barcode = self.db.q("SELECT id, defaultUnit FROM products WHERE barcode = ?", (barcode,))
+                        if prod_barcode:
+                            product_id_db = prod_barcode[0]['id']
+                            self.db.conn.execute(
+                                "UPDATE products SET name=?, productType=?, registrationNumber=COALESCE(?, registrationNumber) WHERE id=?",
+                                (name, product_type, reg_num, product_id_db)
+                            )
+                            updated_products += 1
+                        else:
+                            is_new = True
+                    else:
+                        is_new = True
+                
+                if is_new:
+                    cur = self.db.conn.execute(
+                        "INSERT INTO products (name, defaultUnit, barcode, productType, registrationNumber) VALUES (?, ?, ?, ?, ?)",
+                        (name, default_unit, barcode, product_type, reg_num)
+                    )
+                    product_id_db = cur.lastrowid
+                    imported_products += 1
+                
+                self.db.conn.execute(
+                    "INSERT OR IGNORE INTO product_units(productId, unitCode, toBaseQty, price) VALUES(?,?,1,0)", 
+                    (product_id_db, default_unit)
+                )
+                
+                for i in range(1, 4):
+                    unit_name = str(row.get(f'Đơn vị quy đổi {i}', '')).strip()
+                    if not unit_name or unit_name.lower() in ('nan', 'none', ''):
+                        continue
+                    
+                    try:
+                        ratio_val = row.get(f'Tỷ lệ quy đổi {i}')
+                        if pd.isna(ratio_val):
+                            continue
+                        ratio = float(ratio_val)
+                        if ratio <= 0:
+                            errors.append(f"Dòng {row_num}: Tỷ lệ quy đổi {i} của '{name}' phải > 0 (bỏ qua đơn vị này)")
+                            continue
+                    except ValueError:
+                        errors.append(f"Dòng {row_num}: Tỷ lệ quy đổi {i} của '{name}' không phải là số (bỏ qua đơn vị này)")
+                        continue
+                    
+                    try:
+                        price_val = row.get(f'Giá bán đơn vị quy đổi {i}')
+                        price = float(price_val) if not pd.isna(price_val) else 0.0
+                        if price < 0:
+                            price = 0.0
+                    except ValueError:
+                        price = 0.0
+                    
+                    self.db.conn.execute(
+                        "INSERT OR REPLACE INTO product_units (productId, unitCode, toBaseQty, price) VALUES (?, ?, ?, ?)",
+                        (product_id_db, unit_name, ratio, price)
+                    )
+                    imported_units += 1
+                
+                lot_no = str(row.get('Số lô', '')).strip()
+                if lot_no and lot_no.lower() not in ('nan', 'none', ''):
+                    expiry_val = row.get('Hạn sử dụng (YYYY-MM-DD)')
+                    expiry_date = parse_import_date(expiry_val)
+                    
+                    if not expiry_date:
+                        errors.append(f"Dòng {row_num}: Số lô '{lot_no}' cho '{name}' thiếu hoặc sai hạn sử dụng (Bỏ qua nhập lô)")
+                        continue
+                    
+                    try:
+                        dt.datetime.strptime(expiry_date, '%Y-%m-%d')
+                    except ValueError:
+                        errors.append(f"Dòng {row_num}: Hạn sử dụng '{expiry_date}' của lô '{lot_no}' không đúng định dạng YYYY-MM-DD (Bỏ qua nhập lô)")
+                        continue
+                    
+                    try:
+                        qty_val = row.get('Số lượng tồn (Đơn vị cơ sở)')
+                        if pd.isna(qty_val):
+                            errors.append(f"Dòng {row_num}: Thiếu số lượng tồn cho lô '{lot_no}' của '{name}' (Bỏ qua nhập lô)")
+                            continue
+                        qty = float(qty_val)
+                        if qty <= 0:
+                            errors.append(f"Dòng {row_num}: Số lượng tồn {qty} cho lô '{lot_no}' của '{name}' phải > 0 (Bỏ qua nhập lô)")
+                            continue
+                    except ValueError:
+                        errors.append(f"Dòng {row_num}: Số lượng tồn cho lô '{lot_no}' của '{name}' không hợp lệ (Bỏ qua nhập lô)")
+                        continue
+                    
+                    try:
+                        cost_val = row.get('Giá nhập (Đơn vị cơ sở)')
+                        cost = float(cost_val) if not pd.isna(cost_val) else 0.0
+                        if cost < 0:
+                            cost = 0.0
+                    except ValueError:
+                        cost = 0.0
+                    
+                    batch_id = None
+                    b_row = self.db.q("SELECT id FROM batches WHERE productId=? AND lotNo=?", (product_id_db, lot_no))
+                    if b_row:
+                        batch_id = b_row[0]['id']
+                    else:
+                        cur_b = self.db.conn.execute(
+                            "INSERT INTO batches(productId, lotNo, expiryDate) VALUES(?,?,?)",
+                            (product_id_db, lot_no, expiry_date)
+                        )
+                        batch_id = cur_b.lastrowid
+                    
+                    self.db.conn.execute(
+                        "INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, cost, receivingUnit, reason, createdAt) VALUES(?,?,?,?,'PURCHASE',?,'Nhập kho ban đầu','Nhập kho ban đầu',?)",
+                        (product_id_db, batch_id, default_unit, qty, cost, created_at)
+                    )
+                    
+                    if purchase_id:
+                        self.db.conn.execute(
+                            "INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost) VALUES(?,?,?,?,?,?,?,?)",
+                            (purchase_id, product_id_db, batch_id, default_unit, qty, lot_no, expiry_date, cost)
+                        )
+                    
+                    p_unit_row = self.db.q("SELECT price FROM product_units WHERE productId=? AND unitCode=?", (product_id_db, default_unit))
+                    if p_unit_row and (p_unit_row[0]['price'] is None or float(p_unit_row[0]['price']) == 0.0):
+                        self.db.conn.execute(
+                            "UPDATE product_units SET price=? WHERE productId=? AND unitCode=?",
+                            (cost, product_id_db, default_unit)
+                        )
+                    
+                    imported_stock += 1
+            
+            self.db.conn.commit()
+            
+            self.refresh_products()
+            self.refresh_stock()
+            self.refresh_alerts()
+            self.refresh_report()
+            
+            success_msg = f"Đã nhập dữ liệu thành công:\n"
+            success_msg += f"- Thêm mới {imported_products} sản phẩm\n"
+            success_msg += f"- Cập nhật {updated_products} sản phẩm\n"
+            if imported_units > 0:
+                success_msg += f"- Thêm {imported_units} đơn vị quy đổi\n"
+            if imported_stock > 0:
+                success_msg += f"- Nhập {imported_stock} lô tồn kho ban đầu (Số phiếu: {note_number})\n"
+            
+            if errors:
+                self.show_import_log_dialog(success_msg, errors)
+            else:
+                messagebox.showinfo('Thành công', success_msg)
+                self.toast('Đã nhập dữ liệu hàng loạt thành công')
+                
+        except Exception as e:
+            try:
+                self.db.conn.rollback()
+            except:
+                pass
+            messagebox.showerror('Lỗi', f'Lỗi trong quá trình nhập dữ liệu: {str(e)}')
+
+    def show_import_log_dialog(self, summary, errors):
+        """Hiển thị thông báo kết quả nhập và danh sách lỗi/cảnh báo"""
+        dialog = tb.Toplevel(self)
+        dialog.title("Kết quả nhập hàng loạt")
+        dialog.geometry("650x500")
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        dialog.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() // 2) - (650 // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (500 // 2)
+        dialog.geometry(f"650x500+{x}+{y}")
+        
+        main_frame = tb.Frame(dialog)
+        main_frame.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        summary_title = tb.Label(main_frame, text="TÓM TẮT KẾT QUẢ", font=('Segoe UI', 11, 'bold'), bootstyle='success')
+        summary_title.pack(anchor='w', pady=(0, 5))
+        
+        summary_box = tb.Label(main_frame, text=summary, font=('Segoe UI', 9), justify='left')
+        summary_box.pack(anchor='w', pady=(0, 15))
+        
+        error_title = tb.Label(main_frame, text=f"DANH SÁCH CHI TIẾT BỎ QUA/CẢNH BÁO ({len(errors)} dòng bị lỗi)", 
+                               font=('Segoe UI', 11, 'bold'), bootstyle='danger')
+        error_title.pack(anchor='w', pady=(0, 5))
+        
+        txt_frame = tb.Frame(main_frame)
+        txt_frame.pack(fill='both', expand=True)
+        
+        scrollbar = tb.Scrollbar(txt_frame)
+        scrollbar.pack(side='right', fill='y')
+        
+        text_area = tb.Text(txt_frame, yscrollcommand=scrollbar.set, font=('Consolas', 9), wrap='word')
+        text_area.pack(fill='both', expand=True, side='left')
+        scrollbar.config(command=text_area.yview)
+        
+        for err in errors:
+            text_area.insert('end', f"• {err}\n")
+        
+        text_area.config(state='disabled')
+        
+        tb.Button(main_frame, text="Đóng", bootstyle='secondary', command=dialog.destroy).pack(pady=(15, 0), side='right')
+
+
 # --- LicenseManager: xác minh license offline (Ed25519, không cần PyNaCl) ---
 import os, json, base64
 from tkinter import simpledialog, messagebox
@@ -5460,6 +6288,640 @@ class BarcodeScanner:
         self.cap = None
 
 # --- /Barcode Scanner ---
+
+# --- Mobile Inventory Web Server ---
+import http.server
+import socket
+import threading
+import json
+import urllib.parse
+
+QR_CODE_AVAILABLE = False
+try:
+    import qrcode
+    QR_CODE_AVAILABLE = True
+except ImportError:
+    pass
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+
+class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Mute logging to keep console clean
+        pass
+        
+    def do_GET(self):
+        parsed_url = urllib.parse.urlparse(self.path)
+        path = parsed_url.path
+        query = urllib.parse.parse_qs(parsed_url.query)
+        
+        if path == "/" or path == "/index.html":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(MOBILE_HTML.encode("utf-8"))
+            
+        elif path == "/api/stock":
+            barcode = query.get("barcode", [""])[0].strip()
+            if not barcode:
+                self.send_json({"success": False, "message": "Mã vạch trống"}, 400)
+                return
+                
+            import sqlite3
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                
+                # Tìm kiếm sản phẩm theo barcode hoặc tên gần đúng
+                product_rows = conn.execute("""
+                    SELECT id, name, defaultUnit, barcode, productType, registrationNumber 
+                    FROM products 
+                    WHERE barcode=? OR name LIKE ? LIMIT 1
+                """, (barcode, f"%{barcode}%")).fetchall()
+                
+                if not product_rows:
+                    self.send_json({"success": False, "message": "Không tìm thấy sản phẩm"}, 404)
+                    conn.close()
+                    return
+                    
+                p = product_rows[0]
+                pid = p['id']
+                
+                # Lấy thông tin tồn kho chi tiết từng lô
+                batches_rows = conn.execute("""
+                    SELECT b.lotNo, b.expiryDate, COALESCE(SUM(sm.qty), 0) as qtyBase
+                    FROM batches b
+                    LEFT JOIN stock_movements sm ON sm.productId = b.productId AND sm.batchId = b.id
+                    WHERE b.productId = ?
+                    GROUP BY b.id
+                    ORDER BY DATE(b.expiryDate) ASC
+                """, (pid,)).fetchall()
+                
+                batches_list = []
+                total_qty = 0
+                for b in batches_rows:
+                    q_val = float(b["qtyBase"])
+                    # Chỉ hiện các lô có số lượng khác 0
+                    if abs(q_val) > 0.001:
+                        batches_list.append({
+                            "lotNo": b["lotNo"],
+                            "expiryDate": b["expiryDate"],
+                            "qty": q_val
+                        })
+                        total_qty += q_val
+                    
+                self.send_json({
+                    "success": True,
+                    "product": {
+                        "id": pid,
+                        "name": p["name"],
+                        "unit": p["defaultUnit"],
+                        "barcode": p["barcode"] or "",
+                        "type": p["productType"] or "thuoc",
+                        "regNumber": p["registrationNumber"] or ""
+                    },
+                    "batches": batches_list,
+                    "totalQty": total_qty
+                })
+                conn.close()
+            except Exception as e:
+                self.send_json({"success": False, "message": f"Database error: {str(e)}"}, 500)
+            
+        else:
+            self.send_response(404)
+            self.end_headers()
+            
+    def send_json(self, data, status_code=200):
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
+class MobileInventoryServer(threading.Thread):
+    def __init__(self, db_instance, host="0.0.0.0", port=5000):
+        super().__init__()
+        self.db_instance = db_instance
+        self.host = host
+        self.port = port
+        self.server = None
+        self.daemon = True
+        self.is_running = False
+        
+    def run(self):
+        attempts = 0
+        while attempts < 10:
+            try:
+                self.server = http.server.HTTPServer((self.host, self.port), MobileInventoryRequestHandler)
+                self.server.db_instance = self.db_instance
+                self.is_running = True
+                print(f"Mobile inventory server started on http://{self.host}:{self.port}")
+                self.server.serve_forever()
+                break
+            except Exception as e:
+                print(f"Failed to start mobile server on port {self.port}: {e}")
+                self.port += 1
+                attempts += 1
+                
+    def stop(self):
+        if self.server:
+            self.server.shutdown()
+            self.server.server_close()
+            self.is_running = False
+            print("Mobile inventory server stopped")
+
+MOBILE_HTML = """<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Kiểm Kho Di Động</title>
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-hover: #4f46e5;
+            --bg-grad: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            --glass-bg: rgba(255, 255, 255, 0.05);
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --text-light: #f8fafc;
+            --text-muted: #94a3b8;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+        }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+        body {
+            background: var(--bg-grad);
+            color: var(--text-light);
+            min-height: 100vh;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 500px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        header {
+            text-align: center;
+            padding: 10px 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+        }
+        header h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            background: linear-gradient(to right, #a5b4fc, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        header p {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+        .card {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border-radius: 16px;
+            padding: 15px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+        }
+        .scanner-card {
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #reader {
+            width: 100% !important;
+            border: none !important;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #000;
+        }
+        #reader button {
+            background: var(--primary) !important;
+            color: #fff !important;
+            border: none !important;
+            padding: 8px 16px !important;
+            border-radius: 8px !important;
+            font-size: 0.9rem !important;
+            font-weight: 600 !important;
+            cursor: pointer !important;
+            margin: 10px 0 !important;
+            transition: background 0.2s !important;
+        }
+        #reader button:hover {
+            background: var(--primary-hover) !important;
+        }
+        #reader select {
+            background: rgba(0, 0, 0, 0.5) !important;
+            color: #fff !important;
+            border: 1px solid var(--glass-border) !important;
+            padding: 8px !important;
+            border-radius: 8px !important;
+            margin: 5px 0 !important;
+            width: 90% !important;
+        }
+        .search-box {
+            display: flex;
+            gap: 8px;
+        }
+        .search-box input {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            padding: 10px 12px;
+            color: #fff;
+            font-size: 0.95rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .search-box input:focus {
+            border-color: var(--primary);
+        }
+        .search-box button {
+            background: var(--primary);
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            padding: 0 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .search-box button:hover {
+            background: var(--primary-hover);
+        }
+        .result-title {
+            font-size: 1.15rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #fff;
+            border-bottom: 1px solid var(--glass-border);
+            padding-bottom: 8px;
+        }
+        .product-info {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.9rem;
+        }
+        .info-label {
+            color: var(--text-muted);
+        }
+        .info-value {
+            font-weight: 600;
+            color: #fff;
+        }
+        .batch-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .batch-item {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 10px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .batch-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .batch-lot {
+            font-weight: 700;
+            color: #a5b4fc;
+            font-size: 0.95rem;
+        }
+        .batch-qty {
+            font-size: 1.1rem;
+            font-weight: 800;
+            color: var(--success);
+        }
+        .batch-expiry {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .badge {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .badge-expired {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--danger);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+        .badge-warning {
+            background: rgba(245, 158, 11, 0.2);
+            color: var(--warning);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+        .badge-ok {
+            background: rgba(16, 185, 129, 0.2);
+            color: var(--success);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+        .no-result, .loading, .error-msg {
+            text-align: center;
+            padding: 20px;
+            color: var(--text-muted);
+            font-size: 0.95rem;
+        }
+        .error-msg {
+            color: var(--danger);
+        }
+        .loading-spinner {
+            border: 3px solid rgba(255,255,255,0.1);
+            border-top: 3px solid var(--primary);
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 10px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🏥 Kiểm Kho Di Động</h1>
+            <p>Quét mã vạch sản phẩm để xem số tồn hiện tại</p>
+        </header>
+
+        <div class="card scanner-card">
+            <div id="reader"></div>
+        </div>
+
+        <div class="card">
+            <div class="search-box">
+                <input type="text" id="barcode-input" placeholder="Nhập mã vạch hoặc tên..." />
+                <button id="search-btn">Tìm</button>
+            </div>
+        </div>
+
+        <div class="card" id="result-card" style="display: none;">
+            <div class="result-title">📦 Kết quả kiểm tra</div>
+            <div id="result-content"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script>
+        const barcodeInput = document.getElementById('barcode-input');
+        const searchBtn = document.getElementById('search-btn');
+        const resultCard = document.getElementById('result-card');
+        const resultContent = document.getElementById('result-content');
+
+        function checkStock(barcode) {
+            if (!barcode) return;
+            
+            resultCard.style.display = 'block';
+            resultContent.innerHTML = `
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    Đang tìm kiếm dữ liệu...
+                </div>
+            `;
+
+            fetch(`/api/stock?barcode=${encodeURIComponent(barcode)}`)
+                .then(res => {
+                    if (!res.ok) {
+                        return res.json().then(err => { throw new Error(err.message || 'Không tìm thấy sản phẩm') });
+                    }
+                    return res.json();
+                })
+                .then(data => {
+                    if (!data.success) {
+                        showNoResult();
+                        return;
+                    }
+                    displayResult(data);
+                })
+                .catch(err => {
+                    showError(err.message);
+                });
+        }
+
+        function showNoResult() {
+            resultContent.innerHTML = `
+                <div class="no-result">
+                    ❌ Không tìm thấy sản phẩm trùng khớp.
+                </div>
+            `;
+        }
+
+        function showError(msg) {
+            resultContent.innerHTML = `
+                <div class="error-msg">
+                    ⚠ Lỗi: ${msg}
+                </div>
+            `;
+        }
+
+        function displayResult(data) {
+            const p = data.product;
+            const batches = data.batches;
+            
+            let typeText = "Thuốc / Dược phẩm";
+            if (p.type === 'vaccine') typeText = "Vaccine";
+            else if (p.type === 'vtyt') typeText = "Vật tư y tế";
+            else if (p.type === 'khac') typeText = "Sản phẩm khác";
+
+            let batchesHtml = '';
+            if (batches.length === 0) {
+                batchesHtml = '<div class="no-result">Sản phẩm này hiện tại hết hàng hoặc chưa nhập lô.</div>';
+            } else {
+                batches.forEach(b => {
+                    const expDate = new Date(b.expiryDate);
+                    const today = new Date();
+                    const diffTime = expDate - today;
+                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                    
+                    let badgeHtml = '';
+                    if (diffDays <= 0) {
+                        badgeHtml = '<span class="badge badge-expired">Đã hết hạn</span>';
+                    } else if (diffDays <= 90) {
+                        badgeHtml = `<span class="badge badge-warning">Cận hạn (${diffDays} ngày)</span>`;
+                    } else {
+                        badgeHtml = '<span class="badge badge-ok">Hạn dùng tốt</span>';
+                    }
+
+                    batchesHtml += `
+                        <div class="batch-item">
+                            <div class="batch-header">
+                                <span class="batch-lot">Lô: ${b.lotNo}</span>
+                                <span class="batch-qty">${b.qty} ${p.unit}</span>
+                            </div>
+                            <div class="batch-expiry">
+                                <span>Hạn dùng: ${b.expiryDate}</span>
+                                ${badgeHtml}
+                            </div>
+                        </div>
+                    `;
+                });
+            }
+
+            resultContent.innerHTML = `
+                <div class="product-info">
+                    <div class="info-row">
+                        <span class="info-label">Tên sản phẩm</span>
+                        <span class="info-value" style="color: #a5b4fc; text-align: right; max-width: 60%;">${p.name}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Mã vạch</span>
+                        <span class="info-value">${p.barcode}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Số đăng ký</span>
+                        <span class="info-value">${p.regNumber || 'N/A'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Phân loại</span>
+                        <span class="info-value">${typeText}</span>
+                    </div>
+                    <div class="info-row" style="margin-top: 5px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+                        <span class="info-label" style="font-weight: bold; color: #fff;">Tổng tồn kho</span>
+                        <span class="info-value" style="color: var(--success); font-size: 1.15rem;">${data.totalQty} ${p.unit}</span>
+                    </div>
+                </div>
+                <div class="result-title" style="font-size: 1rem; border: none; margin-top: 15px; margin-bottom: 8px; padding: 0;">📦 Chi tiết tồn kho theo lô</div>
+                <div class="batch-list">
+                    ${batchesHtml}
+                </div>
+            `;
+        }
+
+        searchBtn.addEventListener('click', () => {
+            checkStock(barcodeInput.value.trim());
+        });
+
+        barcodeInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                checkStock(barcodeInput.value.trim());
+            }
+        });
+
+        let lastScannedCode = "";
+        let scanTime = 0;
+
+        function onScanSuccess(decodedText, decodedResult) {
+            const now = Date.now();
+            if (decodedText === lastScannedCode && (now - scanTime < 2500)) {
+                return;
+            }
+            lastScannedCode = decodedText;
+            scanTime = now;
+            
+            barcodeInput.value = decodedText;
+            
+            if (navigator.vibrate) {
+                navigator.vibrate(100);
+            }
+            
+            checkStock(decodedText);
+        }
+
+        function onScanFailure(error) {}
+
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            document.getElementById('reader').innerHTML = `
+                <div style="padding: 15px; text-align: left; color: #ef4444; font-size: 0.9rem; line-height: 1.5;">
+                    <h3 style="margin-bottom: 8px; font-weight: bold; color: #f8fafc; font-size: 1rem;">⚠️ Không mở được Camera (HTTP / Không an toàn)</h3>
+                    <p style="margin-bottom: 12px; color: #cbd5e1; font-size: 0.85rem;">Trình duyệt di động yêu cầu bảo mật HTTPS để mở camera. Bạn hãy chọn 1 trong các cách sau:</p>
+                    
+                    <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.08);">
+                        <strong style="color: #818cf8; font-size: 0.85rem;">Cách 1: Nhập tay (Nhanh & đơn giản)</strong><br>
+                        <span style="color: #94a3b8; font-size: 0.8rem;">Gõ tên sản phẩm hoặc mã vạch vào ô "Nhập mã vạch hoặc tên..." bên dưới và nhấn "Tìm".</span>
+                    </div>
+                    
+                    <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.08);">
+                        <strong style="color: #818cf8; font-size: 0.85rem;">Cách 2: Cho Android (Chrome)</strong><br>
+                        <span style="color: #e2e8f0; font-size: 0.8rem;">
+                        1. Mở tab mới, vào: <code style="color: #fbbf24; background: rgba(0,0,0,0.4); padding: 1px 4px; border-radius: 4px; font-size: 0.75rem; word-break: break-all;">chrome://flags/#unsafely-treat-insecure-origin-as-secure</code><br>
+                        2. Tìm mục <b>Insecure origins treated as secure</b><br>
+                        3. Chọn <b>Enabled</b>, nhập URL này vào ô trống:<br>
+                        <code style="color: #38bdf8; background: rgba(0,0,0,0.4); padding: 1px 4px; border-radius: 4px; font-size: 0.75rem; word-break: break-all;">${window.location.origin}</code><br>
+                        4. Nhấn <b>Relaunch</b> để khởi động lại Chrome và tải lại trang này.
+                        </span>
+                    </div>
+                    
+                    <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
+                        <strong style="color: #818cf8; font-size: 0.85rem;">Cách 3: Sử dụng phần mềm ngrok</strong><br>
+                        <span style="color: #94a3b8; font-size: 0.8rem;">Tải ngrok về máy tính, chạy lệnh <code style="color: #34d399; background: rgba(0,0,0,0.4); padding: 1px 4px; border-radius: 4px; font-size: 0.75rem;">ngrok http 5000</code> để lấy đường dẫn HTTPS an toàn.</span>
+                    </div>
+                </div>
+            `;
+        } else {
+            const html5QrcodeScanner = new Html5QrcodeScanner(
+                "reader", 
+                { 
+                    fps: 10, 
+                    qrbox: function(width, height) {
+                        const size = Math.min(width, height) * 0.65;
+                        return { width: size, height: size * 0.6 };
+                    },
+                    aspectRatio: 1.0,
+                    supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
+                },
+                false
+            );
+            html5QrcodeScanner.render(onScanSuccess, onScanFailure);
+        }
+    </script>
+</body>
+</html>"""
+
+# --- /Mobile Inventory Web Server ---
 
 if __name__ == '__main__':
     app = App()
