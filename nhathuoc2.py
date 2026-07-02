@@ -6446,10 +6446,871 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 self.send_json({"success": False, "message": f"Database error: {str(e)}"}, 500)
             
+        elif path == "/api/print-purchase":
+            note_id = query.get("id", [""])[0].strip()
+            if not note_id:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"Yeu cau ID phieu nhap")
+                return
+            import sqlite3
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                note = conn.execute("SELECT * FROM purchase_notes WHERE id=?", (note_id,)).fetchone()
+                if not note:
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b"Khong tim thay phieu nhap")
+                    conn.close()
+                    return
+                items = conn.execute("""
+                    SELECT pi.*, p.name as productName 
+                    FROM purchase_items pi
+                    JOIN products p ON pi.productId = p.id
+                    WHERE pi.purchaseId = ?
+                """, (note_id,)).fetchall()
+                conn.close()
+                html = self.render_print_purchase_html(note, items)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(html.encode("utf-8"))
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(f"Database error: {str(e)}".encode("utf-8"))
+
+        elif path == "/api/print-dispatch":
+            note_id = query.get("id", [""])[0].strip()
+            if not note_id:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"Yeu cau ID phieu xuat")
+                return
+            import sqlite3
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                note = conn.execute("SELECT * FROM dispatch_notes WHERE id=?", (note_id,)).fetchone()
+                if not note:
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b"Khong tim thay phieu xuat")
+                    conn.close()
+                    return
+                items = conn.execute("""
+                    SELECT di.*, p.name as productName 
+                    FROM dispatch_items di
+                    JOIN products p ON di.productId = p.id
+                    WHERE di.dispatchId = ?
+                """, (note_id,)).fetchall()
+                conn.close()
+                html = self.render_print_dispatch_html(note, items)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(html.encode("utf-8"))
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(f"Database error: {str(e)}".encode("utf-8"))
+
+        elif path == "/api/pc-print":
+            note_type = query.get("type", [""])[0].strip() # purchase or dispatch
+            note_id = query.get("id", [""])[0].strip()
+            if not note_type or not note_id:
+                self.send_json({"success": False, "message": "Thiếu thông tin loại phiếu hoặc ID"}, 400)
+                return
+            
+            success, msg = self.print_to_pc_printer(note_type, note_id)
+            self.send_json({"success": success, "message": msg})
+
         else:
             self.send_response(404)
             self.end_headers()
+
+    def render_print_purchase_html(self, note, items):
+        # Format date
+        created_str = note['createdAt']
+        try:
+            from datetime import datetime
+            dt_val = datetime.strptime(created_str, '%Y-%m-%d %H:%M:%S')
+            date_formatted = dt_val.strftime('%d/%m/%Y %H:%M:%S')
+        except Exception:
+            date_formatted = created_str
+
+        # Generate table rows
+        rows_html = ""
+        total_amount = 0.0
+        for idx, it in enumerate(items, 1):
+            qty = float(it['qty'])
+            cost = float(it['cost'])
+            amount = qty * cost
+            total_amount += amount
             
+            # Format cost and amount
+            cost_str = f"{cost:,.1f}".replace(".0", "") if cost > 0 else "0"
+            amount_str = f"{amount:,.1f}".replace(".0", "") if amount > 0 else "0"
+            qty_str = f"{qty:,.2f}".rstrip('0').rstrip('.')
+            
+            expiry_str = it['expiryDate']
+            try:
+                from datetime import datetime as dt_parser
+                exp_dt = dt_parser.strptime(expiry_str, '%Y-%m-%d')
+                expiry_formatted = exp_dt.strftime('%d/%m/%Y')
+            except Exception:
+                expiry_formatted = expiry_str
+                
+            rows_html += f"""
+            <tr>
+                <td style="text-align: center;">{idx}</td>
+                <td>{it['productName']}</td>
+                <td style="text-align: center;">{it['unitCode']}</td>
+                <td style="text-align: right;">{qty_str}</td>
+                <td style="text-align: right;">{cost_str}</td>
+                <td style="text-align: right;">{amount_str}</td>
+                <td style="text-align: center;">{it['lotNo']}</td>
+                <td style="text-align: center;">{expiry_formatted}</td>
+            </tr>
+            """
+            
+        total_amount_str = f"{total_amount:,.1f}".replace(".0", "") if total_amount > 0 else "0"
+        
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Phieu Nhap Kho {note['noteNumber']}</title>
+    <style>
+        body {{
+            font-family: "Times New Roman", Times, serif;
+            font-size: 13pt;
+            line-height: 1.3;
+            margin: 0;
+            padding: 20px;
+            color: #000;
+            background-color: #fff;
+        }}
+        .header {{
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }}
+        .header-left {{
+            font-weight: bold;
+            font-size: 11pt;
+            text-align: center;
+        }}
+        .header-right {{
+            font-size: 10pt;
+            text-align: center;
+        }}
+        .title-block {{
+            text-align: center;
+            margin-bottom: 20px;
+        }}
+        .title {{
+            font-size: 16pt;
+            font-weight: bold;
+            margin: 0;
+        }}
+        .subtitle {{
+            font-size: 12pt;
+            font-weight: bold;
+            margin: 5px 0 0 0;
+        }}
+        .info-table {{
+            width: 100%;
+            margin-bottom: 15px;
+            border-collapse: collapse;
+        }}
+        .info-table td {{
+            padding: 4px 0;
+            vertical-align: top;
+        }}
+        .items-table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }}
+        .items-table th, .items-table td {{
+            border: 1px solid #000;
+            padding: 6px 8px;
+            font-size: 11pt;
+        }}
+        .items-table th {{
+            font-weight: bold;
+            text-align: center;
+            background-color: #f2f2f2;
+        }}
+        .signatures {{
+            display: flex;
+            justify-content: space-around;
+            margin-top: 40px;
+            page-break-inside: avoid;
+        }}
+        .signature-block {{
+            text-align: center;
+            width: 30%;
+        }}
+        .signature-title {{
+            font-weight: bold;
+            margin-bottom: 60px;
+        }}
+        .no-print-btn {{
+            background: #4f46e5;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 11pt;
+            font-weight: bold;
+            cursor: pointer;
+            margin-bottom: 20px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        @media print {{
+            .no-print {{
+                display: none !important;
+            }}
+            body {{
+                padding: 0;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="no-print" style="text-align: right;">
+        <button class="no-print-btn" onclick="window.print()">
+            🖨️ In Phieu / Luu PDF
+        </button>
+    </div>
+    
+    <div class="header">
+        <div class="header-left">
+            SO Y TE THANH PHO CAN THO<br>
+            TRUNG TAM KIEM SOAT BENH TAT (CDC)
+        </div>
+        <div class="header-right">
+            <strong>Mau so: C30-HD</strong><br>
+            <em>(Ban hanh theo Thong tu so 107/2017/TT-BTC)</em>
+        </div>
+    </div>
+    
+    <div class="title-block">
+        <h1 class="title">PHIEU NHAP KHO</h1>
+        <div class="subtitle">So: {note['noteNumber']}</div>
+    </div>
+    
+    <table class="info-table">
+        <tr>
+            <td style="width: 180px;"><strong>Nguon cap / Nha CC:</strong></td>
+            <td>{note['supplier']}</td>
+        </tr>
+        <tr>
+            <td><strong>Ly do nhap:</strong></td>
+            <td>{note['reason']}</td>
+        </tr>
+        <tr>
+            <td><strong>Kho nhap:</strong></td>
+            <td>Kho Duoc CDC Can Tho</td>
+        </tr>
+        <tr>
+            <td><strong>Ngay nhap:</strong></td>
+            <td>{date_formatted}</td>
+        </tr>
+        <tr>
+            <td><strong>Ghi chu:</strong></td>
+            <td>{note['note'] or 'Khong'}</td>
+        </tr>
+    </table>
+    
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th style="width: 5%;">STT</th>
+                <th>Ten thuoc, vaccine, VTYT</th>
+                <th style="width: 8%;">DVT</th>
+                <th style="width: 12%;">So luong</th>
+                <th style="width: 12%;">Don gia</th>
+                <th style="width: 12%;">Thanh tien</th>
+                <th style="width: 12%;">So lo</th>
+                <th style="width: 12%;">Han dung</th>
+            </tr>
+        </thead>
+        <tbody>
+            {rows_html}
+            <tr style="font-weight: bold;">
+                <td colspan="5" style="text-align: right;">Tong cong:</td>
+                <td style="text-align: right;">{total_amount_str}</td>
+                <td colspan="2"></td>
+            </tr>
+        </tbody>
+    </table>
+    
+    <div class="signatures">
+        <div class="signature-block">
+            <div class="signature-title">Nguoi giao hang</div>
+            <div>(Ky, ho ten)</div>
+        </div>
+        <div class="signature-block">
+            <div class="signature-title">Thu kho</div>
+            <div>(Ky, ho ten)</div>
+        </div>
+        <div class="signature-block">
+            <div class="signature-title">Nguoi lap phieu</div>
+            <div>(Ky, ho ten)</div>
+        </div>
+    </div>
+
+    <script>
+        window.onload = function() {{
+            setTimeout(function() {{
+                window.print();
+            }}, 500);
+        }}
+    </script>
+</body>
+</html>
+"""
+        return html
+
+    def render_print_dispatch_html(self, note, items):
+        # Format date
+        created_str = note['createdAt']
+        try:
+            from datetime import datetime
+            dt_val = datetime.strptime(created_str, '%Y-%m-%d %H:%M:%S')
+            date_formatted = dt_val.strftime('%d/%m/%Y %H:%M:%S')
+        except Exception:
+            date_formatted = created_str
+
+        # Generate table rows
+        rows_html = ""
+        for idx, it in enumerate(items, 1):
+            qty = float(it['qty'])
+            qty_str = f"{qty:,.2f}".rstrip('0').rstrip('.')
+            
+            expiry_str = it['expiryDate']
+            try:
+                from datetime import datetime as dt_parser
+                exp_dt = dt_parser.strptime(expiry_str, '%Y-%m-%d')
+                expiry_formatted = exp_dt.strftime('%d/%m/%Y')
+            except Exception:
+                expiry_formatted = expiry_str
+                
+            rows_html += f"""
+            <tr>
+                <td style="text-align: center;">{idx}</td>
+                <td>{it['productName']}</td>
+                <td style="text-align: center;">{it['unitCode']}</td>
+                <td style="text-align: right;">{qty_str}</td>
+                <td style="text-align: center;">{it['lotNo']}</td>
+                <td style="text-align: center;">{expiry_formatted}</td>
+                <td></td>
+            </tr>
+            """
+            
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Phieu Xuat Kho {note['noteNumber']}</title>
+    <style>
+        body {{
+            font-family: "Times New Roman", Times, serif;
+            font-size: 13pt;
+            line-height: 1.3;
+            margin: 0;
+            padding: 20px;
+            color: #000;
+            background-color: #fff;
+        }}
+        .header {{
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }}
+        .header-left {{
+            font-weight: bold;
+            font-size: 11pt;
+            text-align: center;
+        }}
+        .header-right {{
+            font-size: 10pt;
+            text-align: center;
+        }}
+        .title-block {{
+            text-align: center;
+            margin-bottom: 20px;
+        }}
+        .title {{
+            font-size: 16pt;
+            font-weight: bold;
+            margin: 0;
+        }}
+        .subtitle {{
+            font-size: 12pt;
+            font-weight: bold;
+            margin: 5px 0 0 0;
+        }}
+        .info-table {{
+            width: 100%;
+            margin-bottom: 15px;
+            border-collapse: collapse;
+        }}
+        .info-table td {{
+            padding: 4px 0;
+            vertical-align: top;
+        }}
+        .items-table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }}
+        .items-table th, .items-table td {{
+            border: 1px solid #000;
+            padding: 6px 8px;
+            font-size: 11pt;
+        }}
+        .items-table th {{
+            font-weight: bold;
+            text-align: center;
+            background-color: #f2f2f2;
+        }}
+        .signatures {{
+            display: flex;
+            justify-content: space-around;
+            margin-top: 40px;
+            page-break-inside: avoid;
+        }}
+        .signature-block {{
+            text-align: center;
+            width: 30%;
+        }}
+        .signature-title {{
+            font-weight: bold;
+            margin-bottom: 60px;
+        }}
+        .no-print-btn {{
+            background: #4f46e5;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 11pt;
+            font-weight: bold;
+            cursor: pointer;
+            margin-bottom: 20px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        @media print {{
+            .no-print {{
+                display: none !important;
+            }}
+            body {{
+                padding: 0;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="no-print" style="text-align: right;">
+        <button class="no-print-btn" onclick="window.print()">
+            🖨️ In Phieu / Luu PDF
+        </button>
+    </div>
+    
+    <div class="header">
+        <div class="header-left">
+            SO Y TE THANH PHO CAN THO<br>
+            TRUNG TAM KIEM SOAT BENH TAT (CDC)
+        </div>
+        <div class="header-right">
+            <strong>Mau so: C31-HD</strong><br>
+            <em>(Ban hanh theo Thong tu so 107/2017/TT-BTC)</em>
+        </div>
+    </div>
+    
+    <div class="title-block">
+        <h1 class="title">PHIEU XUAT KHO</h1>
+        <div class="subtitle">So: {note['noteNumber']}</div>
+    </div>
+    
+    <table class="info-table">
+        <tr>
+            <td style="width: 180px;"><strong>Don vi nhan:</strong></td>
+            <td>{note['receivingUnit']}</td>
+        </tr>
+        <tr>
+            <td><strong>Ly do xuat:</strong></td>
+            <td>{note['reason']}</td>
+        </tr>
+        <tr>
+            <td><strong>Kho xuat:</strong></td>
+            <td>Kho Duoc CDC Can Tho</td>
+        </tr>
+        <tr>
+            <td><strong>Ngay xuat:</strong></td>
+            <td>{date_formatted}</td>
+        </tr>
+        <tr>
+            <td><strong>Ghi chu:</strong></td>
+            <td>{note['note'] or 'Khong'}</td>
+        </tr>
+    </table>
+    
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th style="width: 5%;">STT</th>
+                <th>Ten thuoc, vaccine, VTYT</th>
+                <th style="width: 10%;">DVT</th>
+                <th style="width: 15%;">So luong</th>
+                <th style="width: 15%;">So lo</th>
+                <th style="width: 15%;">Han dung</th>
+                <th style="width: 15%;">Ghi chu</th>
+            </tr>
+        </thead>
+        <tbody>
+            {rows_html}
+        </tbody>
+    </table>
+    
+    <div class="signatures">
+        <div class="signature-block">
+            <div class="signature-title">Nguoi nhan hang</div>
+            <div>(Ky, ho ten)</div>
+        </div>
+        <div class="signature-block">
+            <div class="signature-title">Thu kho</div>
+            <div>(Ky, ho ten)</div>
+        </div>
+        <div class="signature-block">
+            <div class="signature-title">Nguoi lap phieu</div>
+            <div>(Ky, ho ten)</div>
+        </div>
+    </div>
+
+    <script>
+        window.onload = function() {{
+            setTimeout(function() {{
+                window.print();
+            }}, 500);
+        }}
+    </script>
+</body>
+</html>
+"""
+        return html
+
+    def print_to_pc_printer(self, note_type, note_id):
+        import sqlite3
+        import tempfile
+        import os
+        from datetime import datetime
+        
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            
+            if note_type == 'purchase':
+                note = conn.execute("SELECT * FROM purchase_notes WHERE id=?", (note_id,)).fetchone()
+                if not note:
+                    conn.close()
+                    return False, "Không tìm thấy phiếu nhập"
+                items = conn.execute("""
+                    SELECT pi.*, p.name as productName 
+                    FROM purchase_items pi
+                    JOIN products p ON pi.productId = p.id
+                    WHERE pi.purchaseId = ?
+                """, (note_id,)).fetchall()
+            else:
+                note = conn.execute("SELECT * FROM dispatch_notes WHERE id=?", (note_id,)).fetchone()
+                if not note:
+                    conn.close()
+                    return False, "Không tìm thấy phiếu xuất"
+                items = conn.execute("""
+                    SELECT di.*, p.name as productName 
+                    FROM dispatch_items di
+                    JOIN products p ON di.productId = p.id
+                    WHERE di.dispatchId = ?
+                """, (note_id,)).fetchall()
+            conn.close()
+            
+            # Tạo đường dẫn lưu PDF tạm
+            temp_dir = tempfile.gettempdir()
+            filename = f"Phieu_{'Nhap' if note_type == 'purchase' else 'Xuat'}_Kho_{note['noteNumber']}.pdf"
+            pdf_path = os.path.join(temp_dir, filename)
+            
+            # Tạo file PDF với ReportLab
+            from reportlab.lib.pagesizes import A4
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib import colors
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            import datetime as dt_module
+            
+            try:
+                pdfmetrics.registerFont(TTFont('TimesNewRoman', "C:\\Windows\\Fonts\\times.ttf"))
+                pdfmetrics.registerFont(TTFont('TimesNewRoman-Bold', "C:\\Windows\\Fonts\\timesbd.ttf"))
+                pdfmetrics.registerFont(TTFont('TimesNewRoman-Italic', "C:\\Windows\\Fonts\\timesi.ttf"))
+                font_normal = 'TimesNewRoman'
+                font_bold = 'TimesNewRoman-Bold'
+                font_italic = 'TimesNewRoman-Italic'
+            except Exception:
+                font_normal = 'Helvetica'
+                font_bold = 'Helvetica-Bold'
+                font_italic = 'Helvetica-Oblique'
+                
+            doc = SimpleDocTemplate(pdf_path, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+            story = []
+            
+            styles = getSampleStyleSheet()
+            
+            style_header_left = ParagraphStyle(
+                'HeaderLeft', parent=styles['Normal'], fontName=font_bold, fontSize=10, leading=14, alignment=0
+            )
+            style_header_right = ParagraphStyle(
+                'HeaderRight', parent=styles['Normal'], fontName=font_normal, fontSize=10, leading=14, alignment=2
+            )
+            style_title = ParagraphStyle(
+                'Title', parent=styles['Heading1'], fontName=font_bold, fontSize=16, leading=20, alignment=1, spaceAfter=5
+            )
+            style_subtitle = ParagraphStyle(
+                'Subtitle', parent=styles['Normal'], fontName=font_bold, fontSize=11, leading=14, alignment=1, spaceAfter=15
+            )
+            style_info = ParagraphStyle(
+                'Info', parent=styles['Normal'], fontName=font_normal, fontSize=11, leading=16, alignment=0
+            )
+            style_table_header = ParagraphStyle(
+                'TableHeader', parent=styles['Normal'], fontName=font_bold, fontSize=9, leading=11, alignment=1, textColor=colors.black
+            )
+            style_cell = ParagraphStyle(
+                'Cell', parent=styles['Normal'], fontName=font_normal, fontSize=9, leading=11, alignment=0
+            )
+            style_cell_center = ParagraphStyle(
+                'CellCenter', parent=styles['Normal'], fontName=font_normal, fontSize=9, leading=11, alignment=1
+            )
+            style_cell_right = ParagraphStyle(
+                'CellRight', parent=styles['Normal'], fontName=font_normal, fontSize=9, leading=11, alignment=2
+            )
+            
+            # Header
+            header_data = [
+                [
+                    Paragraph("SỞ Y TẾ THÀNH PHỐ CẦN THƠ<br/>TRUNG TÂM KIỂM SOÁT BỆNH TẬT (CDC)", style_header_left),
+                    Paragraph(f"<b>Mẫu số: {'C30-HD' if note_type == 'purchase' else 'C31-HD'}</b><br/><i>(Ban hành theo Thông tư số 107/2017/TT-BTC)</i>", style_header_right)
+                ]
+            ]
+            header_table = Table(header_data, colWidths=[280, 230])
+            header_table.setStyle(TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('RIGHTPADDING', (0,0), (-1,-1), 0),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+            ]))
+            story.append(header_table)
+            story.append(Spacer(1, 10))
+            
+            # Tiêu đề phiếu
+            story.append(Paragraph("PHIẾU NHẬP KHO" if note_type == 'purchase' else "PHIẾU XUẤT KHO", style_title))
+            story.append(Paragraph(f"Số: {note['noteNumber']}", style_subtitle))
+            
+            created_str = note['createdAt']
+            try:
+                created_at_dt = dt_module.datetime.strptime(created_str, '%Y-%m-%d %H:%M:%S')
+            except Exception:
+                try:
+                    created_at_dt = dt_module.datetime.strptime(created_str.split(' ')[0], '%Y-%m-%d')
+                except Exception:
+                    created_at_dt = dt_module.datetime.now()
+            
+            if note_type == 'purchase':
+                info_lines = [
+                    f"<b>Nguồn cấp / Nhà CC:</b> {note['supplier']}",
+                    f"<b>Lý do nhập:</b> {note['reason']}",
+                    f"<b>Kho nhập:</b> Kho Dược CDC Cần Thơ",
+                    f"<b>Ngày nhập:</b> {created_at_dt.strftime('%d/%m/%Y')}",
+                    f"<b>Ghi chú:</b> {note['note'] or 'Không'}"
+                ]
+            else:
+                info_lines = [
+                    f"<b>Đơn vị nhận:</b> {note['receivingUnit']}",
+                    f"<b>Lý do xuất:</b> {note['reason']}",
+                    f"<b>Kho xuất:</b> Kho Dược CDC Cần Thơ",
+                    f"<b>Ngày xuất:</b> {created_at_dt.strftime('%d/%m/%Y')}",
+                    f"<b>Ghi chú:</b> {note['note'] or 'Không'}"
+                ]
+            for line in info_lines:
+                story.append(Paragraph(line, style_info))
+                story.append(Spacer(1, 4))
+                
+            story.append(Spacer(1, 10))
+            
+            # Dữ liệu bảng
+            if note_type == 'purchase':
+                table_data = [
+                    [
+                        Paragraph("STT", style_table_header),
+                        Paragraph("Tên thuốc, vaccine, VTYT", style_table_header),
+                        Paragraph("ĐVT", style_table_header),
+                        Paragraph("Số lượng", style_table_header),
+                        Paragraph("Đơn giá", style_table_header),
+                        Paragraph("Thành tiền", style_table_header),
+                        Paragraph("Số lô", style_table_header),
+                        Paragraph("Hạn dùng", style_table_header)
+                    ]
+                ]
+                total_sum = 0.0
+                for idx, it in enumerate(items, 1):
+                    qty = float(it['qty'])
+                    cost = float(it['cost'])
+                    sub_total = qty * cost
+                    total_sum += sub_total
+                    table_data.append([
+                        Paragraph(str(idx), style_cell_center),
+                        Paragraph(it['productName'], style_cell),
+                        Paragraph(it['unitCode'], style_cell_center),
+                        Paragraph(f"{qty:g}", style_cell_right),
+                        Paragraph(f"{cost:,.0f}", style_cell_right),
+                        Paragraph(f"{sub_total:,.0f}", style_cell_right),
+                        Paragraph(it['lotNo'] or '', style_cell_center),
+                        Paragraph(it['expiryDate'] or '', style_cell_center)
+                    ])
+                table_data.append([
+                    Paragraph("<b>Tổng cộng</b>", style_cell_center),
+                    Paragraph("", style_cell),
+                    Paragraph("", style_cell_center),
+                    Paragraph("", style_cell_right),
+                    Paragraph("", style_cell_right),
+                    Paragraph(f"<b>{total_sum:,.0f}</b>", style_cell_right),
+                    Paragraph("", style_cell_center),
+                    Paragraph("", style_cell_center)
+                ])
+                col_widths = [25, 160, 45, 55, 65, 75, 55, 50]
+                items_table = Table(table_data, colWidths=col_widths)
+                items_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f2f2f2')),
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                    ('SPAN', (0, -1), (4, -1)),
+                    ('TOPPADDING', (0,0), (-1,-1), 5),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+                ]))
+            else:
+                table_data = [
+                    [
+                        Paragraph("STT", style_table_header),
+                        Paragraph("Tên thuốc, vaccine, VTYT", style_table_header),
+                        Paragraph("ĐVT", style_table_header),
+                        Paragraph("Số lượng", style_table_header),
+                        Paragraph("Số lô", style_table_header),
+                        Paragraph("Hạn dùng", style_table_header),
+                        Paragraph("Ghi chú", style_table_header)
+                    ]
+                ]
+                for idx, it in enumerate(items, 1):
+                    qty = float(it['qty'])
+                    table_data.append([
+                        Paragraph(str(idx), style_cell_center),
+                        Paragraph(it['productName'], style_cell),
+                        Paragraph(it['unitCode'], style_cell_center),
+                        Paragraph(f"{qty:g}", style_cell_right),
+                        Paragraph(it['lotNo'] or '', style_cell_center),
+                        Paragraph(it['expiryDate'] or '', style_cell_center),
+                        Paragraph('', style_cell)
+                    ])
+                col_widths = [30, 200, 50, 60, 70, 70, 50]
+                items_table = Table(table_data, colWidths=col_widths)
+                items_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f2f2f2')),
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                    ('TOPPADDING', (0,0), (-1,-1), 5),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+                ]))
+                
+            story.append(items_table)
+            story.append(Spacer(1, 15))
+            
+            # Chữ ký
+            date_right_style = ParagraphStyle(
+                'DateRight', parent=styles['Normal'], fontName=font_italic, fontSize=11, alignment=2, spaceAfter=10
+            )
+            sig_title_style = ParagraphStyle(
+                'SigTitle', parent=styles['Normal'], fontName=font_bold, fontSize=11, alignment=1
+            )
+            sig_sub_style = ParagraphStyle(
+                'SigSub', parent=styles['Normal'], fontName=font_italic, fontSize=9, alignment=1
+            )
+            
+            story.append(Paragraph(f"Cần Thơ, ngày {created_at_dt.strftime('%d')} tháng {created_at_dt.strftime('%m')} năm {created_at_dt.strftime('%Y')}", date_right_style))
+            
+            if note_type == 'purchase':
+                sig_headers = [
+                    [
+                        Paragraph("<b>Người lập phiếu</b>", sig_title_style),
+                        Paragraph("<b>Người giao hàng</b>", sig_title_style),
+                        Paragraph("<b>Thủ kho</b>", sig_title_style),
+                        Paragraph("<b>Kế toán trưởng</b>", sig_title_style),
+                        Paragraph("<b>Lãnh đạo đơn vị</b>", sig_title_style)
+                    ],
+                    [
+                        Paragraph("(Ký, họ tên)", sig_sub_style),
+                        Paragraph("(Ký, họ tên)", sig_sub_style),
+                        Paragraph("(Ký, họ tên)", sig_sub_style),
+                        Paragraph("(Ký, họ tên)", sig_sub_style),
+                        Paragraph("(Ký, đóng dấu)", sig_sub_style)
+                    ]
+                ]
+            else:
+                sig_headers = [
+                    [
+                        Paragraph("<b>Người lập phiếu</b>", sig_title_style),
+                        Paragraph("<b>Người nhận hàng</b>", sig_title_style),
+                        Paragraph("<b>Thủ kho</b>", sig_title_style),
+                        Paragraph("<b>Kế toán trưởng</b>", sig_title_style),
+                        Paragraph("<b>Lãnh đạo đơn vị</b>", sig_title_style)
+                    ],
+                    [
+                        Paragraph("(Ký, họ tên)", sig_sub_style),
+                        Paragraph("(Ký, họ tên)", sig_sub_style),
+                        Paragraph("(Ký, họ tên)", sig_sub_style),
+                        Paragraph("(Ký, họ tên)", sig_sub_style),
+                        Paragraph("(Ký, đóng dấu)", sig_sub_style)
+                    ]
+                ]
+                
+            sig_table = Table(sig_headers, colWidths=[102, 102, 102, 102, 102])
+            sig_table.setStyle(TableStyle([
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+            ]))
+            story.append(sig_table)
+            story.append(Spacer(1, 60))
+            
+            doc.build(story)
+            
+            # Gửi lệnh in hệ thống trên Windows
+            try:
+                os.startfile(pdf_path, 'print')
+                return True, "Đã gửi lệnh in đến máy in trên máy tính"
+            except Exception as pe:
+                os.startfile(pdf_path)
+                return True, f"Đã tạo PDF và mở trên máy tính: {str(pe)}"
+        except Exception as e:
+            return False, f"Lỗi tạo phiếu in: {str(e)}"
+
     def do_POST(self):
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
@@ -6580,7 +7441,12 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 if hasattr(self.server, 'app_instance') and self.server.app_instance:
                     self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
                     
-                self.send_json({"success": True, "message": f"Đã nhập thành công {qty} {unit} vào lô {lot_no}"})
+                self.send_json({
+                    "success": True, 
+                    "message": f"Đã nhập thành công {qty} {unit} vào lô {lot_no}",
+                    "purchaseId": purchase_id,
+                    "noteNumber": note_num
+                })
             except Exception as e:
                 self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
                 
@@ -6665,7 +7531,12 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 if hasattr(self.server, 'app_instance') and self.server.app_instance:
                     self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
                     
-                self.send_json({"success": True, "message": f"Đã xuất thành công {qty} {unit} từ lô {lot_no}"})
+                self.send_json({
+                    "success": True, 
+                    "message": f"Đã xuất thành công {qty} {unit} từ lô {lot_no}",
+                    "dispatchId": dispatch_id,
+                    "noteNumber": note_num
+                })
             except Exception as e:
                 self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
                 
@@ -7142,6 +8013,95 @@ MOBILE_HTML = """<!DOCTYPE html>
             font-size: 1.1rem;
         }
         
+        /* Success Print Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(15, 23, 42, 0.7);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+            animation: fadeIn 0.25s ease-out;
+        }
+        .modal-content {
+            background: rgba(30, 27, 75, 0.85);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            padding: 24px;
+            width: 90%;
+            max-width: 380px;
+            text-align: center;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+            animation: scaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        .modal-icon {
+            font-size: 3rem;
+            margin-bottom: 12px;
+        }
+        .modal-content h3 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #fff;
+        }
+        .modal-content p {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-bottom: 20px;
+            line-height: 1.4;
+        }
+        .modal-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .btn-modal-print {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 12px;
+            border-radius: 10px;
+            font-weight: bold;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .btn-modal-print:hover {
+            background: var(--primary-hover);
+        }
+        .btn-modal-close {
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-light);
+            border: 1px solid var(--glass-border);
+            padding: 12px;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn-modal-close:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes scaleIn {
+            from { transform: scale(0.9); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+        
         /* Toast notification system */
         #toast-container {
             position: fixed;
@@ -7203,6 +8163,24 @@ MOBILE_HTML = """<!DOCTYPE html>
 </head>
 <body>
     <div id="toast-container"></div>
+
+    <!-- Print Success Modal -->
+    <div id="print-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-icon">✅</div>
+            <h3 id="print-modal-title">Thành công</h3>
+            <p id="print-modal-message">Đã thực hiện thành công.</p>
+            <div class="modal-actions">
+                <button id="btn-modal-print-pc" class="btn-modal-print" style="background: #10b981;">
+                    🖥️ In qua máy tính (PC)
+                </button>
+                <button id="btn-modal-print-phone" class="btn-modal-print">
+                    📱 In/Tải về trên ĐT
+                </button>
+                <button class="btn-modal-close" onclick="closePrintModal()">Đóng</button>
+            </div>
+        </div>
+    </div>
 
     <div class="container">
         <header>
@@ -7381,6 +8359,59 @@ MOBILE_HTML = """<!DOCTYPE html>
                 toast.style.animation = 'slideUp 0.3s ease reverse forwards';
                 setTimeout(() => toast.remove(), 300);
             }, 3000);
+        }
+
+        // Print success modal controller
+        function showPrintModal(type, noteId, message) {
+            document.getElementById('print-modal-message').textContent = message;
+            
+            const btnPc = document.getElementById('btn-modal-print-pc');
+            const btnPhone = document.getElementById('btn-modal-print-phone');
+            
+            // Cài đặt sự kiện in trên máy tính (PC)
+            btnPc.onclick = function() {
+                btnPc.disabled = true;
+                btnPc.textContent = '⌛ Đang gửi...';
+                
+                fetch(`/api/pc-print?type=${type}&id=${noteId}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        btnPc.disabled = false;
+                        btnPc.innerHTML = '🖥️ In qua máy tính (PC)';
+                        if (data.success) {
+                            showToast(data.message, "success");
+                            closePrintModal();
+                        } else {
+                            showToast(data.message, "error");
+                        }
+                    })
+                    .catch(err => {
+                        btnPc.disabled = false;
+                        btnPc.innerHTML = '🖥️ In qua máy tính (PC)';
+                        showToast("Lỗi kết nối lệnh in PC", "error");
+                    });
+            };
+            
+            // Cài đặt sự kiện in trên điện thoại
+            if (type === 'purchase') {
+                document.getElementById('print-modal-title').textContent = 'Nhập Kho Thành Công';
+                btnPhone.onclick = function() {
+                    window.open(`/api/print-purchase?id=${noteId}`, '_blank');
+                    closePrintModal();
+                };
+            } else {
+                document.getElementById('print-modal-title').textContent = 'Xuất Kho Thành Công';
+                btnPhone.onclick = function() {
+                    window.open(`/api/print-dispatch?id=${noteId}`, '_blank');
+                    closePrintModal();
+                };
+            }
+            
+            document.getElementById('print-modal').style.display = 'flex';
+        }
+        
+        function closePrintModal() {
+            document.getElementById('print-modal').style.display = 'none';
         }
 
         // Load Stock Data
@@ -7593,6 +8624,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                     showToast(data.message, "success");
                     closeForms();
                     checkStock(currentProduct.barcode || currentProduct.id); // Reload
+                    showPrintModal('purchase', data.purchaseId, data.message);
                 } else {
                     showToast(data.message, "error");
                 }
@@ -7628,6 +8660,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                     showToast(data.message, "success");
                     closeForms();
                     checkStock(currentProduct.barcode || currentProduct.id); // Reload
+                    showPrintModal('dispatch', data.dispatchId, data.message);
                 } else {
                     showToast(data.message, "error");
                 }
@@ -7825,45 +8858,20 @@ MOBILE_HTML = """<!DOCTYPE html>
 
         function onScanFailure(error) {}
 
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            document.getElementById('reader').innerHTML = `
-                <div style="padding: 15px; text-align: left; color: #ef4444; font-size: 0.9rem; line-height: 1.5;">
-                    <h3 style="margin-bottom: 8px; font-weight: bold; color: #f8fafc; font-size: 1rem;">⚠️ Không mở được Camera (HTTP / Không an toàn)</h3>
-                    <p style="margin-bottom: 12px; color: #cbd5e1; font-size: 0.85rem;">Trình duyệt di động yêu cầu bảo mật HTTPS để mở camera. Bạn hãy chọn 1 trong các cách sau:</p>
-                    
-                    <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.08);">
-                        <strong style="color: #818cf8; font-size: 0.85rem;">Cách 1: Tìm thủ công hoặc lọc từ Danh sách</strong><br>
-                        <span style="color: #94a3b8; font-size: 0.8rem;">Gõ tên sản phẩm vào ô tìm kiếm hoặc sang tab "Danh sách" để chọn nhanh sản phẩm cần kiểm tra.</span>
-                    </div>
-                    
-                    <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.08);">
-                        <strong style="color: #818cf8; font-size: 0.85rem;">Cách 2: Cho Android (Chrome)</strong><br>
-                        <span style="color: #e2e8f0; font-size: 0.8rem;">
-                        1. Mở tab mới, vào: <code style="color: #fbbf24; background: rgba(0,0,0,0.4); padding: 1px 4px; border-radius: 4px; font-size: 0.75rem; word-break: break-all;">chrome://flags/#unsafely-treat-insecure-origin-as-secure</code><br>
-                        2. Tìm mục <b>Insecure origins treated as secure</b><br>
-                        3. Chọn <b>Enabled</b>, nhập URL này vào ô trống:<br>
-                        <code style="color: #38bdf8; background: rgba(0,0,0,0.4); padding: 1px 4px; border-radius: 4px; font-size: 0.75rem; word-break: break-all;">${window.location.origin}</code><br>
-                        4. Nhấn <b>Relaunch</b> để khởi động lại Chrome và tải lại trang này.
-                        </span>
-                    </div>
-                </div>
-            `;
-        } else {
-            const html5QrcodeScanner = new Html5QrcodeScanner(
-                "reader", 
-                { 
-                    fps: 10, 
-                    qrbox: function(width, height) {
-                        const size = Math.min(width, height) * 0.65;
-                        return { width: size, height: size * 0.6 };
-                    },
-                    aspectRatio: 1.0,
-                    supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
+        const html5QrcodeScanner = new Html5QrcodeScanner(
+            "reader", 
+            { 
+                fps: 10, 
+                qrbox: function(width, height) {
+                    const size = Math.min(width, height) * 0.65;
+                    return { width: size, height: size * 0.6 };
                 },
-                false
-            );
-            html5QrcodeScanner.render(onScanSuccess, onScanFailure);
-        }
+                aspectRatio: 1.0,
+                supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
+            },
+            false
+        );
+        html5QrcodeScanner.render(onScanSuccess, onScanFailure);
     </script>
 </body>
 </html>"""
