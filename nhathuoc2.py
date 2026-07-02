@@ -6415,11 +6415,32 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             
         elif path == "/api/products":
             q_term = query.get("q", [""])[0].strip()
+            filter_type = query.get("filter", [""])[0].strip()
             import sqlite3
             try:
                 conn = sqlite3.connect(DB_PATH)
                 conn.row_factory = sqlite3.Row
-                if q_term:
+                
+                if filter_type == 'expiring':
+                    rows = conn.execute("""
+                        SELECT DISTINCT p.id, p.name, p.defaultUnit, p.barcode
+                        FROM products p
+                        JOIN batches b ON p.id = b.productId
+                        JOIN stock_movements sm ON sm.productId = b.productId AND sm.batchId = b.id
+                        GROUP BY p.id, b.id
+                        HAVING SUM(sm.qty) > 0.001 AND DATE(b.expiryDate) <= DATE('now', '+180 days')
+                        ORDER BY p.name ASC
+                    """).fetchall()
+                elif filter_type == 'outofstock':
+                    rows = conn.execute("""
+                        SELECT p.id, p.name, p.defaultUnit, p.barcode, COALESCE(SUM(sm.qty), 0) as totalQty
+                        FROM products p
+                        LEFT JOIN stock_movements sm ON sm.productId = p.id
+                        GROUP BY p.id
+                        HAVING totalQty <= 0.001
+                        ORDER BY p.name ASC
+                    """).fetchall()
+                elif q_term:
                     rows = conn.execute("""
                         SELECT id, name, defaultUnit, barcode 
                         FROM products 
@@ -6443,6 +6464,43 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 
                 self.send_json({"success": True, "products": products_list})
                 conn.close()
+            except Exception as e:
+                self.send_json({"success": False, "message": f"Database error: {str(e)}"}, 500)
+
+        elif path == "/api/dashboard-stats":
+            import sqlite3
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                total_products = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+                
+                outofstock_products = conn.execute("""
+                    SELECT COUNT(*) FROM (
+                        SELECT p.id, COALESCE(SUM(sm.qty), 0) as totalQty 
+                        FROM products p 
+                        LEFT JOIN stock_movements sm ON sm.productId = p.id 
+                        GROUP BY p.id 
+                        HAVING totalQty <= 0.001
+                    )
+                """).fetchone()[0]
+                
+                expiring_products = conn.execute("""
+                    SELECT COUNT(*) FROM (
+                        SELECT DISTINCT p.id
+                        FROM products p
+                        JOIN batches b ON p.id = b.productId
+                        JOIN stock_movements sm ON sm.productId = b.productId AND sm.batchId = b.id
+                        GROUP BY p.id, b.id
+                        HAVING SUM(sm.qty) > 0.001 AND DATE(b.expiryDate) <= DATE('now', '+180 days')
+                    )
+                """).fetchone()[0]
+                
+                conn.close()
+                self.send_json({
+                    "success": True,
+                    "totalProducts": total_products,
+                    "outofstockProducts": outofstock_products,
+                    "expiringProducts": expiring_products
+                })
             except Exception as e:
                 self.send_json({"success": False, "message": f"Database error: {str(e)}"}, 500)
             
@@ -8581,6 +8639,28 @@ MOBILE_HTML = """<!DOCTYPE html>
             <p>Kiểm kho, Nhập/Xuất & Liên kết mã vạch nhanh chóng</p>
         </header>
 
+        <!-- Quick Dashboard -->
+        <div class="card dashboard-card" style="margin-bottom: 15px; padding: 14px; background: linear-gradient(135deg, rgba(2, 132, 199, 0.06) 0%, rgba(13, 148, 136, 0.06) 100%); border: 1px solid rgba(2, 132, 199, 0.15);">
+            <div style="font-weight: 700; font-size: 0.95rem; color: var(--primary); display: flex; align-items: center; gap: 6px; margin-bottom: 12px;">
+                📊 Tổng Quan Kho Hàng
+                <span id="dashboard-refresh" onclick="loadDashboardStats()" style="cursor: pointer; font-size: 0.85rem; font-weight: normal; color: var(--text-muted); margin-left: auto;">🔄 Cập nhật</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center;">
+                <div style="background: rgba(255,255,255,0.75); border: 1px solid var(--glass-border); padding: 8px; border-radius: 10px;">
+                    <div style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600;">Tổng Thuốc</div>
+                    <div id="dash-total-products" style="font-size: 1.1rem; font-weight: 800; color: var(--text-light); margin-top: 4px;">0</div>
+                </div>
+                <div onclick="filterCatalog('outofstock')" style="background: rgba(255,255,255,0.75); border: 1px solid var(--glass-border); padding: 8px; border-radius: 10px; cursor: pointer; transition: transform 0.2s;">
+                    <div style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600;">❌ Hết Hàng</div>
+                    <div id="dash-outofstock-products" style="font-size: 1.1rem; font-weight: 800; color: #ef4444; margin-top: 4px;">0</div>
+                </div>
+                <div onclick="filterCatalog('expiring')" style="background: rgba(255,255,255,0.75); border: 1px solid var(--glass-border); padding: 8px; border-radius: 10px; cursor: pointer; transition: transform 0.2s;">
+                    <div style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600;">⚠️ Cận Hạn</div>
+                    <div id="dash-expiring-products" style="font-size: 1.1rem; font-weight: 800; color: #f59e0b; margin-top: 4px;">0</div>
+                </div>
+            </div>
+        </div>
+
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
             <button class="tab-btn active" onclick="switchTab('tab-checker')">🔍 Kiểm Kho</button>
@@ -8723,6 +8803,11 @@ MOBILE_HTML = """<!DOCTYPE html>
                 <div class="search-box">
                     <input type="text" id="catalog-search" placeholder="Nhập tên sản phẩm..." />
                     <button id="catalog-search-btn">Lọc</button>
+                </div>
+                <div class="filter-toggles" style="display: flex; gap: 6px; margin-bottom: 12px; font-size: 0.8rem; margin-top: -6px;">
+                    <button id="filter-btn-all" onclick="filterCatalog('all')" style="flex: 1; padding: 8px 6px; border: 1px solid var(--primary); background: var(--primary); color: #fff; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 0.75rem; transition: all 0.2s;">Tất cả</button>
+                    <button id="filter-btn-outofstock" onclick="filterCatalog('outofstock')" style="flex: 1; padding: 8px 6px; border: 1px solid var(--glass-border); background: #fff; color: #ef4444; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 0.75rem; transition: all 0.2s;">❌ Hết Hàng</button>
+                    <button id="filter-btn-expiring" onclick="filterCatalog('expiring')" style="flex: 1; padding: 8px 6px; border: 1px solid var(--glass-border); background: #fff; color: #f59e0b; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 0.75rem; transition: all 0.2s;">⚠️ Cận Hạn</button>
                 </div>
                 <div id="catalog-list" class="product-list"></div>
             </div>
@@ -9125,6 +9210,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                         localStorage.removeItem('mob_dispatch_cart');
                     }
                     updateCartStatus();
+                    loadDashboardStats();
                     
                     const noteId = type === 'purchase' ? data.purchaseId : data.dispatchId;
                     if (printTarget === 'pc') {
@@ -9449,6 +9535,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                     closeForms();
                     checkStock(currentProduct.barcode || currentProduct.id); // Reload
                     showNotePreview('purchase', data.purchaseId);
+                    loadDashboardStats();
                 } else {
                     showToast(data.message, "error");
                 }
@@ -9485,6 +9572,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                     closeForms();
                     checkStock(currentProduct.barcode || currentProduct.id); // Reload
                     showNotePreview('dispatch', data.dispatchId);
+                    loadDashboardStats();
                 } else {
                     showToast(data.message, "error");
                 }
@@ -9525,7 +9613,30 @@ MOBILE_HTML = """<!DOCTYPE html>
         }
 
         // Load Catalog List
-        function loadCatalog(query) {
+        let activeCatalogFilter = 'all';
+        function loadCatalog(query = '', filterType = 'all') {
+            activeCatalogFilter = filterType;
+            
+            // Update filter buttons UI styling
+            const btnAll = document.getElementById('filter-btn-all');
+            const btnOutOfStock = document.getElementById('filter-btn-outofstock');
+            const btnExpiring = document.getElementById('filter-btn-expiring');
+            
+            if (btnAll && btnOutOfStock && btnExpiring) {
+                // Reset styles
+                btnAll.style.background = activeCatalogFilter === 'all' ? 'var(--primary)' : '#fff';
+                btnAll.style.color = activeCatalogFilter === 'all' ? '#fff' : 'var(--text-muted)';
+                btnAll.style.border = activeCatalogFilter === 'all' ? '1px solid var(--primary)' : '1px solid var(--glass-border)';
+                
+                btnOutOfStock.style.background = activeCatalogFilter === 'outofstock' ? '#ef4444' : '#fff';
+                btnOutOfStock.style.color = activeCatalogFilter === 'outofstock' ? '#fff' : '#ef4444';
+                btnOutOfStock.style.border = activeCatalogFilter === 'outofstock' ? '1px solid #ef4444' : '1px solid var(--glass-border)';
+                
+                btnExpiring.style.background = activeCatalogFilter === 'expiring' ? '#f59e0b' : '#fff';
+                btnExpiring.style.color = activeCatalogFilter === 'expiring' ? '#fff' : '#f59e0b';
+                btnExpiring.style.border = activeCatalogFilter === 'expiring' ? '1px solid #f59e0b' : '1px solid var(--glass-border)';
+            }
+            
             const list = document.getElementById('catalog-list');
             list.innerHTML = `
                 <div class="loading">
@@ -9534,7 +9645,12 @@ MOBILE_HTML = """<!DOCTYPE html>
                 </div>
             `;
             
-            fetch(`/api/products?q=${encodeURIComponent(query)}`)
+            let url = `/api/products?q=${encodeURIComponent(query)}`;
+            if (filterType !== 'all') {
+                url += `&filter=${filterType}`;
+            }
+            
+            fetch(url)
                 .then(res => res.json())
                 .then(data => {
                     if (!data.success || data.products.length === 0) {
@@ -9558,6 +9674,32 @@ MOBILE_HTML = """<!DOCTYPE html>
                 })
                 .catch(err => {
                     list.innerHTML = '<div class="error-msg">Không thể tải danh sách sản phẩm.</div>';
+                });
+        }
+
+        function filterCatalog(type) {
+            switchTab('tab-catalog');
+            document.getElementById('catalog-search').value = '';
+            loadCatalog('', type);
+        }
+
+        function loadDashboardStats() {
+            const refreshBtn = document.getElementById('dashboard-refresh');
+            if (refreshBtn) refreshBtn.textContent = '⌛...';
+            
+            fetch('/api/dashboard-stats')
+                .then(res => res.json())
+                .then(data => {
+                    if (refreshBtn) refreshBtn.innerHTML = '🔄 Cập nhật';
+                    if (data.success) {
+                        document.getElementById('dash-total-products').textContent = data.totalProducts;
+                        document.getElementById('dash-outofstock-products').textContent = data.outofstockProducts;
+                        document.getElementById('dash-expiring-products').textContent = data.expiringProducts;
+                    }
+                })
+                .catch(err => {
+                    if (refreshBtn) refreshBtn.innerHTML = '🔄 Cập nhật';
+                    console.error("Lỗi tải dashboard stats:", err);
                 });
         }
 
@@ -9611,6 +9753,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                 if (data.success) {
                     showToast(data.message, "success");
                     closeCreateProductForm();
+                    loadDashboardStats();
                     
                     // Tự động chuyển qua tab Kiểm kho và tra cứu sản phẩm vừa tạo
                     const identifier = data.barcode || barcode || data.productId;
@@ -9697,6 +9840,7 @@ MOBILE_HTML = """<!DOCTYPE html>
         );
         html5QrcodeScanner.render(onScanSuccess, onScanFailure);
         updateCartStatus();
+        loadDashboardStats();
     </script>
 </body>
 </html>"""

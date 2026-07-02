@@ -5,6 +5,16 @@ Tất cả các thay đổi quan trọng của dự án sẽ được ghi lại 
 Format dựa trên [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 và dự án tuân theo [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-02
+
+### 🎉 Added - Tính năng mới di động (Mobile Companion)
+- **Trang Thống kê nhanh (Quick Dashboard)**: Hiển thị tóm tắt tình trạng kho gồm Tổng số thuốc, Số lượng sản phẩm hết hàng, và số lượng lô cận hạn dùng ngay trên đầu màn hình di động.
+- **Bộ lọc thông minh (Intelligent Filters)**: Hỗ trợ lọc nhanh danh sách sản phẩm theo trạng thái "❌ Hết Hàng" hoặc "⚠️ Cận Hạn" (hạn sử dụng < 6 tháng) dưới thanh tìm kiếm danh mục.
+- **Xem trước phiếu trước khi in (Note Preview Modal)**: Hiển thị hộp thoại xem trước thông tin phiếu cùng bảng chi tiết danh sách mặt hàng trước khi người dùng thực hiện lệnh in PC hoặc xem PDF di động.
+
+### 🐛 Fixed - Sửa lỗi
+- **Lệch phiếu in lịch sử**: Sửa lỗi khớp loại phiếu nhập (`nhap` -> `purchase`) và phiếu xuất (`xuat` -> `dispatch`) khi gửi lệnh in từ di động ra máy in PC.
+
 ## [1.1.0] - 2026-07-02
 
 ### 🎉 Added - Tính năng mới di động (Mobile Companion)
