@@ -1453,7 +1453,7 @@ class App(tb.Window):
     def start_mobile_server_bg(self):
         """Khởi động Web Server chạy ngầm cho điện thoại di động kết nối"""
         try:
-            self.mobile_server = MobileInventoryServer(self.db, host="0.0.0.0", port=5000)
+            self.mobile_server = MobileInventoryServer(self, host="0.0.0.0", port=5000)
             self.mobile_server.start()
         except Exception as e:
             print(f"Lỗi khởi động máy chủ di động: {e}")
@@ -3903,13 +3903,30 @@ Hiện tại bạn vẫn có thể:
                 messagebox.showerror("Lỗi", f"Không thể dừng máy chủ: {e}")
         else:
             try:
-                self.mobile_server = MobileInventoryServer(self.db, host="0.0.0.0", port=5000)
+                self.mobile_server = MobileInventoryServer(self, host="0.0.0.0", port=5000)
                 self.mobile_server.start()
                 self.toast("Đã khởi động máy chủ di động")
             except Exception as e:
                 messagebox.showerror("Lỗi", f"Không thể khởi động máy chủ: {e}")
         
         self.update_mobile_server_ui()
+
+    def refresh_all_data(self):
+        """Làm mới tất cả bảng dữ liệu trên giao diện máy tính"""
+        try:
+            self.refresh_products()
+            self.refresh_stock()
+            self.refresh_alerts()
+            self.refresh_report()
+            # Làm mới lịch sử nếu giao diện lịch sử đang mở
+            if hasattr(self, 'show_purchase_history'):
+                try: self.show_purchase_history()
+                except: pass
+            if hasattr(self, 'show_dispatch_history'):
+                try: self.show_dispatch_history()
+                except: pass
+        except Exception as e:
+            print(f"Lỗi refresh_all_data: {e}")
 
     def update_mobile_server_ui(self):
         """Cập nhật trạng thái giao diện và vẽ lại mã QR kết nối"""
@@ -6396,6 +6413,294 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 self.send_json({"success": False, "message": f"Database error: {str(e)}"}, 500)
             
+        elif path == "/api/products":
+            q_term = query.get("q", [""])[0].strip()
+            import sqlite3
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                if q_term:
+                    rows = conn.execute("""
+                        SELECT id, name, defaultUnit, barcode 
+                        FROM products 
+                        WHERE name LIKE ? OR barcode=? LIMIT 50
+                    """, (f"%{q_term}%", q_term)).fetchall()
+                else:
+                    rows = conn.execute("""
+                        SELECT id, name, defaultUnit, barcode 
+                        FROM products 
+                        ORDER BY name ASC LIMIT 50
+                    """).fetchall()
+                
+                products_list = []
+                for r in rows:
+                    products_list.append({
+                        "id": r["id"],
+                        "name": r["name"],
+                        "unit": r["defaultUnit"],
+                        "barcode": r["barcode"] or ""
+                    })
+                
+                self.send_json({"success": True, "products": products_list})
+                conn.close()
+            except Exception as e:
+                self.send_json({"success": False, "message": f"Database error: {str(e)}"}, 500)
+            
+        else:
+            self.send_response(404)
+            self.end_headers()
+            
+    def do_POST(self):
+        parsed_url = urllib.parse.urlparse(self.path)
+        path = parsed_url.path
+        
+        # Đọc dữ liệu gửi lên
+        content_length = int(self.headers.get('Content-Length', 0))
+        post_data = self.rfile.read(content_length)
+        
+        try:
+            data = json.loads(post_data.decode('utf-8')) if post_data else {}
+        except Exception:
+            self.send_json({"success": False, "message": "Dữ liệu JSON không hợp lệ"}, 400)
+            return
+            
+        import sqlite3
+        from datetime import datetime
+        
+        if path == "/api/create-product":
+            name = data.get("name", "").strip()
+            default_unit = data.get("defaultUnit", "").strip()
+            barcode = data.get("barcode", "").strip() or None
+            product_type = data.get("productType", "thuoc").strip()
+            reg_number = data.get("registrationNumber", "").strip() or None
+            
+            if not name or not default_unit:
+                self.send_json({"success": False, "message": "Tên sản phẩm và Đơn vị tính không được để trống"}, 400)
+                return
+                
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                
+                # Kiểm tra xem mã vạch này đã tồn tại chưa
+                if barcode:
+                    existing = conn.execute("SELECT id, name FROM products WHERE barcode=?", (barcode,)).fetchone()
+                    if existing:
+                        self.send_json({"success": False, "message": f"Mã vạch này đã được sử dụng cho sản phẩm: {existing['name']}"}, 400)
+                        conn.close()
+                        return
+                
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with conn:
+                    cur = conn.execute("""
+                        INSERT INTO products (name, defaultUnit, barcode, productType, registrationNumber, createdAt)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (name, default_unit, barcode, product_type, reg_number, now_str))
+                    product_id = cur.lastrowid
+                
+                conn.close()
+                
+                # Cập nhật UI trên Main Thread
+                if hasattr(self.server, 'app_instance') and self.server.app_instance:
+                    self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
+                    
+                self.send_json({
+                    "success": True, 
+                    "message": "Đã tạo sản phẩm mới thành công!", 
+                    "productId": product_id,
+                    "barcode": barcode or str(product_id)
+                })
+            except Exception as e:
+                self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
+                
+        elif path == "/api/purchase":
+            product_id = data.get("productId")
+            qty = data.get("qty")
+            lot_no = data.get("lotNo", "").strip()
+            expiry_date = data.get("expiryDate", "").strip()
+            
+            if not product_id or not qty or not lot_no or not expiry_date:
+                self.send_json({"success": False, "message": "Vui lòng nhập đầy đủ thông tin"}, 400)
+                return
+                
+            try:
+                qty = float(qty)
+                if qty <= 0: raise ValueError()
+            except ValueError:
+                self.send_json({"success": False, "message": "Số lượng phải là số dương lớn hơn 0"}, 400)
+                return
+                
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                conn.execute('PRAGMA foreign_keys = ON')
+                
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                note_num = f"PNK-MOB-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                
+                with conn:
+                    # Lấy thông tin sản phẩm
+                    prod = conn.execute("SELECT name, defaultUnit FROM products WHERE id=?", (product_id,)).fetchone()
+                    if not prod:
+                        self.send_json({"success": False, "message": "Không tìm thấy sản phẩm"}, 404)
+                        conn.close()
+                        return
+                    unit = prod['defaultUnit']
+                    
+                    # 1. Thêm hoặc lấy lô
+                    batch = conn.execute("SELECT id FROM batches WHERE productId=? AND lotNo=?", (product_id, lot_no)).fetchone()
+                    if batch:
+                        batch_id = batch['id']
+                    else:
+                        cur = conn.execute("INSERT INTO batches(productId, lotNo, expiryDate) VALUES(?,?,?)", (product_id, lot_no, expiry_date))
+                        batch_id = cur.lastrowid
+                        
+                    # 2. Tạo phiếu nhập
+                    cur = conn.execute("""
+                        INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt)
+                        VALUES(?, ?, ?, ?, ?)
+                    """, (note_num, "Nhập kho di động", "Nhập qua điện thoại", "Tạo tự động từ điện thoại", now_str))
+                    purchase_id = cur.lastrowid
+                    
+                    # 3. Tạo chi tiết phiếu nhập
+                    conn.execute("""
+                        INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost)
+                        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (purchase_id, product_id, batch_id, unit, qty, lot_no, expiry_date, 0.0))
+                    
+                    # 4. Tạo stock movement
+                    conn.execute("""
+                        INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, cost, reason, createdAt)
+                        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (product_id, batch_id, unit, qty, 'PURCHASE', 0.0, 'Nhập qua điện thoại', now_str))
+                    
+                conn.close()
+                
+                # Cập nhật UI trên Main Thread
+                if hasattr(self.server, 'app_instance') and self.server.app_instance:
+                    self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
+                    
+                self.send_json({"success": True, "message": f"Đã nhập thành công {qty} {unit} vào lô {lot_no}"})
+            except Exception as e:
+                self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
+                
+        elif path == "/api/dispatch":
+            product_id = data.get("productId")
+            lot_no = data.get("lotNo", "").strip()
+            qty = data.get("qty")
+            reason_str = data.get("reason", "Xuất qua điện thoại").strip() or "Xuất qua điện thoại"
+            
+            if not product_id or not lot_no or not qty:
+                self.send_json({"success": False, "message": "Vui lòng nhập đầy đủ thông tin"}, 400)
+                return
+                
+            try:
+                qty = float(qty)
+                if qty <= 0: raise ValueError()
+            except ValueError:
+                self.send_json({"success": False, "message": "Số lượng phải là số dương lớn hơn 0"}, 400)
+                return
+                
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                conn.execute('PRAGMA foreign_keys = ON')
+                
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                note_num = f"PXK-MOB-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                
+                with conn:
+                    # Lấy thông tin sản phẩm và đơn vị
+                    prod = conn.execute("SELECT name, defaultUnit FROM products WHERE id=?", (product_id,)).fetchone()
+                    if not prod:
+                        self.send_json({"success": False, "message": "Không tìm thấy sản phẩm"}, 404)
+                        conn.close()
+                        return
+                    unit = prod['defaultUnit']
+                    
+                    # Lấy thông tin lô
+                    batch = conn.execute("SELECT id, lotNo, expiryDate FROM batches WHERE productId=? AND lotNo=?", (product_id, lot_no)).fetchone()
+                    if not batch:
+                        self.send_json({"success": False, "message": f"Không tìm thấy lô hàng '{lot_no}' của sản phẩm này"}, 404)
+                        conn.close()
+                        return
+                    batch_id = batch['id']
+                    expiry_date = batch['expiryDate']
+                    
+                    # Kiểm tra tồn kho của lô hàng
+                    existing_qty = conn.execute("""
+                        SELECT COALESCE(SUM(qty), 0) as qtyBase
+                        FROM stock_movements
+                        WHERE productId=? AND batchId=?
+                    """, (product_id, batch_id)).fetchone()
+                    
+                    current_stock = float(existing_qty['qtyBase']) if existing_qty else 0.0
+                    if current_stock < qty:
+                        self.send_json({"success": False, "message": f"Số lượng xuất ({qty}) vượt quá số lượng tồn của lô ({current_stock} {unit})"}, 400)
+                        conn.close()
+                        return
+                        
+                    # 1. Tạo phiếu xuất
+                    cur = conn.execute("""
+                        INSERT INTO dispatch_notes(noteNumber, receivingUnit, reason, note, createdAt)
+                        VALUES(?, ?, ?, ?, ?)
+                    """, (note_num, "Điện thoại di động", reason_str, "Tạo tự động từ điện thoại", now_str))
+                    dispatch_id = cur.lastrowid
+                    
+                    # 2. Tạo chi tiết phiếu xuất
+                    conn.execute("""
+                        INSERT INTO dispatch_items(dispatchId, productId, batchId, unitCode, qty, lotNo, expiryDate)
+                        VALUES(?, ?, ?, ?, ?, ?, ?)
+                    """, (dispatch_id, product_id, batch_id, unit, qty, lot_no, expiry_date))
+                    
+                    # 3. Tạo stock movement
+                    conn.execute("""
+                        INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, reason, createdAt)
+                        VALUES(?, ?, ?, ?, ?, ?, ?)
+                    """, (product_id, batch_id, unit, -qty, 'DISPATCH', reason_str, now_str))
+                    
+                conn.close()
+                
+                # Cập nhật UI trên Main Thread
+                if hasattr(self.server, 'app_instance') and self.server.app_instance:
+                    self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
+                    
+                self.send_json({"success": True, "message": f"Đã xuất thành công {qty} {unit} từ lô {lot_no}"})
+            except Exception as e:
+                self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
+                
+        elif path == "/api/update-barcode":
+            product_id = data.get("productId")
+            barcode = data.get("barcode", "").strip()
+            
+            if not product_id or not barcode:
+                self.send_json({"success": False, "message": "Vui lòng nhập đầy đủ thông tin"}, 400)
+                return
+                
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                
+                # Kiểm tra xem mã vạch này đã được sử dụng bởi sản phẩm khác chưa
+                existing = conn.execute("SELECT id, name FROM products WHERE barcode=? AND id<>?", (barcode, product_id)).fetchone()
+                if existing:
+                    self.send_json({"success": False, "message": f"Mã vạch này đã được sử dụng cho sản phẩm: {existing['name']}"}, 400)
+                    conn.close()
+                    return
+                    
+                with conn:
+                    conn.execute("UPDATE products SET barcode=? WHERE id=?", (barcode, product_id))
+                    
+                conn.close()
+                
+                # Cập nhật UI trên Main Thread
+                if hasattr(self.server, 'app_instance') and self.server.app_instance:
+                    self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
+                    
+                self.send_json({"success": True, "message": "Đã liên kết mã vạch thành công!"})
+            except Exception as e:
+                self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
+                
         else:
             self.send_response(404)
             self.end_headers()
@@ -6407,9 +6712,10 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
 class MobileInventoryServer(threading.Thread):
-    def __init__(self, db_instance, host="0.0.0.0", port=5000):
+    def __init__(self, app_instance, host="0.0.0.0", port=5000):
         super().__init__()
-        self.db_instance = db_instance
+        self.app_instance = app_instance
+        self.db_instance = app_instance.db
         self.host = host
         self.port = port
         self.server = None
@@ -6422,6 +6728,7 @@ class MobileInventoryServer(threading.Thread):
             try:
                 self.server = http.server.HTTPServer((self.host, self.port), MobileInventoryRequestHandler)
                 self.server.db_instance = self.db_instance
+                self.server.app_instance = self.app_instance
                 self.is_running = True
                 print(f"Mobile inventory server started on http://{self.host}:{self.port}")
                 self.server.serve_forever()
@@ -6478,18 +6785,18 @@ MOBILE_HTML = """<!DOCTYPE html>
             max-width: 500px;
             display: flex;
             flex-direction: column;
-            gap: 15px;
+            gap: 12px;
         }
         header {
             text-align: center;
-            padding: 10px 0;
+            padding: 5px 0;
             display: flex;
             flex-direction: column;
             align-items: center;
-            gap: 5px;
+            gap: 4px;
         }
         header h1 {
-            font-size: 1.5rem;
+            font-size: 1.4rem;
             font-weight: 700;
             letter-spacing: 0.5px;
             background: linear-gradient(to right, #a5b4fc, #818cf8);
@@ -6500,8 +6807,45 @@ MOBILE_HTML = """<!DOCTYPE html>
             gap: 8px;
         }
         header p {
-            font-size: 0.85rem;
+            font-size: 0.8rem;
             color: var(--text-muted);
+        }
+        .nav-tabs {
+            display: flex;
+            width: 100%;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 4px;
+        }
+        .tab-btn {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            padding: 10px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+        .tab-btn.active {
+            background: var(--primary);
+            color: #fff;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+        }
+        .tab-content {
+            display: none;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .tab-content.active {
+            display: flex;
         }
         .card {
             background: var(--glass-bg);
@@ -6581,7 +6925,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             background: var(--primary-hover);
         }
         .result-title {
-            font-size: 1.15rem;
+            font-size: 1.1rem;
             font-weight: 700;
             margin-bottom: 12px;
             display: flex;
@@ -6595,7 +6939,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             display: grid;
             grid-template-columns: 1fr;
             gap: 8px;
-            margin-bottom: 15px;
+            margin-bottom: 12px;
         }
         .info-row {
             display: flex;
@@ -6612,7 +6956,7 @@ MOBILE_HTML = """<!DOCTYPE html>
         .batch-list {
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 8px;
         }
         .batch-item {
             background: rgba(255, 255, 255, 0.03);
@@ -6667,11 +7011,173 @@ MOBILE_HTML = """<!DOCTYPE html>
             color: var(--success);
             border: 1px solid rgba(16, 185, 129, 0.3);
         }
+        
+        /* Modals & Form buttons */
+        .action-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 15px;
+            border-top: 1px solid var(--glass-border);
+            padding-top: 15px;
+        }
+        .action-btn {
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            color: #fff;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            transition: opacity 0.2s, transform 0.1s;
+        }
+        .action-btn:active {
+            transform: scale(0.97);
+        }
+        .btn-purchase { background: var(--success); }
+        .btn-dispatch { background: var(--danger); }
+        .btn-barcode { background: var(--warning); grid-column: span 2; }
+        
+        .form-container {
+            margin-top: 15px;
+            padding: 12px;
+            border-radius: 12px;
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px dashed rgba(255,255,255,0.15);
+            display: none;
+        }
+        .form-title {
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .form-group {
+            margin-bottom: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .form-group label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+        .form-control {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--glass-border);
+            border-radius: 6px;
+            padding: 8px 10px;
+            color: #fff;
+            font-size: 0.9rem;
+            outline: none;
+        }
+        .form-control:focus {
+            border-color: var(--primary);
+        }
+        .form-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .form-actions button {
+            flex: 1;
+            padding: 8px;
+            border-radius: 6px;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        .btn-submit { background: var(--primary); color: #fff; }
+        .btn-cancel { background: rgba(255,255,255,0.1); color: var(--text-light); }
+        
+        /* Product catalog */
+        .product-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 50vh;
+            overflow-y: auto;
+            margin-top: 8px;
+            padding-right: 2px;
+        }
+        .product-item {
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 10px;
+            padding: 10px 12px;
+            cursor: pointer;
+            transition: background 0.2s;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .product-item:hover {
+            background: rgba(255,255,255,0.06);
+        }
+        .product-item-details {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .product-item-name {
+            font-weight: 600;
+            color: #fff;
+            font-size: 0.9rem;
+        }
+        .product-item-sub {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .product-item-arrow {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+        }
+        
+        /* Toast notification system */
+        #toast-container {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 9999;
+            width: 90%;
+            max-width: 320px;
+        }
+        .toast {
+            background: rgba(15, 23, 42, 0.9);
+            border: 1px solid var(--glass-border);
+            backdrop-filter: blur(10px);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: #fff;
+            font-size: 0.8rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            animation: slideUp 0.3s ease forwards;
+        }
+        .toast-success { border-left: 4px solid var(--success); }
+        .toast-error { border-left: 4px solid var(--danger); }
+        
         .no-result, .loading, .error-msg {
             text-align: center;
             padding: 20px;
             color: var(--text-muted);
-            font-size: 0.95rem;
+            font-size: 0.9rem;
         }
         .error-msg {
             color: var(--danger);
@@ -6680,8 +7186,8 @@ MOBILE_HTML = """<!DOCTYPE html>
             border: 3px solid rgba(255,255,255,0.1);
             border-top: 3px solid var(--primary);
             border-radius: 50%;
-            width: 30px;
-            height: 30px;
+            width: 26px;
+            height: 26px;
             animation: spin 1s linear infinite;
             margin: 10px auto;
         }
@@ -6689,29 +7195,149 @@ MOBILE_HTML = """<!DOCTYPE html>
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        @keyframes slideUp {
+            from { transform: translateY(20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
     </style>
 </head>
 <body>
+    <div id="toast-container"></div>
+
     <div class="container">
         <header>
-            <h1>🏥 Kiểm Kho Di Động</h1>
-            <p>Quét mã vạch sản phẩm để xem số tồn hiện tại</p>
+            <h1>🏥 Quản Lý Kho Di Động</h1>
+            <p>Kiểm kho, Nhập/Xuất & Liên kết mã vạch nhanh chóng</p>
         </header>
 
-        <div class="card scanner-card">
-            <div id="reader"></div>
+        <!-- Navigation Tabs -->
+        <div class="nav-tabs">
+            <button class="tab-btn active" onclick="switchTab('tab-checker')">🔍 Kiểm Kho</button>
+            <button class="tab-btn" onclick="switchTab('tab-catalog')">📋 Danh Sách</button>
         </div>
 
-        <div class="card">
-            <div class="search-box">
-                <input type="text" id="barcode-input" placeholder="Nhập mã vạch hoặc tên..." />
-                <button id="search-btn">Tìm</button>
+        <!-- Tab 1: Kiểm kho và quét mã vạch -->
+        <div id="tab-checker" class="tab-content active">
+            <div class="card scanner-card">
+                <div id="reader"></div>
+            </div>
+
+            <div class="card">
+                <div class="search-box">
+                    <input type="text" id="barcode-input" placeholder="Nhập mã vạch hoặc tên..." />
+                    <button id="search-btn">Tìm</button>
+                </div>
+            </div>
+
+            <div class="card" id="result-card" style="display: none;">
+                <div class="result-title">📦 Kết quả truy vấn</div>
+                <div id="result-content"></div>
+                
+                <!-- Quick Action Forms Container -->
+                <div id="action-forms">
+                    <!-- Nhập kho nhanh form -->
+                    <div id="form-purchase" class="form-container">
+                        <div class="form-title">📥 Nhập kho nhanh</div>
+                        <div class="form-group">
+                            <label>Số lượng nhập (Đơn vị tính gốc)</label>
+                            <input type="number" id="pur-qty" class="form-control" placeholder="Ví dụ: 10" step="any" required />
+                        </div>
+                        <div class="form-group">
+                            <label>Số lô (Lot No)</label>
+                            <input type="text" id="pur-lot" class="form-control" placeholder="Ví dụ: LO1234" required />
+                        </div>
+                        <div class="form-group">
+                            <label>Hạn sử dụng</label>
+                            <input type="date" id="pur-expiry" class="form-control" required />
+                        </div>
+                        <div class="form-actions">
+                            <button class="btn-cancel" onclick="closeForms()">Hủy</button>
+                            <button class="btn-submit" onclick="submitPurchase()">Xác Nhận Nhập</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Xuất kho nhanh form -->
+                    <div id="form-dispatch" class="form-container">
+                        <div class="form-title">📤 Xuất kho nhanh</div>
+                        <div class="form-group">
+                            <label>Chọn lô xuất</label>
+                            <select id="disp-batch-id" class="form-control"></select>
+                        </div>
+                        <div class="form-group">
+                            <label>Số lượng xuất (Đơn vị tính gốc)</label>
+                            <input type="number" id="disp-qty" class="form-control" placeholder="Ví dụ: 5" step="any" required />
+                        </div>
+                        <div class="form-group">
+                            <label>Lý do xuất</label>
+                            <input type="text" id="disp-reason" class="form-control" placeholder="Ví dụ: Hao hụt, Cấp phát di động,..." value="Xuất qua điện thoại" />
+                        </div>
+                        <div class="form-actions">
+                            <button class="btn-cancel" onclick="closeForms()">Hủy</button>
+                            <button class="btn-submit" onclick="submitDispatch()">Xác Nhận Xuất</button>
+                        </div>
+                    </div>
+
+                    <!-- Gán mã vạch mới form -->
+                    <div id="form-barcode" class="form-container">
+                        <div class="form-title">🏷️ Khai báo mã vạch mới</div>
+                        <div class="form-group">
+                            <label>Mã vạch liên kết</label>
+                            <input type="text" id="link-barcode" class="form-control" placeholder="Quét hoặc điền mã vạch..." required />
+                        </div>
+                        <div class="form-actions">
+                            <button class="btn-cancel" onclick="closeForms()">Hủy</button>
+                            <button class="btn-submit" onclick="submitLinkBarcode()">Lưu Liên Kết</button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <div class="card" id="result-card" style="display: none;">
-            <div class="result-title">📦 Kết quả kiểm tra</div>
-            <div id="result-content"></div>
+        <!-- Tab 2: Danh sách sản phẩm -->
+        <div id="tab-catalog" class="tab-content">
+            <div class="card">
+                <button class="action-btn btn-purchase" style="margin-bottom: 12px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; background: #6366f1; font-size: 0.9rem;" onclick="openCreateProductForm()">➕ Thêm Sản Phẩm Mới</button>
+                
+                <!-- Thêm sản phẩm mới form -->
+                <div id="form-create-product" class="form-container" style="margin-bottom: 15px; border-style: solid; border-color: var(--primary);">
+                    <div class="form-title">➕ Thêm sản phẩm mới</div>
+                    <div class="form-group">
+                        <label>Tên sản phẩm *</label>
+                        <input type="text" id="new-name" class="form-control" placeholder="Ví dụ: Paracetamol 500mg" required />
+                    </div>
+                    <div class="form-group">
+                        <label>Đơn vị tính gốc *</label>
+                        <input type="text" id="new-unit" class="form-control" placeholder="Ví dụ: Viên, Hộp, Chai" required />
+                    </div>
+                    <div class="form-group">
+                        <label>Phân loại sản phẩm</label>
+                        <select id="new-type" class="form-control">
+                            <option value="thuoc">Thuốc / Dược phẩm</option>
+                            <option value="vaccine">Vaccine</option>
+                            <option value="vtyt">Vật tư y tế</option>
+                            <option value="khac">Sản phẩm khác</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Mã vạch (Quét hoặc điền)</label>
+                        <input type="text" id="new-barcode" class="form-control" placeholder="Để trống nếu chưa có" />
+                    </div>
+                    <div class="form-group">
+                        <label>Số đăng ký (Không bắt buộc)</label>
+                        <input type="text" id="new-regnumber" class="form-control" placeholder="Số đăng ký..." />
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn-cancel" onclick="closeCreateProductForm()">Hủy</button>
+                        <button class="btn-submit" onclick="submitCreateProduct()">Tạo & Nhập Kho</button>
+                    </div>
+                </div>
+
+                <div class="search-box">
+                    <input type="text" id="catalog-search" placeholder="Nhập tên sản phẩm..." />
+                    <button id="catalog-search-btn">Lọc</button>
+                </div>
+                <div id="catalog-list" class="product-list"></div>
+            </div>
         </div>
     </div>
 
@@ -6721,15 +7347,52 @@ MOBILE_HTML = """<!DOCTYPE html>
         const searchBtn = document.getElementById('search-btn');
         const resultCard = document.getElementById('result-card');
         const resultContent = document.getElementById('result-content');
+        
+        let currentProduct = null;
+        let currentProductBatches = [];
 
+        // Switching Tabs
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            
+            document.getElementById(tabId).classList.add('active');
+            
+            // Find tab button matching target tabId
+            const btnIndex = (tabId === 'tab-checker') ? 0 : 1;
+            document.querySelectorAll('.tab-btn')[btnIndex].classList.add('active');
+            
+            if (tabId === 'tab-catalog') {
+                loadCatalog('');
+            }
+        }
+
+        // Notification Toast System
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = (type === 'success' ? '✅' : '❌') + ` <span>${message}</span>`;
+            container.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.animation = 'none';
+                toast.offsetHeight; /* trigger reflow */
+                toast.style.animation = 'slideUp 0.3s ease reverse forwards';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        // Load Stock Data
         function checkStock(barcode) {
             if (!barcode) return;
             
             resultCard.style.display = 'block';
+            closeForms();
             resultContent.innerHTML = `
                 <div class="loading">
                     <div class="loading-spinner"></div>
-                    Đang tìm kiếm dữ liệu...
+                    Đang truy vấn dữ liệu kho...
                 </div>
             `;
 
@@ -6745,6 +7408,8 @@ MOBILE_HTML = """<!DOCTYPE html>
                         showNoResult();
                         return;
                     }
+                    currentProduct = data.product;
+                    currentProductBatches = data.batches;
                     displayResult(data);
                 })
                 .catch(err => {
@@ -6753,6 +7418,8 @@ MOBILE_HTML = """<!DOCTYPE html>
         }
 
         function showNoResult() {
+            currentProduct = null;
+            currentProductBatches = [];
             resultContent.innerHTML = `
                 <div class="no-result">
                     ❌ Không tìm thấy sản phẩm trùng khớp.
@@ -6761,6 +7428,8 @@ MOBILE_HTML = """<!DOCTYPE html>
         }
 
         function showError(msg) {
+            currentProduct = null;
+            currentProductBatches = [];
             resultContent.innerHTML = `
                 <div class="error-msg">
                     ⚠ Lỗi: ${msg}
@@ -6779,7 +7448,7 @@ MOBILE_HTML = """<!DOCTYPE html>
 
             let batchesHtml = '';
             if (batches.length === 0) {
-                batchesHtml = '<div class="no-result">Sản phẩm này hiện tại hết hàng hoặc chưa nhập lô.</div>';
+                batchesHtml = '<div class="no-result" style="padding: 10px;">Sản phẩm hiện hết hàng hoặc chưa nhập lô.</div>';
             } else {
                 batches.forEach(b => {
                     const expDate = new Date(b.expiryDate);
@@ -6789,11 +7458,11 @@ MOBILE_HTML = """<!DOCTYPE html>
                     
                     let badgeHtml = '';
                     if (diffDays <= 0) {
-                        badgeHtml = '<span class="badge badge-expired">Đã hết hạn</span>';
+                        badgeHtml = '<span class="badge badge-expired">Hết hạn</span>';
                     } else if (diffDays <= 90) {
                         badgeHtml = `<span class="badge badge-warning">Cận hạn (${diffDays} ngày)</span>`;
                     } else {
-                        badgeHtml = '<span class="badge badge-ok">Hạn dùng tốt</span>';
+                        badgeHtml = '<span class="badge badge-ok">Hạn tốt</span>';
                     }
 
                     batchesHtml += `
@@ -6815,15 +7484,11 @@ MOBILE_HTML = """<!DOCTYPE html>
                 <div class="product-info">
                     <div class="info-row">
                         <span class="info-label">Tên sản phẩm</span>
-                        <span class="info-value" style="color: #a5b4fc; text-align: right; max-width: 60%;">${p.name}</span>
+                        <span class="info-value" style="color: #a5b4fc; text-align: right; max-width: 65%;">${p.name}</span>
                     </div>
                     <div class="info-row">
                         <span class="info-label">Mã vạch</span>
-                        <span class="info-value">${p.barcode}</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-label">Số đăng ký</span>
-                        <span class="info-value">${p.regNumber || 'N/A'}</span>
+                        <span class="info-value">${p.barcode || 'Chưa gán'}</span>
                     </div>
                     <div class="info-row">
                         <span class="info-label">Phân loại</span>
@@ -6831,16 +7496,283 @@ MOBILE_HTML = """<!DOCTYPE html>
                     </div>
                     <div class="info-row" style="margin-top: 5px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
                         <span class="info-label" style="font-weight: bold; color: #fff;">Tổng tồn kho</span>
-                        <span class="info-value" style="color: var(--success); font-size: 1.15rem;">${data.totalQty} ${p.unit}</span>
+                        <span class="info-value" style="color: var(--success); font-size: 1.1rem;">${data.totalQty} ${p.unit}</span>
                     </div>
                 </div>
-                <div class="result-title" style="font-size: 1rem; border: none; margin-top: 15px; margin-bottom: 8px; padding: 0;">📦 Chi tiết tồn kho theo lô</div>
-                <div class="batch-list">
+                
+                <div class="result-title" style="font-size: 0.95rem; border: none; margin-top: 12px; margin-bottom: 5px; padding: 0;">📦 Chi tiết tồn kho theo lô</div>
+                <div class="batch-list" style="max-height: 200px; overflow-y: auto;">
                     ${batchesHtml}
+                </div>
+                
+                <!-- Action Buttons Grid -->
+                <div class="action-buttons">
+                    <button class="action-btn btn-purchase" onclick="openForm('purchase')">📥 Nhập Kho</button>
+                    <button class="action-btn btn-dispatch" onclick="openForm('dispatch')">📤 Xuất Kho</button>
+                    <button class="action-btn btn-barcode" onclick="openForm('barcode')">🏷️ Gán / Liên Kết Mã Vạch</button>
                 </div>
             `;
         }
 
+        // Quick forms logic
+        function closeForms() {
+            document.querySelectorAll('.form-container').forEach(el => el.style.display = 'none');
+        }
+
+        function openForm(type) {
+            closeForms();
+            const form = document.getElementById(`form-${type}`);
+            form.style.display = 'block';
+            form.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            
+            if (type === 'purchase') {
+                document.getElementById('pur-qty').value = '';
+                document.getElementById('pur-lot').value = '';
+                document.getElementById('pur-expiry').value = '';
+            } else if (type === 'dispatch') {
+                document.getElementById('disp-qty').value = '';
+                const select = document.getElementById('disp-batch-id');
+                select.innerHTML = '';
+                
+                if (currentProductBatches.length === 0) {
+                    select.innerHTML = '<option value="">(Không có lô hàng nào còn tồn)</option>';
+                } else {
+                    currentProductBatches.forEach(b => {
+                        const opt = document.createElement('option');
+                        opt.value = b.lotNo;
+                        opt.textContent = `Lô: ${b.lotNo} (Còn tồn: ${b.qty})`;
+                        select.appendChild(opt);
+                    });
+                        // Ah! Let's check what the API /api/stock returns for batches list:
+                        // "SELECT b.id, b.lotNo, b.expiryDate, COALESCE(SUM(sm.qty), 0) as qtyBase" - yes! Let's ensure the backend returned `id`.
+                        // Yes! Let's check python query for batches:
+                        // `SELECT b.lotNo, b.expiryDate, COALESCE(SUM(sm.qty), 0) as qtyBase` - Ah! We did NOT query `b.id` in `batches_rows`!
+                        // Let's fix that below if needed, or query by lotNo. Since lotNo + productId is UNIQUE, we can query by lotNo as well, but querying by batchId is cleaner.
+                        // Let's check the python batches query: it uses `SELECT b.lotNo, b.expiryDate` but we can also use lotNo as value or query lotNo.
+                        // Let's use lotNo as select value. In python `POST /api/dispatch`, the client can pass lotNo!
+                        // Wait, our `POST /api/dispatch` API endpoint currently reads: `batch_id = data.get("batchId")`.
+                        // Let's modify the python handler to read:
+                        // `batch_id = data.get("batchId")` or look up by `lotNo` if `lotNo` is provided.
+                        // Actually, let's look at `POST /api/dispatch` logic in python:
+                        // `batch = conn.execute("SELECT id, lotNo, expiryDate FROM batches WHERE productId=? AND lotNo=?", ...)` or similar.
+                        // Let's modify python's `POST /api/dispatch` to accept `lotNo` instead of `batchId` so it's extremely robust and simple!
+                        // Yes, we will read `lotNo = data.get("lotNo")` or `batchId`. If they choose lotNo, we find `id` from `batches` where `productId=? AND lotNo=?`.
+                        // Let's support BOTH in python so the HTML client is extremely easy to write.
+                    // });
+                }
+            } else if (type === 'barcode') {
+                document.getElementById('link-barcode').value = barcodeInput.value || '';
+            }
+        }
+
+        // Submit Quick Purchase
+        function submitPurchase() {
+            if (!currentProduct) return;
+            const qty = parseFloat(document.getElementById('pur-qty').value);
+            const lotNo = document.getElementById('pur-lot').value.trim();
+            const expiry = document.getElementById('pur-expiry').value;
+            
+            if (!qty || qty <= 0 || !lotNo || !expiry) {
+                showToast("Vui lòng điền đầy đủ và chính xác thông tin!", "error");
+                return;
+            }
+            
+            fetch('/api/purchase', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    productId: currentProduct.id,
+                    qty: qty,
+                    lotNo: lotNo,
+                    expiryDate: expiry
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(data.message, "success");
+                    closeForms();
+                    checkStock(currentProduct.barcode || currentProduct.id); // Reload
+                } else {
+                    showToast(data.message, "error");
+                }
+            })
+            .catch(err => showToast("Lỗi kết nối máy chủ", "error"));
+        }
+
+        // Submit Quick Dispatch
+        function submitDispatch() {
+            if (!currentProduct) return;
+            const lotNo = document.getElementById('disp-batch-id').value;
+            const qty = parseFloat(document.getElementById('disp-qty').value);
+            const reason = document.getElementById('disp-reason').value.trim();
+            
+            if (!lotNo || !qty || qty <= 0) {
+                showToast("Vui lòng nhập đầy đủ thông tin!", "error");
+                return;
+            }
+            
+            fetch('/api/dispatch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    productId: currentProduct.id,
+                    lotNo: lotNo, // We will send lotNo
+                    qty: qty,
+                    reason: reason
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(data.message, "success");
+                    closeForms();
+                    checkStock(currentProduct.barcode || currentProduct.id); // Reload
+                } else {
+                    showToast(data.message, "error");
+                }
+            })
+            .catch(err => showToast("Lỗi kết nối máy chủ", "error"));
+        }
+
+        // Submit Link Barcode
+        function submitLinkBarcode() {
+            if (!currentProduct) return;
+            const barcode = document.getElementById('link-barcode').value.trim();
+            
+            if (!barcode) {
+                showToast("Vui lòng nhập hoặc quét mã vạch!", "error");
+                return;
+            }
+            
+            fetch('/api/update-barcode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    productId: currentProduct.id,
+                    barcode: barcode
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(data.message, "success");
+                    closeForms();
+                    barcodeInput.value = barcode; // Update input
+                    checkStock(barcode); // Reload product details
+                } else {
+                    showToast(data.message, "error");
+                }
+            })
+            .catch(err => showToast("Lỗi kết nối máy chủ", "error"));
+        }
+
+        // Load Catalog List
+        function loadCatalog(query) {
+            const list = document.getElementById('catalog-list');
+            list.innerHTML = `
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    Đang tải danh sách...
+                </div>
+            `;
+            
+            fetch(`/api/products?q=${encodeURIComponent(query)}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success || data.products.length === 0) {
+                        list.innerHTML = '<div class="no-result">Không tìm thấy sản phẩm nào.</div>';
+                        return;
+                    }
+                    
+                    let html = '';
+                    data.products.forEach(p => {
+                        html += `
+                            <div class="product-item" onclick="selectProductFromCatalog('${p.barcode || p.id}')">
+                                <div class="product-item-details">
+                                    <span class="product-item-name">${p.name}</span>
+                                    <span class="product-item-sub">ĐVT: ${p.unit} ${p.barcode ? ' | Mã vạch: ' + p.barcode : ''}</span>
+                                </div>
+                                <span class="product-item-arrow">➔</span>
+                            </div>
+                        `;
+                    });
+                    list.innerHTML = html;
+                })
+                .catch(err => {
+                    list.innerHTML = '<div class="error-msg">Không thể tải danh sách sản phẩm.</div>';
+                });
+        }
+
+        function selectProductFromCatalog(identifier) {
+            barcodeInput.value = identifier;
+            switchTab('tab-checker');
+            checkStock(identifier);
+        }
+
+        // Create New Product functions
+        function openCreateProductForm() {
+            const form = document.getElementById('form-create-product');
+            form.style.display = 'block';
+            document.getElementById('new-name').value = '';
+            document.getElementById('new-unit').value = '';
+            document.getElementById('new-type').value = 'thuoc';
+            document.getElementById('new-barcode').value = '';
+            document.getElementById('new-regnumber').value = '';
+            form.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        }
+
+        function closeCreateProductForm() {
+            document.getElementById('form-create-product').style.display = 'none';
+        }
+
+        function submitCreateProduct() {
+            const name = document.getElementById('new-name').value.trim();
+            const unit = document.getElementById('new-unit').value.trim();
+            const type = document.getElementById('new-type').value;
+            const barcode = document.getElementById('new-barcode').value.trim();
+            const regNumber = document.getElementById('new-regnumber').value.trim();
+            
+            if (!name || !unit) {
+                showToast("Vui lòng nhập tên và đơn vị tính gốc!", "error");
+                return;
+            }
+            
+            fetch('/api/create-product', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: name,
+                    defaultUnit: unit,
+                    productType: type,
+                    barcode: barcode,
+                    registrationNumber: regNumber
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(data.message, "success");
+                    closeCreateProductForm();
+                    
+                    // Tự động chuyển qua tab Kiểm kho và tra cứu sản phẩm vừa tạo
+                    const identifier = data.barcode || barcode || data.productId;
+                    barcodeInput.value = identifier;
+                    switchTab('tab-checker');
+                    checkStock(identifier);
+                    
+                    // Tự động kích hoạt màn hình nhập kho
+                    setTimeout(() => {
+                        openForm('purchase');
+                    }, 600);
+                } else {
+                    showToast(data.message, "error");
+                }
+            })
+            .catch(err => showToast("Lỗi kết nối máy chủ", "error"));
+        }
+
+        // Setup Event Listeners
         searchBtn.addEventListener('click', () => {
             checkStock(barcodeInput.value.trim());
         });
@@ -6851,6 +7783,17 @@ MOBILE_HTML = """<!DOCTYPE html>
             }
         });
 
+        document.getElementById('catalog-search-btn').addEventListener('click', () => {
+            loadCatalog(document.getElementById('catalog-search').value.trim());
+        });
+
+        document.getElementById('catalog-search').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                loadCatalog(document.getElementById('catalog-search').value.trim());
+            }
+        });
+
+        // Setup Html5QrcodeScanner
         let lastScannedCode = "";
         let scanTime = 0;
 
@@ -6862,13 +7805,22 @@ MOBILE_HTML = """<!DOCTYPE html>
             lastScannedCode = decodedText;
             scanTime = now;
             
-            barcodeInput.value = decodedText;
-            
-            if (navigator.vibrate) {
-                navigator.vibrate(100);
+            // Prefill barcode update if form open, otherwise check stock
+            const barcodeForm = document.getElementById('form-barcode');
+            const createForm = document.getElementById('form-create-product');
+            if (barcodeForm.style.display === 'block') {
+                document.getElementById('link-barcode').value = decodedText;
+                showToast(`Đã quét mã mới: ${decodedText}`);
+                if (navigator.vibrate) navigator.vibrate(100);
+            } else if (createForm && createForm.style.display === 'block') {
+                document.getElementById('new-barcode').value = decodedText;
+                showToast(`Đã quét mã sản phẩm mới: ${decodedText}`);
+                if (navigator.vibrate) navigator.vibrate(100);
+            } else {
+                barcodeInput.value = decodedText;
+                if (navigator.vibrate) navigator.vibrate(100);
+                checkStock(decodedText);
             }
-            
-            checkStock(decodedText);
         }
 
         function onScanFailure(error) {}
@@ -6880,8 +7832,8 @@ MOBILE_HTML = """<!DOCTYPE html>
                     <p style="margin-bottom: 12px; color: #cbd5e1; font-size: 0.85rem;">Trình duyệt di động yêu cầu bảo mật HTTPS để mở camera. Bạn hãy chọn 1 trong các cách sau:</p>
                     
                     <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.08);">
-                        <strong style="color: #818cf8; font-size: 0.85rem;">Cách 1: Nhập tay (Nhanh & đơn giản)</strong><br>
-                        <span style="color: #94a3b8; font-size: 0.8rem;">Gõ tên sản phẩm hoặc mã vạch vào ô "Nhập mã vạch hoặc tên..." bên dưới và nhấn "Tìm".</span>
+                        <strong style="color: #818cf8; font-size: 0.85rem;">Cách 1: Tìm thủ công hoặc lọc từ Danh sách</strong><br>
+                        <span style="color: #94a3b8; font-size: 0.8rem;">Gõ tên sản phẩm vào ô tìm kiếm hoặc sang tab "Danh sách" để chọn nhanh sản phẩm cần kiểm tra.</span>
                     </div>
                     
                     <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.08);">
@@ -6893,11 +7845,6 @@ MOBILE_HTML = """<!DOCTYPE html>
                         <code style="color: #38bdf8; background: rgba(0,0,0,0.4); padding: 1px 4px; border-radius: 4px; font-size: 0.75rem; word-break: break-all;">${window.location.origin}</code><br>
                         4. Nhấn <b>Relaunch</b> để khởi động lại Chrome và tải lại trang này.
                         </span>
-                    </div>
-                    
-                    <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
-                        <strong style="color: #818cf8; font-size: 0.85rem;">Cách 3: Sử dụng phần mềm ngrok</strong><br>
-                        <span style="color: #94a3b8; font-size: 0.8rem;">Tải ngrok về máy tính, chạy lệnh <code style="color: #34d399; background: rgba(0,0,0,0.4); padding: 1px 4px; border-radius: 4px; font-size: 0.75rem;">ngrok http 5000</code> để lấy đường dẫn HTTPS an toàn.</span>
                     </div>
                 </div>
             `;
