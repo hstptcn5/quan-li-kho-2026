@@ -82,57 +82,21 @@ if errorlevel 1 (
 )
 
 echo.
-echo Building License Generator...
-pyinstaller ^
-    --onefile ^
-    --windowed ^
-    --name="LicenseGenerator" ^
-    --hidden-import=cryptography ^
-    --distpath="dist" ^
-    --workpath="build" ^
-    license_generator.py
-
-if errorlevel 1 (
-    echo WARNING: Failed to build License Generator
-)
-
-echo.
-echo Building Key Creator...
-pyinstaller ^
-    --onefile ^
-    --windowed ^
-    --name="KeyCreator" ^
-    --hidden-import=cryptography ^
-    --distpath="dist" ^
-    --workpath="build" ^
-    create_keys.py
-
-if errorlevel 1 (
-    echo WARNING: Failed to build Key Creator
-)
-
-echo.
 echo Creating documentation folder...
 if not exist "dist\docs" mkdir "dist\docs"
 copy "HUONG_DAN_SU_DUNG.md" "dist\docs\"
 copy "BARCODE_SETUP.md" "dist\docs\"
 copy "EXPORT_REPORTS.md" "dist\docs\"
-copy "README_LICENSE.md" "dist\docs\"
 
 echo.
 echo Creating README for distribution...
-echo Quan Ly Kho - Pharmacy Management System > "dist\README.txt"
-echo Version 1.0.0 >> "dist\README.txt"
+echo Quần lý XNT thuốc, vaccine và VTYT (CDC) > "dist\README.txt"
+echo Phiên bản 2.0.0 >> "dist\README.txt"
 echo. >> "dist\README.txt"
-echo Installation: >> "dist\README.txt"
-echo 1. Run QuanLyKho.exe to start the application >> "dist\README.txt"
-echo 2. For license activation, contact: hstptcn5@gmail.com >> "dist\README.txt"
+echo Cách khởi chạy: >> "dist\README.txt"
+echo 1. Chạy file QuanLyKho.exe để khởi chạy phần mềm >> "dist\README.txt"
 echo. >> "dist\README.txt"
-echo Tools included: >> "dist\README.txt"
-echo - LicenseGenerator.exe: Create licenses for customers >> "dist\README.txt"
-echo - KeyCreator.exe: Generate key pairs >> "dist\README.txt"
-echo. >> "dist\README.txt"
-echo Documentation: See docs folder >> "dist\README.txt"
+echo Tài liệu hướng dẫn: Xem chi tiết trong thư mục docs >> "dist\README.txt"
 
 echo.
 echo Cleaning up...

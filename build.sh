@@ -78,56 +78,20 @@ if [ $? -ne 0 ]; then
 fi
 
 echo
-echo "Building License Generator..."
-pyinstaller \
-    --onefile \
-    --windowed \
-    --name="LicenseGenerator" \
-    --hidden-import=cryptography \
-    --distpath="dist" \
-    --workpath="build" \
-    license_generator.py
-
-if [ $? -ne 0 ]; then
-    echo "WARNING: Failed to build License Generator"
-fi
-
-echo
-echo "Building Key Creator..."
-pyinstaller \
-    --onefile \
-    --windowed \
-    --name="KeyCreator" \
-    --hidden-import=cryptography \
-    --distpath="dist" \
-    --workpath="build" \
-    create_keys.py
-
-if [ $? -ne 0 ]; then
-    echo "WARNING: Failed to build Key Creator"
-fi
-
-echo
 echo "Creating documentation folder..."
 mkdir -p dist/docs
 cp HUONG_DAN_SU_DUNG.md dist/docs/
 cp BARCODE_SETUP.md dist/docs/
 cp EXPORT_REPORTS.md dist/docs/
-cp README_LICENSE.md dist/docs/
 
 echo
 echo "Creating README for distribution..."
 cat > dist/README.txt << EOF
-Quan Ly Kho - Pharmacy Management System
-Version 1.0.0
+Quan Ly Kho - CDC Management System
+Version 2.0.0
 
 Installation:
 1. Run QuanLyKho to start the application
-2. For license activation, contact: hstptcn5@gmail.com
-
-Tools included:
-- LicenseGenerator: Create licenses for customers
-- KeyCreator: Generate key pairs
 
 Documentation: See docs folder
 EOF
@@ -135,8 +99,6 @@ EOF
 echo
 echo "Setting executable permissions..."
 chmod +x dist/QuanLyKho
-chmod +x dist/LicenseGenerator
-chmod +x dist/KeyCreator
 
 echo
 echo "Cleaning up..."

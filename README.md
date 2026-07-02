@@ -1,28 +1,28 @@
-# 🏥 Phần Mềm Quản Lý Kho Hàng Hóa - Pharmacy Management System
+# 🏥 Hệ Thống Quản Lý Xuất-Nhập-Tồn Kho CDC - Vaccine và Vật tư Y tế
 
-> **Phần mềm quản lý kho hàng hóa chuyên nghiệp dành cho nhà thuốc, cửa hàng dược phẩm và các cơ sở kinh doanh cần quản lý xuất-nhập-tồn kho hàng hiệu quả, chính xác.**
+> **Hệ thống quản lý kho chuyên nghiệp dành cho Trung tâm Kiểm soát bệnh tật (CDC) và các cơ sở y tế nhằm quản lý xuất-nhập-tồn kho thuốc, vaccine và vật tư y tế hiệu quả, chính xác.**
 
 ---
 
 ## 🎯 Tổng quan dự án
 
-**Quản lý kho hàng hóa** là một ứng dụng Desktop chuyên nghiệp được xây dựng bằng ngôn ngữ lập trình Python, sử dụng giao diện hiện đại từ thư viện `ttkbootstrap`. Dự án tích hợp các công nghệ tiên tiến để tối ưu hóa quy trình quản lý kho, nhập kho bằng Excel, quét mã vạch bằng camera, và báo cáo trực quan.
+**Quản lý XNT CDC** là một ứng dụng Desktop chuyên nghiệp được xây dựng bằng ngôn ngữ lập trình Python, sử dụng giao diện hiện đại từ thư viện `ttkbootstrap`. Dự án tích hợp các công nghệ tiên tiến để tối ưu hóa quy trình quản lý kho y tế, nhập kho bằng Excel, quét mã vạch bằng camera di động, xuất phiếu nhập xuất PDF độc lập, và báo cáo trực quan.
 
 ---
 
 ## ✨ Các tính năng nổi bật
 
-- 🏥 **Quản lý danh mục hàng hóa**: Tra cứu, tìm kiếm nhanh sản phẩm với tính năng tự động gợi ý tên (autocomplete).
+- 🏥 **Quản lý danh mục chuẩn hóa**: Tra cứu, tìm kiếm nhanh sản phẩm thuốc/vaccine với tính năng tự động gợi ý tên (autocomplete) từ danh mục chuẩn.
 - 📋 **Nhập liệu hàng loạt (Excel)**: Cho phép tải file Excel mẫu và nhập hàng loạt danh mục sản phẩm kèm số lượng tồn kho ban đầu một cách nhanh chóng.
 - 🗑️ **Xóa phiếu an toàn**: Hỗ trợ xóa các phiếu nhập kho hoặc xuất kho bị nhập nhầm. Hệ thống tự động cân đối và trừ/hoàn trả số lượng tồn kho tương ứng của các lô hàng một cách chính xác qua cơ chế Database Transaction.
-- 📷 **Quét mã vạch (Barcode)**: Tích hợp camera thời gian thực để quét mã vạch sản phẩm (EAN, UPC, Code128, QR Code) và tự động điền thông tin nhanh.
+- 📷 **Quét mã vạch (Barcode)**: Tích hợp camera điện thoại thông qua App di động để quét mã vạch sản phẩm (EAN, UPC, Code128, QR Code) và tự động điền thông tin nhanh.
 - 📊 **Báo cáo chuyên sâu**:
-  - Báo cáo doanh thu, chi phí, lợi nhuận chi tiết.
-  - Thống kê top sản phẩm bán chạy nhất.
+  - Báo cáo Xuất - Nhập - Tồn chi tiết theo từng Số lô và Hạn sử dụng.
+  - Kết xuất Biên bản kiểm kê kho (Mẫu C33-HD) ra file PDF độc lập.
+  - Thống kê chi tiết lượng cấp phát cho từng đơn vị nhận y tế.
   - Xuất báo cáo đẹp mắt sang các định dạng Excel (.xlsx), PDF và CSV.
 - 💾 **Sao lưu và phục hồi**: Tự động hoặc chủ động tạo bản sao lưu cơ sở dữ liệu (`pharm.db`) để bảo vệ dữ liệu tuyệt đối.
-- 🔐 **Hệ thống bản quyền (License)**: Kích hoạt bản quyền ngoại tuyến (offline) bảo mật cao bằng chữ ký số Ed25519.
-- 🎨 **Giao diện người dùng hiện đại**: Thiết kế giao diện phẳng sang trọng, tối ưu trải nghiệm người dùng với các hiệu ứng tương tác mượt mà.
+- 🎨 **Giao diện người dùng hiện đại**: Thiết kế giao diện phẳng sang trọng (theme Flatly), tối ưu trải nghiệm người dùng với các hiệu ứng tương tác mượt mà.
 
 ---
 
@@ -42,7 +42,7 @@ python -m pip install -r requirements.txt
 
 Hoặc cài đặt thủ công các thư viện chính:
 ```bash
-python -m pip install ttkbootstrap>=1.10.1 cryptography>=3.4.8 schedule>=1.2.0 matplotlib>=3.5.0 pandas>=1.5.0 openpyxl>=3.0.0 opencv-python>=4.5.0 pyzbar>=0.1.9 Pillow>=8.0.0 reportlab>=3.6.0
+python -m pip install ttkbootstrap>=1.10.1 schedule>=1.2.0 matplotlib>=3.5.0 pandas>=1.5.0 openpyxl>=3.0.0 opencv-python>=4.5.0 pyzbar>=0.1.9 Pillow>=8.0.0 reportlab>=3.6.0
 ```
 
 ### Khởi chạy ứng dụng
@@ -83,7 +83,7 @@ Chạy file script đóng gói tự động:
 ```cmd
 build.bat
 ```
-*(Script sẽ tự động cài đặt PyInstaller nếu thiếu, cài đặt các dependencies và đóng gói ứng dụng chính cùng các công cụ quản lý khóa bản quyền vào thư mục `dist`).*
+*(Script sẽ tự động cài đặt PyInstaller nếu thiếu, cài đặt các dependencies và đóng gói ứng dụng chính vào thư mục `dist`).*
 
 ---
 
@@ -93,7 +93,6 @@ build.bat
 - 📖 [Hướng dẫn sử dụng chi tiết](HUONG_DAN_SU_DUNG.md) - Hướng dẫn vận hành đầy đủ từng tab chức năng.
 - 📷 [Hướng dẫn thiết lập quét mã vạch](BARCODE_SETUP.md) - Hướng dẫn cấu hình camera quét barcode.
 - 📊 [Hướng dẫn xuất báo cáo](EXPORT_REPORTS.md) - Chi tiết cấu trúc xuất báo cáo Excel và PDF.
-- 🔐 [Hướng dẫn hệ thống License](README_LICENSE.md) - Hướng dẫn sinh khóa bản quyền cho khách hàng.
 - 📝 [Nhật ký thay đổi (Changelog)](CHANGELOG.md) - Nhật ký phát triển qua các phiên bản.
 
 ---
@@ -103,7 +102,7 @@ build.bat
 - **Tác giả**: Hồ Sỷ Thoảng
 - **Email**: hstptcn5@gmail.com
 - **Số điện thoại**: 0329381189
-- **Bản quyền**: **Commercial License** - Tất cả các quyền được bảo lưu.
+- **Bản quyền**: **Free / Open Source**
 
 ---
 

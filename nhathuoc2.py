@@ -77,7 +77,7 @@ os.makedirs(APP_DIR, exist_ok=True)
 
 DB_PATH  = os.path.join(APP_DIR, 'pharm.db')
 LOG_PATH = os.path.join(APP_DIR, 'app.log')
-LIC_PATH = os.path.join(APP_DIR, 'license.lic')  # LicenseManager cũng dùng đường dẫn này
+
 BACKUP_DIR = os.path.join(APP_DIR, 'backups')
 os.makedirs(BACKUP_DIR, exist_ok=True)
 
@@ -207,29 +207,7 @@ CREATE TABLE IF NOT EXISTS purchase_items (
   cost REAL NOT NULL
 );
 '''
-# --- Hardware fingerprint (ổn định, không cần quyền admin) ---
-def machine_fingerprint() -> str:
-    import uuid, platform, hashlib, subprocess, os
-    parts = [
-        platform.node() or '',
-        platform.system() or '',
-        platform.machine() or '',
-        hex(uuid.getnode()) or ''
-    ]
-    if os.name == 'nt':
-        # cố gắng lấy 1 trong 2: BIOS serial / CSProduct UUID
-        for cmd in ('wmic bios get serialnumber', 'wmic csproduct get uuid'):
-            try:
-                out = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL)
-                lines = [x.strip() for x in out.decode(errors='ignore').splitlines()
-                         if x.strip() and 'serial' not in x.lower() and 'uuid' not in x.lower()]
-                if lines:
-                    parts.append(lines[-1])
-                    break
-            except Exception:
-                pass
-    raw = '|'.join(parts)
-    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]  # 16 hex là đủ
+
 
 # ---------------- DB ----------------
 class DB:
@@ -345,7 +323,7 @@ class DB:
         '''
         return self.q(sql)
 
-    def expiring_view(self, days=90):
+    def expiring_view(self, days=180):
         sql = '''
         SELECT * FROM (
             SELECT p.id AS productId, p.name AS productName, sm.batchId, b.lotNo, b.expiryDate,
@@ -3400,7 +3378,7 @@ Hiện tại bạn vẫn có thể:
         frm = self.tab_alerts
         top = tb.Frame(frm); top.pack(fill='x', padx=8, pady=8)
         tb.Label(top, text='Cảnh báo trong (ngày):').pack(side='left')
-        self.ent_warn_days = tb.Entry(top, width=6); self.ent_warn_days.insert(0, '90'); self.ent_warn_days.pack(side='left', padx=6)
+        self.ent_warn_days = tb.Entry(top, width=6); self.ent_warn_days.insert(0, '180'); self.ent_warn_days.pack(side='left', padx=6)
         self._numberize(self.ent_warn_days)
         tb.Button(top, text='Làm mới', bootstyle='secondary', command=self.refresh_alerts).pack(side='left', padx=8)
 
@@ -5496,7 +5474,7 @@ Hiện tại bạn vẫn có thể:
 
     def refresh_alerts(self):
         try: days = int(self.ent_warn_days.get())
-        except: days = 90
+        except: days = 180
         self._fill_tree(self.tree_alerts, self.db.expiring_view(days))
 
     def refresh_report(self):
@@ -6060,73 +6038,7 @@ Hiện tại bạn vẫn có thể:
         tb.Button(main_frame, text="Đóng", bootstyle='secondary', command=dialog.destroy).pack(pady=(15, 0), side='right')
 
 
-# --- LicenseManager: xác minh license offline (Ed25519, không cần PyNaCl) ---
-import os, json, base64
-from tkinter import simpledialog, messagebox
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from cryptography.exceptions import InvalidSignature
 
-try:
-    LIC_PATH
-except NameError:
-    APP_DIR = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'Nhathuoc')
-    os.makedirs(APP_DIR, exist_ok=True)
-    LIC_PATH = os.path.join(APP_DIR, 'license.lic')
-
-PUBLIC_B64 = "cfCth+TwUKiTYPS0gjUoSmwEBBPM6ElQo82e8RdtWl8="  # Public key từ dist/private_key.pem
-
-class LicenseError(Exception): pass
-
-class LicenseManager:
-    def __init__(self):
-        self.data = None
-
-    def _verify(self, lic_str: str):
-        try:
-            pack = json.loads(base64.b64decode(lic_str).decode('utf-8'))
-            payload = pack["payload"]; sig_b64 = pack["sig"]
-        except Exception as e:
-            raise LicenseError("Định dạng license không hợp lệ") from e
-
-        blob = json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
-        sig  = base64.b64decode(sig_b64)
-        pub  = base64.b64decode(PUBLIC_B64)
-
-        try:
-            Ed25519PublicKey.from_public_bytes(pub).verify(sig, blob)
-        except InvalidSignature:
-            raise LicenseError("License không hợp lệ hoặc bị chỉnh sửa")
-
-        if payload.get("product") != "nhathuoc":
-            raise LicenseError("License sai sản phẩm")
-
-        # Khớp fingerprint (nếu cấp theo máy)
-        try:
-            hw_now = machine_fingerprint()
-        except Exception:
-            hw_now = None
-        if payload.get("hw") and hw_now and payload["hw"] != hw_now:
-            raise LicenseError("License không thuộc máy này")
-
-        self.data = payload
-        return payload
-
-    def load(self):
-        if not os.path.exists(LIC_PATH):
-            raise LicenseError("Chưa kích hoạt")
-        lic_str = open(LIC_PATH, 'r', encoding='utf-8').read().strip()
-        return self._verify(lic_str)
-
-    def prompt_and_save(self, tkroot=None):
-        lic = simpledialog.askstring("Kích hoạt", "Dán license vĩnh viễn cho máy này:")
-        if not lic:
-            raise LicenseError("Không có license")
-        self._verify(lic)
-        with open(LIC_PATH, 'w', encoding='utf-8') as f:
-            f.write(lic.strip())
-        messagebox.showinfo("Kích hoạt", "Kích hoạt thành công! Khởi chạy đầy đủ tính năng.")
-        return self.data
-# --- /LicenseManager ---
 
 # --- Barcode Scanner ---
 class BarcodeScanner:
@@ -9400,7 +9312,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                     let badgeHtml = '';
                     if (diffDays <= 0) {
                         badgeHtml = '<span class="badge badge-expired">Hết hạn</span>';
-                    } else if (diffDays <= 90) {
+                    } else if (diffDays <= 180) {
                         badgeHtml = `<span class="badge badge-warning">Cận hạn (${diffDays} ngày)</span>`;
                     } else {
                         badgeHtml = '<span class="badge badge-ok">Hạn tốt</span>';

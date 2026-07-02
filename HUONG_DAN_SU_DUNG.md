@@ -15,11 +15,11 @@
 
 ## 🎯 GIỚI THIỆU TỔNG QUAN
 
-**Phần mềm Quản lý kho hàng hóa** là một ứng dụng desktop được phát triển bằng Python, sử dụng giao diện ttkbootstrap hiện đại. Phần mềm được thiết kế đặc biệt cho các nhà thuốc, cửa hàng dược phẩm và các cơ sở kinh doanh cần quản lý kho hàng chuyên nghiệp.
+**Hệ thống Quản lý Xuất-Nhập-Tồn CDC** là một ứng dụng desktop được phát triển bằng Python, sử dụng giao diện ttkbootstrap hiện đại. Phần mềm được thiết kế đặc biệt cho Trung tâm Kiểm soát bệnh tật (CDC) và các cơ sở y tế nhằm quản lý kho thuốc, vaccine và vật tư y tế (VTYT) chuyên nghiệp.
 
 ### **Thông tin phần mềm:**
-- **Tên:** Quản lý kho hàng hóa
-- **Phiên bản:** 1.0.0
+- **Tên:** Quản lý XNT thuốc, vaccine và VTYT
+- **Phiên bản:** 2.0.0
 - **Tác giả:** Hồ Sỷ Thoảng
 - **Email:** hstptcn5@gmail.com
 - **Điện thoại:** 0329381189
@@ -27,12 +27,12 @@
 
 ### **Đặc điểm nổi bật:**
 - ✅ **Giao diện hiện đại** với ttkbootstrap
-- ✅ **Quản lý đa dạng sản phẩm** (thuốc, hàng hóa)
-- ✅ **Hệ thống barcode** với camera
-- ✅ **Báo cáo nâng cao** với xuất Excel/PDF
+- ✅ **Quản lý đa dạng sản phẩm** (thuốc, vaccine, vật tư y tế)
+- ✅ **Quy trình xuất FEFO** tự động ưu tiên lô cận hạn dùng trước
+- ✅ **Hệ thống barcode** quét bằng camera di động hoặc webcam
+- ✅ **Báo cáo XNT & Biên bản kiểm kê** chuyên nghiệp theo mẫu y tế
 - ✅ **Sao lưu tự động** và khôi phục dữ liệu
-- ✅ **Hệ thống license** bảo mật
-- ✅ **Danh mục thuốc** tự động
+- ✅ **Không cần license** sử dụng trực tiếp và vĩnh viễn
 
 ---
 
@@ -58,7 +58,6 @@ pip install -r requirements.txt
 
 # Hoặc cài đặt từng thư viện:
 pip install ttkbootstrap>=1.10.1
-pip install cryptography>=3.4.8
 pip install schedule>=1.2.0
 pip install matplotlib>=3.5.0
 pip install pandas>=1.5.0
@@ -75,13 +74,6 @@ pip install reportlab>=3.6.0
 python nhathuoc2.py
 ```
 
-### **Bước 4: Kích hoạt license (Lần đầu)**
-1. Phần mềm sẽ hiển thị dialog kích hoạt
-2. Copy **Hardware Fingerprint** (tự động copy vào clipboard)
-3. Gửi fingerprint cho tác giả để nhận license
-4. Paste license vào dialog kích hoạt
-5. Click "Kích hoạt" để hoàn tất
-
 ---
 
 ## 🚀 HƯỚNG DẪN SỬ DỤNG CƠ BẢN
@@ -90,60 +82,51 @@ python nhathuoc2.py
 Phần mềm có giao diện tab với các module chính:
 
 1. **📦 Sản phẩm** - Quản lý danh mục sản phẩm
-2. **📥 Nhập hàng** - Nhập hàng vào kho
-3. **🧾 Bán hàng POS** - Bán hàng tại quầy
+2. **📥 Nhập kho** - Lập phiếu nhập kho nhiều sản phẩm
+3. **📤 Xuất kho / Cấp phát** - Lập phiếu xuất kho cấp phát theo nguyên tắc FEFO
 4. **📊 Tồn kho** - Xem tồn kho hiện tại
-5. **⚠️ Cảnh báo** - Cảnh báo hết hàng
-6. **📈 Báo cáo** - Báo cáo cơ bản
-7. **📊 Báo cáo nâng cao** - Báo cáo chi tiết
-8. **💾 Sao lưu** - Sao lưu và khôi phục
+5. **⏰ Hết hạn** - Quản lý và cảnh báo hạn dùng thuốc
+6. **📄 Báo cáo XNT** - Báo cáo Xuất - Nhập - Tồn chi tiết
+7. **📈 Báo cáo nâng cao** - Báo cáo thống kê chi tiết theo đơn vị nhận, trend biểu đồ
+8. **💾 Backup** - Sao lưu và khôi phục cơ sở dữ liệu
+9. **📱 Kiểm kho di động** - Module máy chủ mini đồng bộ với điện thoại
 
 ### **Workflow cơ bản:**
-1. **Thêm sản phẩm** → Tab "Sản phẩm"
-2. **Nhập hàng** → Tab "Nhập hàng"
-3. **Bán hàng** → Tab "Bán hàng POS"
-4. **Xem báo cáo** → Tab "Báo cáo nâng cao"
+1. **Khai báo sản phẩm** → Tab "Sản phẩm" (Hỗ trợ tự động autocomplete từ danh mục thuốc chuẩn của CDC hoặc tạo thuốc mới tự do)
+2. **Lập Phiếu Nhập** → Tab "Nhập kho"
+3. **Lập Phiếu Xuất** → Tab "Xuất kho / Cấp phát" (FEFO tự động)
+4. **Xem báo cáo & Biên bản kiểm kê** → Tab "Báo cáo XNT" hoặc "Báo cáo nâng cao"
 
 ---
 
 ## ⭐ CÁC TÍNH NĂNG NỔI BẬT
 
-### **1. 🏥 Quản lý danh mục thuốc**
+### **1. 🏥 Quản lý danh mục chuẩn hóa**
 - **Tự động load** file `thuoc.csv` khi khởi động
-- **Autocomplete** tên thuốc với gợi ý thông minh
-- **Tự động điền** thông tin: tên, số đăng ký, đơn vị
-- **Hỗ trợ** cả thuốc và hàng hóa thông thường
+- **Autocomplete** tên thuốc/vaccine với gợi ý thông minh
+- **Tự động điền** thông tin chuẩn: tên, đơn vị cơ sở, số đăng ký
+- **Hỗ trợ** linh hoạt tạo thuốc ngoài danh mục khi cần thiết
 
-### **2. 📷 Quét barcode bằng camera**
-- **Real-time scanning** với OpenCV
+### **2. 📷 Quét barcode bằng camera di động**
+- **Real-time scanning** trực tiếp qua camera điện thoại thông qua module companion di động
 - **Hỗ trợ nhiều định dạng:** EAN, UPC, Code128, QR Code
-- **Tự động điền** thông tin sản phẩm
-- **Giao diện chuyên nghiệp** với video feed
+- **Tự động điền** thông tin sản phẩm và quản lý lô/hạn dùng ngay trên điện thoại
 
-### **3. 📊 Báo cáo nâng cao**
-- **Báo cáo doanh thu** theo ngày/tháng/năm
-- **Báo cáo lợi nhuận** chi tiết
-- **Top sản phẩm** bán chạy
-- **Biểu đồ trực quan** với matplotlib
-- **Xuất Excel/PDF/CSV** chuyên nghiệp
+### **3. 📊 Báo cáo nâng cao & Biên bản kiểm kê y tế**
+- **Báo cáo XNT** chi tiết theo từng Số lô và Hạn sử dụng của sản phẩm
+- **Kết xuất Biên bản kiểm kê** (Mẫu C33-HD) độc lập ra PDF có sẵn cột Số lượng sổ sách và ô trống đếm thực tế
+- **Vẽ biểu đồ** xu hướng cấp phát y tế trực quan
+- **Xuất Excel/PDF/CSV** chuyên nghiệp, in ấn độc lập qua thư viện ReportLab
 
-### **4. 💾 Sao lưu và khôi phục**
+### **4. 💾 Sao lưu và khôi phục dữ liệu**
 - **Sao lưu tự động** hàng ngày
 - **Sao lưu thủ công** bất kỳ lúc nào
-- **Khôi phục** từ file backup
-- **Export/Import** toàn bộ dữ liệu
+- **Khôi phục** an toàn từ file backup
 
-### **5. 🔐 Hệ thống license**
-- **Bảo mật Ed25519** với chữ ký số
-- **Hardware fingerprinting** gắn với máy tính
-- **License Generator Tool** cho việc bán phần mềm
-- **Offline verification** không cần internet
-
-### **6. 🎨 Giao diện hiện đại**
-- **Theme ttkbootstrap** tươi sáng
-- **Toolbar** với các nút nhanh
-- **Status bar** hiển thị thông tin chi tiết
-- **Tooltips** hướng dẫn sử dụng
+### **5. 🎨 Giao diện hiện đại & Đồng bộ**
+- **Theme ttkbootstrap** Flatly sạch sẽ, chuyên nghiệp
+- **Toolbar** với các nút nhanh đồng bộ màu xanh dương nhạt (info)
+- **Status bar** hiển thị thông tin chi tiết và Tooltips hướng dẫn sử dụng
 
 ---
 
@@ -185,40 +168,33 @@ Phần mềm có giao diện tab với các module chính:
    - **Giá nhập:** Giá mua vào
 4. Click **"Nhập hàng"**
 
-### **🧾 MODULE BÁN HÀNG POS**
+### **📤 MODULE XUẤT KHO / CẤP PHÁT**
 
-#### **Bán hàng tại quầy:**
-1. Vào tab **"🧾 Bán hàng POS"**
-2. **Quét barcode:**
-   - Nhập barcode thủ công
-   - Hoặc click "📷 Quét" để dùng camera
-3. **Tìm sản phẩm:**
-   - Gõ tên sản phẩm
-   - Chọn từ dropdown
-4. **Thêm vào giỏ:**
-   - Nhập số lượng
-   - Click "Thêm vào giỏ"
-5. **Thanh toán:**
-   - Xem tổng tiền
-   - Nhập số tiền khách đưa
-   - Click "Thanh toán"
+#### **Lập Phiếu xuất kho:**
+1. Vào tab **"📤 Xuất kho / Cấp phát"**
+2. **Chọn Sản phẩm**:
+   - Gõ tên sản phẩm/thuốc để xem gợi ý autocomplete.
+   - Nhập Số lượng xuất.
+   - Click **"Thêm vào giỏ"**. Hệ thống sẽ tự động phân bổ theo lô có hạn sử dụng gần nhất (FEFO).
+3. **Thông tin phiếu xuất**:
+   - Nhập tên **Đơn vị nhận** (tự động gợi ý nếu đã từng xuất).
+   - Chọn **Ngày xuất** (mặc định là ngày hiện tại).
+   - Nhập **Lý do xuất** (Cấp phát định kỳ, Viện trợ tuyến dưới, Chuyển kho...).
+4. Click **"Lập phiếu & In PDF"** để kết xuất phiếu xuất kho.
 
 #### **Tính năng quét barcode:**
-- **Mở camera:** Click "📷 Quét"
-- **Đưa barcode** vào khung hình
-- **Tự động thêm** vào giỏ hàng
-- **Điều khiển:** Bắt đầu/Dừng/Đóng
+- Dùng camera điện thoại thông qua App di động để quét trực tiếp và tự động thêm sản phẩm vào giỏ xuất.
 
 ### **📊 MODULE BÁO CÁO NÂNG CAO**
 
 #### **Xem báo cáo:**
 1. Vào tab **"📊 Báo cáo nâng cao"**
-2. Chọn khoảng thời gian
-3. Click loại báo cáo:
-   - **💰 Báo cáo doanh thu**
-   - **📊 Báo cáo lợi nhuận**
-   - **🏆 Top sản phẩm**
-   - **📈 Biểu đồ doanh thu**
+2. Chọn khoảng thời gian cần thống kê.
+3. Click chọn loại báo cáo:
+   - **💰 Thống kê Cấp phát theo ngày**: Tổng quan lượng cấp phát qua các ngày.
+   - **🏢 Thống kê theo Đơn vị nhận**: Phân tích chi tiết thuốc được chuyển tới những đơn vị nào.
+   - **🏆 Top sản phẩm cấp phát**: Thống kê các thuốc/vaccine dùng nhiều nhất.
+   - **📈 Biểu đồ xu hướng**: Trực quan hóa dữ liệu bằng biểu đồ.
 
 #### **Xuất báo cáo:**
 - **📊 Excel:** Xuất file .xlsx
@@ -350,28 +326,16 @@ pyinstaller --onefile --windowed --name="QuanLyKho" --icon=icon.ico --add-data="
 echo "Build completed! Check dist folder."
 ```
 
-### **Tạo License Generator Tool:**
-```bash
-# Đóng gói License Generator
-pyinstaller --onefile --windowed --name="LicenseGenerator" license_generator.py
-
-# Đóng gói Key Creator
-pyinstaller --onefile --windowed --name="KeyCreator" create_keys.py
-```
-
 ### **Cấu trúc thư mục sau khi đóng gói:**
 ```
 QuanLyKho/
 ├── QuanLyKho.exe          # Ứng dụng chính
-├── LicenseGenerator.exe   # Tool tạo license
-├── KeyCreator.exe         # Tool tạo key
 ├── thuoc.csv             # Danh mục thuốc mẫu
 ├── README.txt            # Hướng dẫn cài đặt
 └── docs/                 # Tài liệu
     ├── HUONG_DAN_SU_DUNG.md
     ├── BARCODE_SETUP.md
-    ├── EXPORT_REPORTS.md
-    └── README_LICENSE.md
+    └── EXPORT_REPORTS.md
 ```
 
 ---
@@ -390,11 +354,6 @@ pip install [tên_thư_viện]
 - Kiểm tra camera có được kết nối
 - Đảm bảo không có ứng dụng khác đang sử dụng camera
 - Cài đặt: `pip install opencv-python pyzbar Pillow`
-
-#### **3. Lỗi license không hợp lệ**
-- Kiểm tra hardware fingerprint có đúng
-- Đảm bảo license chưa hết hạn
-- Liên hệ tác giả để gia hạn
 
 #### **4. Lỗi database bị khóa**
 - Đóng tất cả instance của phần mềm
@@ -462,22 +421,7 @@ sales (id, createdAt, total, paid, change, note)
 sale_items (id, saleId, productId, unitCode, qty, price)
 ```
 
-### **B. Cấu trúc license:**
-```json
-{
-  "payload": {
-    "product": "nhathuoc",
-    "customer": "Tên khách hàng",
-    "hw": "hardware_fingerprint",
-    "expires": "2025-12-31",
-    "features": ["full"],
-    "created": "2024-01-01 10:00:00"
-  },
-  "sig": "ed25519_signature"
-}
-```
-
-### **C. Keyboard shortcuts:**
+### **B. Keyboard shortcuts:**
 - **Ctrl+N:** Sản phẩm mới
 - **Ctrl+S:** Lưu
 - **Ctrl+O:** Mở
@@ -486,6 +430,6 @@ sale_items (id, saleId, productId, unitCode, qty, price)
 
 ---
 
-**© 2024 Hồ Sỷ Thoảng. Tất cả quyền được bảo lưu.**
+**© 2026 Hồ Sỷ Thoảng. Tất cả quyền được bảo lưu.**
 
-*Phiên bản tài liệu: 1.0.0 - Cập nhật: 2024*
+*Phiên bản tài liệu: 2.0.0 - Cập nhật: 2026*

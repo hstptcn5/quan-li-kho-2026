@@ -79,7 +79,7 @@
 Hệ thống đã được cấu hình để tự động tìm kiếm và đóng gói các DLL này. Bạn có 2 cách đóng gói:
 
 ### Cách 1: Sử dụng file `build.bat` (Khuyên dùng)
-File `build.bat` đã được cấu hình đầy đủ để cài đặt thư viện cần thiết, tự dò tìm thư mục cài đặt `pyzbar` để copy DLL, đính kèm file dữ liệu `thuoc.csv` và đóng gói cả 3 công cụ (`QuanLyKho.exe`, `LicenseGenerator.exe`, `KeyCreator.exe`).
+File `build.bat` đã được cấu hình đầy đủ để cài đặt thư viện cần thiết, tự dò tìm thư mục cài đặt `pyzbar` để copy DLL, đính kèm file dữ liệu `thuoc.csv` và đóng gói ứng dụng chính (`QuanLyKho.exe`).
 1. Kích đúp vào file **`build.bat`** tại thư mục dự án (hoặc chạy trong CMD/PowerShell: `.\build.bat`).
 2. Chờ chương trình tự động thực hiện và nhấn một phím bất kỳ để hoàn tất.
 3. Toàn bộ file chạy và tài liệu hướng dẫn sẽ nằm trong thư mục **`dist/`**.

@@ -190,7 +190,7 @@ Năm 2026
 
 **Nội dung:**
 - Báo cáo **Xuất – Nhập – Tồn** theo khoảng thời gian tùy chọn
-- **Cảnh báo** danh sách hàng sắp hết hạn trong 90 ngày
+- **Cảnh báo** danh sách hàng sắp hết hạn trước 6 tháng (180 ngày)
 - **Biểu đồ trực quan** hóa dữ liệu (matplotlib)
 - Xuất file **Excel (.xlsx)** và **PDF** chuyên nghiệp
 
@@ -230,7 +230,7 @@ Năm 2026
 | Tuân thủ FEFO | Không đảm bảo | **100% tự động** |
 | Lập báo cáo XNT | 2–3 ngày | **Dưới 5 phút** |
 | Sai sót số lô trên phiếu xuất | Thường xuyên | **0%** |
-| Cảnh báo hàng sắp hết hạn | Không có | **Tự động (90 ngày)** |
+| Cảnh báo hàng sắp hết hạn | Không có | **Tự động (180 ngày)** |
 | Sao lưu dữ liệu | Không có | **Tự động hàng ngày** |
 
 > *(Slide quan trọng nhất — nên làm nổi bật bằng màu sắc, các con số gây ấn tượng)*
