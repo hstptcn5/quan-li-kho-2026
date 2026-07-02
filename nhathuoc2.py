@@ -6519,12 +6519,125 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/pc-print":
             note_type = query.get("type", [""])[0].strip() # purchase or dispatch
             note_id = query.get("id", [""])[0].strip()
+            if note_type == 'nhap':
+                note_type = 'purchase'
+            elif note_type == 'xuat':
+                note_type = 'dispatch'
+                
             if not note_type or not note_id:
                 self.send_json({"success": False, "message": "Thiếu thông tin loại phiếu hoặc ID"}, 400)
                 return
             
             success, msg = self.print_to_pc_printer(note_type, note_id)
             self.send_json({"success": success, "message": msg})
+
+        elif path == "/api/note-details":
+            note_type = query.get("type", [""])[0].strip()
+            note_id = query.get("id", [""])[0].strip()
+            if note_type == 'nhap':
+                note_type = 'purchase'
+            elif note_type == 'xuat':
+                note_type = 'dispatch'
+                
+            if not note_type or not note_id:
+                self.send_json({"success": False, "message": "Thiếu thông tin loại phiếu hoặc ID"}, 400)
+                return
+            
+            import sqlite3
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                
+                if note_type == 'purchase':
+                    note = conn.execute("SELECT id, noteNumber, supplier as partner, createdAt, reason, note FROM purchase_notes WHERE id=?", (note_id,)).fetchone()
+                    if not note:
+                        conn.close()
+                        self.send_json({"success": False, "message": "Không tìm thấy phiếu nhập"}, 404)
+                        return
+                    items = conn.execute("""
+                        SELECT pi.qty, pi.lotNo, pi.expiryDate, p.name as productName, p.defaultUnit as unit
+                        FROM purchase_items pi
+                        JOIN products p ON pi.productId = p.id
+                        WHERE pi.purchaseId = ?
+                    """, (note_id,)).fetchall()
+                else:
+                    note = conn.execute("SELECT id, noteNumber, receivingUnit as partner, createdAt, reason, note FROM dispatch_notes WHERE id=?", (note_id,)).fetchone()
+                    if not note:
+                        conn.close()
+                        self.send_json({"success": False, "message": "Không tìm thấy phiếu xuất"}, 404)
+                        return
+                    items = conn.execute("""
+                        SELECT di.qty, di.lotNo, p.name as productName, p.defaultUnit as unit
+                        FROM dispatch_items di
+                        JOIN products p ON di.productId = p.id
+                        WHERE di.dispatchId = ?
+                    """, (note_id,)).fetchall()
+                
+                conn.close()
+                
+                res_items = []
+                for it in items:
+                    res_items.append({
+                        "productName": it["productName"],
+                        "qty": it["qty"],
+                        "unit": it["unit"],
+                        "lotNo": it["lotNo"],
+                        "expiryDate": it["expiryDate"] if "expiryDate" in it.keys() else ""
+                    })
+                
+                self.send_json({
+                    "success": True,
+                    "type": "nhap" if note_type == 'purchase' else "xuat",
+                    "noteNumber": note["noteNumber"],
+                    "partner": note["partner"],
+                    "createdAt": note["createdAt"],
+                    "reason": note["reason"],
+                    "note": note["note"],
+                    "items": res_items
+                })
+            except Exception as e:
+                self.send_json({"success": False, "message": f"Database error: {str(e)}"}, 500)
+
+        elif path == "/api/recent-activities":
+            import sqlite3
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                purchases = conn.execute("""
+                    SELECT id, noteNumber, supplier as details, createdAt
+                    FROM purchase_notes
+                    ORDER BY id DESC LIMIT 5
+                """).fetchall()
+                dispatches = conn.execute("""
+                    SELECT id, noteNumber, receivingUnit as details, createdAt
+                    FROM dispatch_notes
+                    ORDER BY id DESC LIMIT 5
+                """).fetchall()
+                conn.close()
+                
+                # Kết hợp và sắp xếp theo ngày tạo giảm dần
+                combined = []
+                for r in purchases:
+                    combined.append({
+                        "type": "nhap",
+                        "id": r["id"],
+                        "noteNumber": r["noteNumber"],
+                        "details": r["details"],
+                        "createdAt": r["createdAt"]
+                    })
+                for r in dispatches:
+                    combined.append({
+                        "type": "xuat",
+                        "id": r["id"],
+                        "noteNumber": r["noteNumber"],
+                        "details": r["details"],
+                        "createdAt": r["createdAt"]
+                    })
+                combined.sort(key=lambda x: x["createdAt"], reverse=True)
+                
+                self.send_json({"success": True, "activities": combined[:8]})
+            except Exception as e:
+                self.send_json({"success": False, "message": str(e)}, 500)
 
         else:
             self.send_response(404)
@@ -7375,6 +7488,87 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
                 
         elif path == "/api/purchase":
+            items = data.get("items")
+            supplier = data.get("supplier", "Nhập kho di động").strip() or "Nhập kho di động"
+            reason = data.get("reason", "Nhập qua điện thoại").strip() or "Nhập qua điện thoại"
+            note = data.get("note", "Tạo tự động từ điện thoại").strip() or "Tạo tự động từ điện thoại"
+
+            if items is not None:
+                if not isinstance(items, list) or len(items) == 0:
+                    self.send_json({"success": False, "message": "Danh sách mặt hàng nhập trống"}, 400)
+                    return
+                for item in items:
+                    p_id = item.get("productId")
+                    qty = item.get("qty")
+                    lot_no = str(item.get("lotNo", "")).strip()
+                    expiry_date = str(item.get("expiryDate", "")).strip()
+                    if not p_id or not qty or not lot_no or not expiry_date:
+                        self.send_json({"success": False, "message": "Thông tin mặt hàng nhập không đầy đủ"}, 400)
+                        return
+                    try:
+                        item["qty"] = float(qty)
+                        if item["qty"] <= 0: raise ValueError()
+                    except ValueError:
+                        self.send_json({"success": False, "message": "Số lượng phải là số dương lớn hơn 0"}, 400)
+                        return
+                
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.row_factory = sqlite3.Row
+                    conn.execute('PRAGMA foreign_keys = ON')
+                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    note_num = f"PNK-MOB-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                    
+                    with conn:
+                        cur = conn.execute("""
+                            INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt)
+                            VALUES(?, ?, ?, ?, ?)
+                        """, (note_num, supplier, reason, note, now_str))
+                        purchase_id = cur.lastrowid
+                        
+                        for item in items:
+                            p_id = item["productId"]
+                            qty = item["qty"]
+                            lot_no = str(item["lotNo"]).strip()
+                            expiry_date = str(item["expiryDate"]).strip()
+                            
+                            prod = conn.execute("SELECT defaultUnit FROM products WHERE id=?", (p_id,)).fetchone()
+                            if not prod:
+                                raise Exception(f"Không tìm thấy sản phẩm ID {p_id}")
+                            unit = prod['defaultUnit']
+                            
+                            batch = conn.execute("SELECT id FROM batches WHERE productId=? AND lotNo=?", (p_id, lot_no)).fetchone()
+                            if batch:
+                                batch_id = batch['id']
+                            else:
+                                cur_b = conn.execute("INSERT INTO batches(productId, lotNo, expiryDate) VALUES(?,?,?)", (p_id, lot_no, expiry_date))
+                                batch_id = cur_b.lastrowid
+                                
+                            conn.execute("""
+                                INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost)
+                                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (purchase_id, p_id, batch_id, unit, qty, lot_no, expiry_date, 0.0))
+                            
+                            conn.execute("""
+                                INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, cost, reason, createdAt)
+                                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (p_id, batch_id, unit, qty, 'PURCHASE', 0.0, reason, now_str))
+                            
+                    conn.close()
+                    if hasattr(self.server, 'app_instance') and self.server.app_instance:
+                        self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
+                        
+                    self.send_json({
+                        "success": True, 
+                        "message": f"Đã tạo phiếu nhập {note_num} với {len(items)} mặt hàng",
+                        "purchaseId": purchase_id,
+                        "noteNumber": note_num
+                    })
+                except Exception as e:
+                    self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
+                return
+
+            # Single-item backward-compatible logic
             product_id = data.get("productId")
             qty = data.get("qty")
             lot_no = data.get("lotNo", "").strip()
@@ -7395,12 +7589,10 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 conn = sqlite3.connect(DB_PATH)
                 conn.row_factory = sqlite3.Row
                 conn.execute('PRAGMA foreign_keys = ON')
-                
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 note_num = f"PNK-MOB-{datetime.now().strftime('%Y%m%d%H%M%S')}"
                 
                 with conn:
-                    # Lấy thông tin sản phẩm
                     prod = conn.execute("SELECT name, defaultUnit FROM products WHERE id=?", (product_id,)).fetchone()
                     if not prod:
                         self.send_json({"success": False, "message": "Không tìm thấy sản phẩm"}, 404)
@@ -7408,7 +7600,6 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         return
                     unit = prod['defaultUnit']
                     
-                    # 1. Thêm hoặc lấy lô
                     batch = conn.execute("SELECT id FROM batches WHERE productId=? AND lotNo=?", (product_id, lot_no)).fetchone()
                     if batch:
                         batch_id = batch['id']
@@ -7416,28 +7607,23 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         cur = conn.execute("INSERT INTO batches(productId, lotNo, expiryDate) VALUES(?,?,?)", (product_id, lot_no, expiry_date))
                         batch_id = cur.lastrowid
                         
-                    # 2. Tạo phiếu nhập
                     cur = conn.execute("""
                         INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt)
                         VALUES(?, ?, ?, ?, ?)
-                    """, (note_num, "Nhập kho di động", "Nhập qua điện thoại", "Tạo tự động từ điện thoại", now_str))
+                    """, (note_num, supplier, reason, note, now_str))
                     purchase_id = cur.lastrowid
                     
-                    # 3. Tạo chi tiết phiếu nhập
                     conn.execute("""
                         INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost)
                         VALUES(?, ?, ?, ?, ?, ?, ?, ?)
                     """, (purchase_id, product_id, batch_id, unit, qty, lot_no, expiry_date, 0.0))
                     
-                    # 4. Tạo stock movement
                     conn.execute("""
                         INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, cost, reason, createdAt)
                         VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (product_id, batch_id, unit, qty, 'PURCHASE', 0.0, 'Nhập qua điện thoại', now_str))
+                    """, (product_id, batch_id, unit, qty, 'PURCHASE', 0.0, reason, now_str))
                     
                 conn.close()
-                
-                # Cập nhật UI trên Main Thread
                 if hasattr(self.server, 'app_instance') and self.server.app_instance:
                     self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
                     
@@ -7451,10 +7637,111 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
                 
         elif path == "/api/dispatch":
+            items = data.get("items")
+            receiving_unit = data.get("receivingUnit", "Điện thoại di động").strip() or "Điện thoại di động"
+            reason_str = data.get("reason", "Xuất qua điện thoại").strip() or "Xuất qua điện thoại"
+            note = data.get("note", "Tạo tự động từ điện thoại").strip() or "Tạo tự động từ điện thoại"
+
+            if items is not None:
+                if not isinstance(items, list) or len(items) == 0:
+                    self.send_json({"success": False, "message": "Danh sách mặt hàng xuất trống"}, 400)
+                    return
+                for item in items:
+                    p_id = item.get("productId")
+                    qty = item.get("qty")
+                    lot_no = str(item.get("lotNo", "")).strip()
+                    if not p_id or not qty or not lot_no:
+                        self.send_json({"success": False, "message": "Thông tin mặt hàng xuất không đầy đủ"}, 400)
+                        return
+                    try:
+                        item["qty"] = float(qty)
+                        if item["qty"] <= 0: raise ValueError()
+                    except ValueError:
+                        self.send_json({"success": False, "message": "Số lượng phải là số dương lớn hơn 0"}, 400)
+                        return
+                
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.row_factory = sqlite3.Row
+                    conn.execute('PRAGMA foreign_keys = ON')
+                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    note_num = f"PXK-MOB-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                    
+                    with conn:
+                        for item in items:
+                            p_id = item["productId"]
+                            qty = item["qty"]
+                            lot_no = item["lotNo"]
+                            
+                            prod = conn.execute("SELECT name, defaultUnit FROM products WHERE id=?", (p_id,)).fetchone()
+                            if not prod:
+                                raise Exception(f"Không tìm thấy sản phẩm ID {p_id}")
+                            unit = prod['defaultUnit']
+                            
+                            batch = conn.execute("SELECT id, expiryDate FROM batches WHERE productId=? AND lotNo=?", (p_id, lot_no)).fetchone()
+                            if not batch:
+                                self.send_json({"success": False, "message": f"Không tìm thấy lô '{lot_no}' của sản phẩm '{prod['name']}'"}, 400)
+                                conn.close()
+                                return
+                            batch_id = batch['id']
+                            item["batchId"] = batch_id
+                            item["expiryDate"] = batch['expiryDate']
+                            item["unit"] = unit
+                            
+                            existing_qty = conn.execute("""
+                                SELECT COALESCE(SUM(qty), 0) as qtyBase
+                                FROM stock_movements
+                                WHERE productId=? AND batchId=?
+                            """, (p_id, batch_id)).fetchone()
+                            
+                            current_stock = float(existing_qty['qtyBase']) if existing_qty else 0.0
+                            if current_stock < qty:
+                                self.send_json({"success": False, "message": f"Mặt hàng '{prod['name']}' lô '{lot_no}' không đủ tồn kho (cần {qty}, có {current_stock} {unit})"}, 400)
+                                conn.close()
+                                return
+                        
+                        cur = conn.execute("""
+                            INSERT INTO dispatch_notes(noteNumber, receivingUnit, reason, note, createdAt)
+                            VALUES(?, ?, ?, ?, ?)
+                        """, (note_num, receiving_unit, reason_str, note, now_str))
+                        dispatch_id = cur.lastrowid
+                        
+                        for item in items:
+                            p_id = item["productId"]
+                            qty = item["qty"]
+                            lot_no = item["lotNo"]
+                            batch_id = item["batchId"]
+                            expiry_date = item["expiryDate"]
+                            unit = item["unit"]
+                            
+                            conn.execute("""
+                                INSERT INTO dispatch_items(dispatchId, productId, batchId, unitCode, qty, lotNo, expiryDate)
+                                VALUES(?, ?, ?, ?, ?, ?, ?)
+                            """, (dispatch_id, p_id, batch_id, unit, qty, lot_no, expiry_date))
+                            
+                            conn.execute("""
+                                INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, reason, createdAt)
+                                VALUES(?, ?, ?, ?, ?, ?, ?)
+                            """, (p_id, batch_id, unit, -qty, 'DISPATCH', reason_str, now_str))
+                            
+                    conn.close()
+                    if hasattr(self.server, 'app_instance') and self.server.app_instance:
+                        self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
+                        
+                    self.send_json({
+                        "success": True, 
+                        "message": f"Đã tạo phiếu xuất {note_num} với {len(items)} mặt hàng",
+                        "dispatchId": dispatch_id,
+                        "noteNumber": note_num
+                    })
+                except Exception as e:
+                    self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
+                return
+
+            # Single-item backward-compatible logic
             product_id = data.get("productId")
             lot_no = data.get("lotNo", "").strip()
             qty = data.get("qty")
-            reason_str = data.get("reason", "Xuất qua điện thoại").strip() or "Xuất qua điện thoại"
             
             if not product_id or not lot_no or not qty:
                 self.send_json({"success": False, "message": "Vui lòng nhập đầy đủ thông tin"}, 400)
@@ -7476,7 +7763,6 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 note_num = f"PXK-MOB-{datetime.now().strftime('%Y%m%d%H%M%S')}"
                 
                 with conn:
-                    # Lấy thông tin sản phẩm và đơn vị
                     prod = conn.execute("SELECT name, defaultUnit FROM products WHERE id=?", (product_id,)).fetchone()
                     if not prod:
                         self.send_json({"success": False, "message": "Không tìm thấy sản phẩm"}, 404)
@@ -7484,7 +7770,6 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         return
                     unit = prod['defaultUnit']
                     
-                    # Lấy thông tin lô
                     batch = conn.execute("SELECT id, lotNo, expiryDate FROM batches WHERE productId=? AND lotNo=?", (product_id, lot_no)).fetchone()
                     if not batch:
                         self.send_json({"success": False, "message": f"Không tìm thấy lô hàng '{lot_no}' của sản phẩm này"}, 404)
@@ -7493,7 +7778,6 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     batch_id = batch['id']
                     expiry_date = batch['expiryDate']
                     
-                    # Kiểm tra tồn kho của lô hàng
                     existing_qty = conn.execute("""
                         SELECT COALESCE(SUM(qty), 0) as qtyBase
                         FROM stock_movements
@@ -7506,28 +7790,23 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         conn.close()
                         return
                         
-                    # 1. Tạo phiếu xuất
                     cur = conn.execute("""
                         INSERT INTO dispatch_notes(noteNumber, receivingUnit, reason, note, createdAt)
                         VALUES(?, ?, ?, ?, ?)
-                    """, (note_num, "Điện thoại di động", reason_str, "Tạo tự động từ điện thoại", now_str))
+                    """, (note_num, receiving_unit, reason_str, note, now_str))
                     dispatch_id = cur.lastrowid
                     
-                    # 2. Tạo chi tiết phiếu xuất
                     conn.execute("""
                         INSERT INTO dispatch_items(dispatchId, productId, batchId, unitCode, qty, lotNo, expiryDate)
                         VALUES(?, ?, ?, ?, ?, ?, ?)
                     """, (dispatch_id, product_id, batch_id, unit, qty, lot_no, expiry_date))
                     
-                    # 3. Tạo stock movement
                     conn.execute("""
                         INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, reason, createdAt)
                         VALUES(?, ?, ?, ?, ?, ?, ?)
                     """, (product_id, batch_id, unit, -qty, 'DISPATCH', reason_str, now_str))
                     
                 conn.close()
-                
-                # Cập nhật UI trên Main Thread
                 if hasattr(self.server, 'app_instance') and self.server.app_instance:
                     self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
                     
@@ -7624,16 +7903,16 @@ MOBILE_HTML = """<!DOCTYPE html>
     <title>Kiểm Kho Di Động</title>
     <style>
         :root {
-            --primary: #6366f1;
-            --primary-hover: #4f46e5;
-            --bg-grad: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
-            --glass-bg: rgba(255, 255, 255, 0.05);
-            --glass-border: rgba(255, 255, 255, 0.1);
-            --text-light: #f8fafc;
-            --text-muted: #94a3b8;
-            --success: #10b981;
-            --warning: #f59e0b;
-            --danger: #ef4444;
+            --primary: #0284c7;
+            --primary-hover: #0369a1;
+            --bg-grad: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+            --glass-bg: rgba(255, 255, 255, 0.65);
+            --glass-border: rgba(2, 132, 199, 0.12);
+            --text-light: #0f172a;
+            --text-muted: #475569;
+            --success: #0d9488;
+            --warning: #ea580c;
+            --danger: #e11d48;
         }
         * {
             box-sizing: border-box;
@@ -7670,9 +7949,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             font-size: 1.4rem;
             font-weight: 700;
             letter-spacing: 0.5px;
-            background: linear-gradient(to right, #a5b4fc, #818cf8);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            color: #0369a1;
             display: flex;
             align-items: center;
             gap: 8px;
@@ -7684,7 +7961,7 @@ MOBILE_HTML = """<!DOCTYPE html>
         .nav-tabs {
             display: flex;
             width: 100%;
-            background: rgba(255, 255, 255, 0.03);
+            background: rgba(2, 132, 199, 0.04);
             border: 1px solid var(--glass-border);
             border-radius: 12px;
             padding: 4px;
@@ -7708,7 +7985,7 @@ MOBILE_HTML = """<!DOCTYPE html>
         .tab-btn.active {
             background: var(--primary);
             color: #fff;
-            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+            box-shadow: 0 4px 12px rgba(2, 130, 199, 0.3);
         }
         .tab-content {
             display: none;
@@ -7725,7 +8002,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             -webkit-backdrop-filter: blur(10px);
             border-radius: 16px;
             padding: 15px;
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+            box-shadow: 0 8px 32px 0 rgba(2, 132, 199, 0.08);
         }
         .scanner-card {
             overflow: hidden;
@@ -7756,8 +8033,8 @@ MOBILE_HTML = """<!DOCTYPE html>
             background: var(--primary-hover) !important;
         }
         #reader select {
-            background: rgba(0, 0, 0, 0.5) !important;
-            color: #fff !important;
+            background: rgba(255, 255, 255, 0.8) !important;
+            color: var(--text-light) !important;
             border: 1px solid var(--glass-border) !important;
             padding: 8px !important;
             border-radius: 8px !important;
@@ -7770,11 +8047,11 @@ MOBILE_HTML = """<!DOCTYPE html>
         }
         .search-box input {
             flex: 1;
-            background: rgba(0, 0, 0, 0.4);
+            background: rgba(255, 255, 255, 0.8);
             border: 1px solid var(--glass-border);
             border-radius: 8px;
             padding: 10px 12px;
-            color: #fff;
+            color: var(--text-light);
             font-size: 0.95rem;
             outline: none;
             transition: border-color 0.2s;
@@ -7802,7 +8079,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             display: flex;
             align-items: center;
             gap: 6px;
-            color: #fff;
+            color: var(--text-light);
             border-bottom: 1px solid var(--glass-border);
             padding-bottom: 8px;
         }
@@ -7822,7 +8099,7 @@ MOBILE_HTML = """<!DOCTYPE html>
         }
         .info-value {
             font-weight: 600;
-            color: #fff;
+            color: var(--text-light);
         }
         .batch-list {
             display: flex;
@@ -7830,8 +8107,8 @@ MOBILE_HTML = """<!DOCTYPE html>
             gap: 8px;
         }
         .batch-item {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            background: rgba(255, 255, 255, 0.45);
+            border: 1px solid rgba(2, 132, 199, 0.08);
             border-radius: 10px;
             padding: 10px 12px;
             display: flex;
@@ -7845,7 +8122,7 @@ MOBILE_HTML = """<!DOCTYPE html>
         }
         .batch-lot {
             font-weight: 700;
-            color: #a5b4fc;
+            color: #0369a1;
             font-size: 0.95rem;
         }
         .batch-qty {
@@ -7868,19 +8145,19 @@ MOBILE_HTML = """<!DOCTYPE html>
             text-transform: uppercase;
         }
         .badge-expired {
-            background: rgba(239, 68, 68, 0.2);
+            background: rgba(225, 29, 72, 0.12);
             color: var(--danger);
-            border: 1px solid rgba(239, 68, 68, 0.3);
+            border: 1px solid rgba(225, 29, 72, 0.2);
         }
         .badge-warning {
-            background: rgba(245, 158, 11, 0.2);
+            background: rgba(234, 88, 12, 0.12);
             color: var(--warning);
-            border: 1px solid rgba(245, 158, 11, 0.3);
+            border: 1px solid rgba(234, 88, 12, 0.2);
         }
         .badge-ok {
-            background: rgba(16, 185, 129, 0.2);
+            background: rgba(13, 148, 136, 0.12);
             color: var(--success);
-            border: 1px solid rgba(16, 185, 129, 0.3);
+            border: 1px solid rgba(13, 148, 136, 0.2);
         }
         
         /* Modals & Form buttons */
@@ -7917,14 +8194,14 @@ MOBILE_HTML = """<!DOCTYPE html>
             margin-top: 15px;
             padding: 12px;
             border-radius: 12px;
-            background: rgba(0, 0, 0, 0.25);
-            border: 1px dashed rgba(255,255,255,0.15);
+            background: rgba(255, 255, 255, 0.5);
+            border: 1px dashed rgba(2, 132, 199, 0.2);
             display: none;
         }
         .form-title {
             font-size: 0.95rem;
             font-weight: 700;
-            color: #fff;
+            color: var(--text-light);
             margin-bottom: 10px;
             display: flex;
             align-items: center;
@@ -7942,11 +8219,11 @@ MOBILE_HTML = """<!DOCTYPE html>
             font-weight: 600;
         }
         .form-control {
-            background: rgba(0, 0, 0, 0.4);
+            background: rgba(255, 255, 255, 0.85);
             border: 1px solid var(--glass-border);
             border-radius: 6px;
             padding: 8px 10px;
-            color: #fff;
+            color: var(--text-light);
             font-size: 0.9rem;
             outline: none;
         }
@@ -7968,7 +8245,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             font-size: 0.85rem;
         }
         .btn-submit { background: var(--primary); color: #fff; }
-        .btn-cancel { background: rgba(255,255,255,0.1); color: var(--text-light); }
+        .btn-cancel { background: rgba(0, 0, 0, 0.05); color: var(--text-light); }
         
         /* Product catalog */
         .product-list {
@@ -7981,8 +8258,8 @@ MOBILE_HTML = """<!DOCTYPE html>
             padding-right: 2px;
         }
         .product-item {
-            background: rgba(255,255,255,0.02);
-            border: 1px solid rgba(255,255,255,0.05);
+            background: rgba(255, 255, 255, 0.55);
+            border: 1px solid rgba(2, 132, 199, 0.08);
             border-radius: 10px;
             padding: 10px 12px;
             cursor: pointer;
@@ -7992,7 +8269,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             align-items: center;
         }
         .product-item:hover {
-            background: rgba(255,255,255,0.06);
+            background: rgba(255, 255, 255, 0.85);
         }
         .product-item-details {
             display: flex;
@@ -8001,7 +8278,7 @@ MOBILE_HTML = """<!DOCTYPE html>
         }
         .product-item-name {
             font-weight: 600;
-            color: #fff;
+            color: var(--text-light);
             font-size: 0.9rem;
         }
         .product-item-sub {
@@ -8020,7 +8297,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(15, 23, 42, 0.7);
+            background: rgba(15, 23, 42, 0.45);
             backdrop-filter: blur(8px);
             -webkit-backdrop-filter: blur(8px);
             display: flex;
@@ -8030,14 +8307,14 @@ MOBILE_HTML = """<!DOCTYPE html>
             animation: fadeIn 0.25s ease-out;
         }
         .modal-content {
-            background: rgba(30, 27, 75, 0.85);
+            background: rgba(255, 255, 255, 0.96);
             border: 1px solid var(--glass-border);
             border-radius: 20px;
             padding: 24px;
             width: 90%;
             max-width: 380px;
             text-align: center;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+            box-shadow: 0 20px 40px rgba(2, 132, 199, 0.12);
             animation: scaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
         }
         .modal-icon {
@@ -8048,7 +8325,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             font-size: 1.25rem;
             font-weight: 700;
             margin-bottom: 8px;
-            color: #fff;
+            color: var(--text-light);
         }
         .modal-content p {
             font-size: 0.9rem;
@@ -8080,7 +8357,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             background: var(--primary-hover);
         }
         .btn-modal-close {
-            background: rgba(255, 255, 255, 0.08);
+            background: rgba(0, 0, 0, 0.05);
             color: var(--text-light);
             border: 1px solid var(--glass-border);
             padding: 12px;
@@ -8091,7 +8368,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             transition: background 0.2s;
         }
         .btn-modal-close:hover {
-            background: rgba(255, 255, 255, 0.15);
+            background: rgba(0, 0, 0, 0.08);
         }
         @keyframes fadeIn {
             from { opacity: 0; }
@@ -8100,6 +8377,49 @@ MOBILE_HTML = """<!DOCTYPE html>
         @keyframes scaleIn {
             from { transform: scale(0.9); opacity: 0; }
             to { transform: scale(1); opacity: 1; }
+        }
+        .cart-item-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: rgba(2, 132, 199, 0.04);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            margin-bottom: 8px;
+        }
+        .cart-item-details {
+            flex: 1;
+        }
+        .cart-item-name {
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: var(--text-light);
+        }
+        .cart-item-meta {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+        .btn-cart-remove {
+            background: none;
+            border: none;
+            color: #ef4444;
+            font-size: 1.1rem;
+            cursor: pointer;
+            padding: 4px 8px;
+            transition: opacity 0.2s;
+        }
+        .btn-cart-remove:hover {
+            opacity: 0.7;
+        }
+        .preview-table th, .preview-table td {
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--glass-border);
+            color: var(--text-light);
+        }
+        .preview-table tbody tr:last-child td {
+            border-bottom: none;
         }
         
         /* Toast notification system */
@@ -8182,6 +8502,79 @@ MOBILE_HTML = """<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- Cart Review Modal -->
+    <div id="cart-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content" style="max-width: 440px; text-align: left;">
+            <h3 id="cart-modal-title" style="text-align: center; margin-bottom: 12px; color: var(--primary);">🛒 Giỏ Hàng</h3>
+            
+            <div id="cart-items-container" style="max-height: 200px; overflow-y: auto; margin-bottom: 15px; border-bottom: 1px solid var(--glass-border); padding-bottom: 10px;">
+                <!-- Cart items will be generated here -->
+            </div>
+            
+            <div id="cart-form-fields">
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label id="cart-partner-label" style="font-weight: 600; font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Nhà cung cấp *</label>
+                    <input type="text" id="cart-partner-input" class="form-control" placeholder="Nhập tên đối tác..." />
+                </div>
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label id="cart-reason-label" style="font-weight: 600; font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Lý do thực hiện *</label>
+                    <input type="text" id="cart-reason-input" class="form-control" placeholder="Lý do..." />
+                </div>
+                <div class="form-group" style="margin-bottom: 15px;">
+                    <label style="font-weight: 600; font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Ghi chú</label>
+                    <input type="text" id="cart-note-input" class="form-control" placeholder="Ghi chú thêm..." />
+                </div>
+            </div>
+            
+            <div class="modal-actions" style="margin-top: 15px; gap: 8px;">
+                <button id="btn-cart-submit-pc" class="btn-modal-print" style="background: #10b981;">
+                    🖥️ Tạo phiếu & In PC
+                </button>
+                <button id="btn-cart-submit-phone" class="btn-modal-print">
+                    📱 Tạo phiếu & In ĐT
+                </button>
+                <button class="btn-modal-close" onclick="closeCartModal()">Đóng</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Note Preview Modal -->
+    <div id="preview-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content" style="max-width: 460px; text-align: left;">
+            <h3 id="preview-modal-title" style="text-align: center; margin-bottom: 12px; color: var(--primary);">📋 Xem Trước Phiếu</h3>
+            
+            <div id="preview-info-container" style="font-size: 0.85rem; line-height: 1.5; margin-bottom: 12px; background: rgba(0,0,0,0.02); padding: 10px; border-radius: 10px; border: 1px solid var(--glass-border);">
+                <!-- General note metadata will be injected here -->
+            </div>
+            
+            <div style="font-weight: 600; font-size: 0.85rem; color: var(--text-light); margin-bottom: 6px;">Danh sách sản phẩm:</div>
+            <div id="preview-items-container" style="max-height: 180px; overflow-y: auto; margin-bottom: 15px; border: 1px solid var(--glass-border); border-radius: 8px; background: #fff;">
+                <table class="preview-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem;">
+                    <thead>
+                        <tr style="background: rgba(2, 132, 199, 0.08); border-bottom: 1px solid var(--glass-border);">
+                            <th style="padding: 6px 8px; text-align: left;">Tên sản phẩm</th>
+                            <th style="padding: 6px 8px; text-align: center; width: 65px;">Lô</th>
+                            <th style="padding: 6px 8px; text-align: right; width: 65px;">SL</th>
+                        </tr>
+                    </thead>
+                    <tbody id="preview-table-body">
+                        <!-- Table rows will be generated here -->
+                    </tbody>
+                </table>
+            </div>
+            
+            <div class="modal-actions" style="margin-top: 15px; gap: 8px;">
+                <button id="btn-preview-submit-pc" class="btn-modal-print" style="background: #10b981;">
+                    🖥️ Xác nhận In PC
+                </button>
+                <button id="btn-preview-submit-phone" class="btn-modal-print">
+                    📱 Tải về / Xem PDF ĐT
+                </button>
+                <button class="btn-modal-close" onclick="closePreviewModal()">Đóng</button>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <header>
             <h1>🏥 Quản Lý Kho Di Động</h1>
@@ -8192,6 +8585,17 @@ MOBILE_HTML = """<!DOCTYPE html>
         <div class="nav-tabs">
             <button class="tab-btn active" onclick="switchTab('tab-checker')">🔍 Kiểm Kho</button>
             <button class="tab-btn" onclick="switchTab('tab-catalog')">📋 Danh Sách</button>
+            <button class="tab-btn" onclick="switchTab('tab-history')">📜 Lịch Sử</button>
+        </div>
+
+        <!-- Cart Status Bar -->
+        <div id="cart-status-bar" style="display: none; gap: 8px; width: 100%; margin-top: 5px; margin-bottom: 10px;">
+            <div id="cart-purchase-btn" onclick="openCartModal('purchase')" style="flex: 1; background: #0d9488; color: #fff; padding: 10px; border-radius: 12px; font-weight: bold; text-align: center; font-size: 0.82rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 4px 12px rgba(13, 148, 136, 0.15);">
+                📥 Giỏ Nhập: <span id="cart-purchase-count">0</span> món
+            </div>
+            <div id="cart-dispatch-btn" onclick="openCartModal('dispatch')" style="flex: 1; background: #e11d48; color: #fff; padding: 10px; border-radius: 12px; font-weight: bold; text-align: center; font-size: 0.82rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 4px 12px rgba(225, 29, 72, 0.15);">
+                📤 Giỏ Xuất: <span id="cart-dispatch-count">0</span> món
+            </div>
         </div>
 
         <!-- Tab 1: Kiểm kho và quét mã vạch -->
@@ -8228,9 +8632,12 @@ MOBILE_HTML = """<!DOCTYPE html>
                             <label>Hạn sử dụng</label>
                             <input type="date" id="pur-expiry" class="form-control" required />
                         </div>
-                        <div class="form-actions">
-                            <button class="btn-cancel" onclick="closeForms()">Hủy</button>
-                            <button class="btn-submit" onclick="submitPurchase()">Xác Nhận Nhập</button>
+                        <div class="form-actions" style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="display: flex; gap: 8px; width: 100%;">
+                                <button class="btn-cancel" onclick="closeForms()" style="flex: 1; margin: 0; padding: 10px;">Hủy</button>
+                                <button class="btn-submit" onclick="addToCart('purchase')" style="flex: 2; background: #0d9488; margin: 0; padding: 10px;">📥 Thêm vào giỏ</button>
+                            </div>
+                            <button class="btn-submit" onclick="submitPurchase()" style="width: 100%; margin: 0; padding: 10px;">Nhập & Tạo phiếu ngay</button>
                         </div>
                     </div>
                     
@@ -8249,9 +8656,12 @@ MOBILE_HTML = """<!DOCTYPE html>
                             <label>Lý do xuất</label>
                             <input type="text" id="disp-reason" class="form-control" placeholder="Ví dụ: Hao hụt, Cấp phát di động,..." value="Xuất qua điện thoại" />
                         </div>
-                        <div class="form-actions">
-                            <button class="btn-cancel" onclick="closeForms()">Hủy</button>
-                            <button class="btn-submit" onclick="submitDispatch()">Xác Nhận Xuất</button>
+                        <div class="form-actions" style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="display: flex; gap: 8px; width: 100%;">
+                                <button class="btn-cancel" onclick="closeForms()" style="flex: 1; margin: 0; padding: 10px;">Hủy</button>
+                                <button class="btn-submit" onclick="addToCart('dispatch')" style="flex: 2; background: #e11d48; margin: 0; padding: 10px;">📤 Thêm vào giỏ</button>
+                            </div>
+                            <button class="btn-submit" onclick="submitDispatch()" style="width: 100%; margin: 0; padding: 10px;">Xuất & Tạo phiếu ngay</button>
                         </div>
                     </div>
 
@@ -8274,7 +8684,7 @@ MOBILE_HTML = """<!DOCTYPE html>
         <!-- Tab 2: Danh sách sản phẩm -->
         <div id="tab-catalog" class="tab-content">
             <div class="card">
-                <button class="action-btn btn-purchase" style="margin-bottom: 12px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; background: #6366f1; font-size: 0.9rem;" onclick="openCreateProductForm()">➕ Thêm Sản Phẩm Mới</button>
+                <button class="action-btn" style="margin-bottom: 12px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; background: var(--primary); font-size: 0.9rem;" onclick="openCreateProductForm()">➕ Thêm Sản Phẩm Mới</button>
                 
                 <!-- Thêm sản phẩm mới form -->
                 <div id="form-create-product" class="form-container" style="margin-bottom: 15px; border-style: solid; border-color: var(--primary);">
@@ -8317,6 +8727,16 @@ MOBILE_HTML = """<!DOCTYPE html>
                 <div id="catalog-list" class="product-list"></div>
             </div>
         </div>
+        
+        <!-- Tab 3: Lịch sử hoạt động -->
+        <div id="tab-history" class="tab-content">
+            <div class="card">
+                <div class="result-title">📜 Lịch sử hoạt động gần đây</div>
+                <div id="history-list" class="product-list">
+                    <div style="text-align: center; color: var(--text-muted); padding: 20px;">Đang tải...</div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="https://unpkg.com/html5-qrcode"></script>
@@ -8329,19 +8749,21 @@ MOBILE_HTML = """<!DOCTYPE html>
         let currentProduct = null;
         let currentProductBatches = [];
 
-        // Switching Tabs
         function switchTab(tabId) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
             
             document.getElementById(tabId).classList.add('active');
             
-            // Find tab button matching target tabId
-            const btnIndex = (tabId === 'tab-checker') ? 0 : 1;
+            let btnIndex = 0;
+            if (tabId === 'tab-catalog') btnIndex = 1;
+            else if (tabId === 'tab-history') btnIndex = 2;
             document.querySelectorAll('.tab-btn')[btnIndex].classList.add('active');
             
             if (tabId === 'tab-catalog') {
                 loadCatalog('');
+            } else if (tabId === 'tab-history') {
+                loadRecentActivities();
             }
         }
 
@@ -8413,6 +8835,408 @@ MOBILE_HTML = """<!DOCTYPE html>
         function closePrintModal() {
             document.getElementById('print-modal').style.display = 'none';
         }
+
+        function loadRecentActivities() {
+            const historyList = document.getElementById('history-list');
+            historyList.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px;">Đang tải lịch sử...</div>`;
+            
+            fetch('/api/recent-activities')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success && data.activities.length > 0) {
+                        historyList.innerHTML = '';
+                        data.activities.forEach(act => {
+                            const dateStr = act.createdAt;
+                            let formattedDate = dateStr;
+                            try {
+                                const parts = dateStr.split(' ');
+                                const dateParts = parts[0].split('-');
+                                formattedDate = `${dateParts[2]}/${dateParts[1]} ${parts[1].substring(0, 5)}`;
+                            } catch(e) {}
+                            
+                            const item = document.createElement('div');
+                            item.className = 'product-item';
+                            item.style.cursor = 'default';
+                            item.style.flexDirection = 'column';
+                            item.style.alignItems = 'stretch';
+                            item.style.gap = '8px';
+                            
+                            const isPurchase = act.type === 'nhap';
+                            const badgeColor = isPurchase ? 'var(--success)' : 'var(--danger)';
+                            const typeLabel = isPurchase ? 'NHẬP KHO' : 'XUẤT KHO';
+                            
+                            item.innerHTML = `
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span style="font-weight: bold; font-size: 0.8rem; padding: 2px 6px; border-radius: 4px; background: ${badgeColor}; color: #fff;">${typeLabel}</span>
+                                    <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 500;">${formattedDate}</span>
+                                </div>
+                                <div style="font-weight: 600; font-size: 0.9rem; color: var(--text-light); margin: 2px 0;">Số phiếu: ${act.noteNumber}</div>
+                                <div style="font-size: 0.8rem; color: var(--text-muted);">${isPurchase ? 'Nhà cung cấp' : 'Đơn vị nhận'}: ${act.details}</div>
+                                <div style="display: flex; gap: 8px; margin-top: 6px; border-top: 1px solid var(--glass-border); padding-top: 8px;">
+                                    <button onclick="showNotePreview('${act.type}', ${act.id})" style="flex: 1; padding: 8px; background: var(--primary); border: none; border-radius: 8px; color: #fff; font-weight: bold; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                                        🔎 Xem trước & In phiếu
+                                    </button>
+                                </div>
+                            `;
+                            historyList.appendChild(item);
+                        });
+                    } else {
+                        historyList.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px;">Không có hoạt động gần đây</div>`;
+                    }
+                })
+                .catch(err => {
+                    historyList.innerHTML = `<div style="text-align: center; color: var(--danger); padding: 20px;">Lỗi tải dữ liệu</div>`;
+                });
+        }
+        
+        function printActivityPC(type, noteId, btn) {
+            btn.disabled = true;
+            const origText = btn.innerHTML;
+            btn.textContent = '⌛...';
+            
+            fetch(`/api/pc-print?type=${type}&id=${noteId}`)
+                .then(res => res.json())
+                .then(data => {
+                    btn.disabled = false;
+                    btn.innerHTML = origText;
+                    showToast(data.message, data.success ? "success" : "error");
+                })
+                .catch(err => {
+                    btn.disabled = false;
+                    btn.innerHTML = origText;
+                    showToast("Lỗi gửi lệnh in PC", "error");
+                });
+        }
+        
+        function printActivityPhone(type, noteId) {
+            const url = type === 'nhap' ? `/api/print-purchase?id=${noteId}` : `/api/print-dispatch?id=${noteId}`;
+            window.open(url, '_blank');
+        }
+
+        // --- Cart Management Javascript ---
+        let purchaseCart = JSON.parse(localStorage.getItem('mob_purchase_cart')) || [];
+        let dispatchCart = JSON.parse(localStorage.getItem('mob_dispatch_cart')) || [];
+
+        function updateCartStatus() {
+            const pCount = purchaseCart.length;
+            const dCount = dispatchCart.length;
+            
+            document.getElementById('cart-purchase-count').textContent = pCount;
+            document.getElementById('cart-dispatch-count').textContent = dCount;
+            
+            const statusBar = document.getElementById('cart-status-bar');
+            const pBtn = document.getElementById('cart-purchase-btn');
+            const dBtn = document.getElementById('cart-dispatch-btn');
+            
+            if (pCount > 0 || dCount > 0) {
+                statusBar.style.display = 'flex';
+                pBtn.style.display = pCount > 0 ? 'flex' : 'none';
+                dBtn.style.display = dCount > 0 ? 'flex' : 'none';
+            } else {
+                statusBar.style.display = 'none';
+            }
+        }
+
+        function addToCart(type) {
+            if (!currentProduct) return;
+            
+            if (type === 'purchase') {
+                const qty = parseFloat(document.getElementById('pur-qty').value);
+                const lotNo = document.getElementById('pur-lot').value.trim();
+                const expiry = document.getElementById('pur-expiry').value;
+                
+                if (!qty || qty <= 0 || !lotNo || !expiry) {
+                    showToast("Vui lòng điền đầy đủ thông tin nhập kho!", "error");
+                    return;
+                }
+                
+                const existingIdx = purchaseCart.findIndex(item => item.productId === currentProduct.id && item.lotNo === lotNo);
+                if (existingIdx > -1) {
+                    purchaseCart[existingIdx].qty += qty;
+                } else {
+                    purchaseCart.push({
+                        productId: currentProduct.id,
+                        productName: currentProduct.name,
+                        unit: currentProduct.unit,
+                        qty: qty,
+                        lotNo: lotNo,
+                        expiryDate: expiry
+                    });
+                }
+                localStorage.setItem('mob_purchase_cart', JSON.stringify(purchaseCart));
+                showToast(`Đã thêm ${qty} ${currentProduct.unit} vào giỏ nhập`, "success");
+                closeForms();
+                updateCartStatus();
+            } else if (type === 'dispatch') {
+                const lotNo = document.getElementById('disp-batch-id').value;
+                const qty = parseFloat(document.getElementById('disp-qty').value);
+                
+                if (!lotNo || !qty || qty <= 0) {
+                    showToast("Vui lòng điền đầy đủ thông tin xuất kho!", "error");
+                    return;
+                }
+                
+                const existingIdx = dispatchCart.findIndex(item => item.productId === currentProduct.id && item.lotNo === lotNo);
+                if (existingIdx > -1) {
+                    dispatchCart[existingIdx].qty += qty;
+                } else {
+                    dispatchCart.push({
+                        productId: currentProduct.id,
+                        productName: currentProduct.name,
+                        unit: currentProduct.unit,
+                        qty: qty,
+                        lotNo: lotNo
+                    });
+                }
+                localStorage.setItem('mob_dispatch_cart', JSON.stringify(dispatchCart));
+                showToast(`Đã thêm ${qty} ${currentProduct.unit} vào giỏ xuất`, "success");
+                closeForms();
+                updateCartStatus();
+            }
+        }
+
+        let activeCartType = null;
+        function openCartModal(type) {
+            activeCartType = type;
+            const container = document.getElementById('cart-items-container');
+            container.innerHTML = '';
+            
+            const title = document.getElementById('cart-modal-title');
+            const partnerLabel = document.getElementById('cart-partner-label');
+            const partnerInput = document.getElementById('cart-partner-input');
+            const reasonInput = document.getElementById('cart-reason-input');
+            const noteInput = document.getElementById('cart-note-input');
+            
+            const cart = type === 'purchase' ? purchaseCart : dispatchCart;
+            
+            if (type === 'purchase') {
+                title.textContent = '📥 Giỏ Hàng Nhập Kho';
+                partnerLabel.textContent = 'Nhà cung cấp *';
+                partnerInput.placeholder = 'Ví dụ: Công ty Dược CDC, ...';
+                reasonInput.value = 'Nhập qua điện thoại';
+            } else {
+                title.textContent = '📤 Giỏ Hàng Xuất Kho';
+                partnerLabel.textContent = 'Đơn vị nhận *';
+                partnerInput.placeholder = 'Ví dụ: Khoa dược, CDC chi nhánh, ...';
+                reasonInput.value = 'Xuất qua điện thoại';
+            }
+            noteInput.value = '';
+            partnerInput.value = '';
+            
+            if (cart.length === 0) {
+                container.innerHTML = '<div class="no-result">Giỏ hàng trống.</div>';
+            } else {
+                cart.forEach((item, index) => {
+                    const row = document.createElement('div');
+                    row.className = 'cart-item-row';
+                    row.innerHTML = `
+                        <div class="cart-item-details">
+                            <div class="cart-item-name">${item.productName}</div>
+                            <div class="cart-item-meta">Lô: ${item.lotNo} | SL: ${item.qty} ${item.unit} ${item.expiryDate ? ' | HSD: ' + item.expiryDate : ''}</div>
+                        </div>
+                        <button class="btn-cart-remove" onclick="removeFromCart('${type}', ${index})">❌</button>
+                    `;
+                    container.appendChild(row);
+                });
+            }
+            
+            document.getElementById('btn-cart-submit-pc').onclick = () => submitCart(type, 'pc');
+            document.getElementById('btn-cart-submit-phone').onclick = () => submitCart(type, 'phone');
+            
+            document.getElementById('cart-modal').style.display = 'flex';
+        }
+        
+        function closeCartModal() {
+            document.getElementById('cart-modal').style.display = 'none';
+        }
+        
+        function removeFromCart(type, index) {
+            if (type === 'purchase') {
+                purchaseCart.splice(index, 1);
+                localStorage.setItem('mob_purchase_cart', JSON.stringify(purchaseCart));
+            } else {
+                dispatchCart.splice(index, 1);
+                localStorage.setItem('mob_dispatch_cart', JSON.stringify(dispatchCart));
+            }
+            updateCartStatus();
+            if (document.getElementById('cart-modal').style.display === 'flex') {
+                openCartModal(type);
+            }
+        }
+
+        function submitCart(type, printTarget) {
+            const cart = type === 'purchase' ? purchaseCart : dispatchCart;
+            if (cart.length === 0) {
+                showToast("Giỏ hàng đang trống!", "error");
+                return;
+            }
+            
+            const partner = document.getElementById('cart-partner-input').value.trim();
+            const reason = document.getElementById('cart-reason-input').value.trim();
+            const note = document.getElementById('cart-note-input').value.trim();
+            
+            if (!partner || !reason) {
+                showToast("Vui lòng nhập đầy đủ đối tác và lý do thực hiện!", "error");
+                return;
+            }
+            
+            const url = type === 'purchase' ? '/api/purchase' : '/api/dispatch';
+            const bodyData = {
+                items: cart,
+                reason: reason,
+                note: note
+            };
+            if (type === 'purchase') {
+                bodyData.supplier = partner;
+            } else {
+                bodyData.receivingUnit = partner;
+            }
+            
+            const submitBtnPc = document.getElementById('btn-cart-submit-pc');
+            const submitBtnPhone = document.getElementById('btn-cart-submit-phone');
+            const oldPcText = submitBtnPc.innerHTML;
+            const oldPhoneText = submitBtnPhone.innerHTML;
+            
+            submitBtnPc.disabled = true;
+            submitBtnPhone.disabled = true;
+            submitBtnPc.innerHTML = 'Đang xử lý...';
+            
+            fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(bodyData)
+            })
+            .then(res => res.json())
+            .then(data => {
+                submitBtnPc.disabled = false;
+                submitBtnPhone.disabled = false;
+                submitBtnPc.innerHTML = oldPcText;
+                submitBtnPhone.innerHTML = oldPhoneText;
+                
+                if (data.success) {
+                    showToast(data.message, "success");
+                    closeCartModal();
+                    
+                    if (type === 'purchase') {
+                        purchaseCart = [];
+                        localStorage.removeItem('mob_purchase_cart');
+                    } else {
+                        dispatchCart = [];
+                        localStorage.removeItem('mob_dispatch_cart');
+                    }
+                    updateCartStatus();
+                    
+                    const noteId = type === 'purchase' ? data.purchaseId : data.dispatchId;
+                    if (printTarget === 'pc') {
+                        showToast("Đang gửi lệnh in tới máy tính...", "info");
+                        fetch(`/api/pc-print?type=${type}&id=${noteId}`)
+                            .then(res => res.json())
+                            .then(pdata => {
+                                if (pdata.success) {
+                                    showToast("Máy tính đã nhận lệnh in!", "success");
+                                } else {
+                                    showToast("Lỗi in PC: " + pdata.message, "error");
+                                }
+                            })
+                            .catch(err => showToast("Lỗi gửi lệnh in PC", "error"));
+                    } else {
+                        const printUrl = type === 'purchase' ? `/api/print-purchase?id=${noteId}` : `/api/print-dispatch?id=${noteId}`;
+                        window.open(printUrl, '_blank');
+                    }
+                } else {
+                    showToast(data.message, "error");
+                }
+            })
+            .catch(err => {
+                submitBtnPc.disabled = false;
+                submitBtnPhone.disabled = false;
+                submitBtnPc.innerHTML = oldPcText;
+                submitBtnPhone.innerHTML = oldPhoneText;
+                showToast("Lỗi kết nối máy chủ", "error");
+            });
+        }
+        // --- Note Preview Modal Javascript ---
+        function showNotePreview(type, noteId) {
+            const modal = document.getElementById('preview-modal');
+            const title = document.getElementById('preview-modal-title');
+            const infoContainer = document.getElementById('preview-info-container');
+            const tableBody = document.getElementById('preview-table-body');
+            
+            title.textContent = "📋 Đang tải phiếu...";
+            infoContainer.innerHTML = '<div style="text-align: center; padding: 10px;">Đang truy vấn thông tin...</div>';
+            tableBody.innerHTML = '<tr><td colspan="3" style="text-align: center; padding: 10px;">Đang tải danh sách mặt hàng...</td></tr>';
+            
+            modal.style.display = 'flex';
+            
+            fetch(`/api/note-details?type=${type}&id=${noteId}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success) {
+                        showToast(data.message, "error");
+                        modal.style.display = 'none';
+                        return;
+                    }
+                    
+                    title.textContent = data.type === 'nhap' ? '📥 Xem Trước Phiếu Nhập' : '📤 Xem Trước Phiếu Xuất';
+                    
+                    infoContainer.innerHTML = `
+                        <div style="margin-bottom: 4px;"><b>Số phiếu:</b> <span style="color: var(--primary); font-weight: bold;">${data.noteNumber}</span></div>
+                        <div style="margin-bottom: 4px;"><b>Thời gian:</b> ${data.createdAt}</div>
+                        <div style="margin-bottom: 4px;"><b>${data.type === 'nhap' ? 'Nhà cung cấp' : 'Đơn vị nhận'}:</b> ${data.partner}</div>
+                        <div style="margin-bottom: 4px;"><b>Lý do:</b> ${data.reason}</div>
+                        ${data.note ? `<div style="margin-bottom: 4px;"><b>Ghi chú:</b> ${data.note}</div>` : ''}
+                    `;
+                    
+                    let rowsHtml = '';
+                    data.items.forEach(item => {
+                        rowsHtml += `
+                            <tr>
+                                <td style="padding: 8px 10px;">${item.productName}</td>
+                                <td style="padding: 8px 10px; text-align: center;">${item.lotNo}</td>
+                                <td style="padding: 8px 10px; text-align: right; font-weight: 600;">${item.qty} ${item.unit}</td>
+                            </tr>
+                        `;
+                    });
+                    tableBody.innerHTML = rowsHtml;
+                    
+                    // Bind actions
+                    document.getElementById('btn-preview-submit-pc').onclick = () => {
+                        const btn = document.getElementById('btn-preview-submit-pc');
+                        btn.disabled = true;
+                        const origText = btn.innerHTML;
+                        btn.innerHTML = '⌛...';
+                        
+                        fetch(`/api/pc-print?type=${type}&id=${noteId}`)
+                            .then(res => res.json())
+                            .then(pdata => {
+                                btn.disabled = false;
+                                btn.innerHTML = origText;
+                                showToast(pdata.message, pdata.success ? "success" : "error");
+                                if (pdata.success) modal.style.display = 'none';
+                            })
+                            .catch(err => {
+                                btn.disabled = false;
+                                btn.innerHTML = origText;
+                                showToast("Lỗi gửi lệnh in PC", "error");
+                            });
+                    };
+                    
+                    document.getElementById('btn-preview-submit-phone').onclick = () => {
+                        const url = data.type === 'nhap' ? `/api/print-purchase?id=${noteId}` : `/api/print-dispatch?id=${noteId}`;
+                        window.open(url, '_blank');
+                        modal.style.display = 'none';
+                    };
+                })
+                .catch(err => {
+                    showToast("Lỗi kết nối máy chủ", "error");
+                    modal.style.display = 'none';
+                });
+        }
+        
+        function closePreviewModal() {
+            document.getElementById('preview-modal').style.display = 'none';
+        }
+        // --- End Note Preview Modal Javascript ---
 
         // Load Stock Data
         function checkStock(barcode) {
@@ -8624,7 +9448,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                     showToast(data.message, "success");
                     closeForms();
                     checkStock(currentProduct.barcode || currentProduct.id); // Reload
-                    showPrintModal('purchase', data.purchaseId, data.message);
+                    showNotePreview('purchase', data.purchaseId);
                 } else {
                     showToast(data.message, "error");
                 }
@@ -8660,7 +9484,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                     showToast(data.message, "success");
                     closeForms();
                     checkStock(currentProduct.barcode || currentProduct.id); // Reload
-                    showPrintModal('dispatch', data.dispatchId, data.message);
+                    showNotePreview('dispatch', data.dispatchId);
                 } else {
                     showToast(data.message, "error");
                 }
@@ -8872,6 +9696,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             false
         );
         html5QrcodeScanner.render(onScanSuccess, onScanFailure);
+        updateCartStatus();
     </script>
 </body>
 </html>"""

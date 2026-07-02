@@ -5,6 +5,14 @@ Tất cả các thay đổi quan trọng của dự án sẽ được ghi lại 
 Format dựa trên [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 và dự án tuân theo [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-02
+
+### 🎉 Added - Tính năng mới di động (Mobile Companion)
+- **Giao diện sáng xanh nhạt (Light Blue Theme)**: Chuyển đổi toàn bộ UI di động sang tông màu sáng xanh mát mắt, tối ưu tương phản chữ Slate đậm dễ đọc ngoài trời.
+- **Tab Lịch Sử Giao Dịch (Transaction History)**: Xem các phiếu nhập xuất gần đây trực tiếp trên điện thoại và gửi lệnh in ra máy tính hoặc in qua điện thoại.
+- **Giỏ Hàng Tạm Tính (Mobile Draft Cart)**: Hỗ trợ gom nhiều mặt hàng vào một phiếu nhập/xuất duy nhất thay vì tạo nhiều phiếu lẻ tẻ.
+- **Lưu trữ cục bộ**: Tự động lưu trữ giỏ hàng hiện tại vào `localStorage` của điện thoại để chống mất mát dữ liệu khi mất kết nối mạng.
+
 ## [1.0.0] - 2024-01-XX
 
 ### 🎉 Added - Tính năng mới
