@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # quanly_xnt.py — Quản lý Xuất Nhập Tồn thuốc, vaccine, VTYT (Desktop — Local)
 # Dành cho Trung tâm Kiểm soát bệnh tật (CDC)
 # - Xuất kho / Cấp phát theo nguyên tắc FEFO
@@ -165,7 +166,8 @@ CREATE TABLE IF NOT EXISTS dispatch_items (
   unitCode TEXT NOT NULL,
   qty REAL NOT NULL,
   lotNo TEXT,
-  expiryDate TEXT
+  expiryDate TEXT,
+  cost REAL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS sales (
@@ -272,6 +274,9 @@ class DB:
             ('price',     "ALTER TABLE sale_items ADD COLUMN price REAL DEFAULT 0"),
         ]:
             if not self._has_column('sale_items', col): self.conn.execute(ddl)
+
+        if not self._has_column('dispatch_items', 'cost'):
+            self.conn.execute("ALTER TABLE dispatch_items ADD COLUMN cost REAL DEFAULT 0")
 
         # đảm bảo có dòng đơn vị cơ sở
         for r in self.conn.execute("SELECT id, defaultUnit FROM products"):
@@ -494,7 +499,7 @@ class DB:
                 created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
             # Tạo phiếu xuất kho
-            note_number = f"PXK-{dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
+            note_number = f"PX-{dt.datetime.now().strftime('%y%m%d%H%M%S')}"
             cur = self.conn.execute(
                 "INSERT INTO dispatch_notes(noteNumber, receivingUnit, reason, note, createdAt) VALUES(?,?,?,?,?)",
                 (note_number, receiving_unit, reason, note, created_at)
@@ -507,29 +512,56 @@ class DB:
                     raise Exception(f"Sản phẩm #{it['productId']} chưa có đơn vị cơ sở")
                 need_base = float(it['qty']) * to_base
 
-                # FEFO: lấy lô có hạn gần nhất
-                lots = self.q('''
-                  SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo FROM (
-                    SELECT sm.batchId, SUM(sm.qty*1) AS qtyBase
-                    FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
-                  ) v JOIN batches b ON b.id=v.batchId
-                  WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
-                  ORDER BY DATE(b.expiryDate)
-                ''', (it['productId'],))
+                # Lấy lô hàng: thủ công nếu chọn trước, hoặc FEFO nếu để tự động
+                if it.get('lotNo'):
+                    lots = self.q('''
+                      SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                             COALESCE((
+                                 SELECT sm2.cost FROM stock_movements sm2
+                                 WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                                   AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                                 ORDER BY sm2.id DESC LIMIT 1
+                             ), 0) AS costBase
+                      FROM (
+                        SELECT sm.productId, sm.batchId, SUM(sm.qty*1) AS qtyBase
+                        FROM stock_movements sm 
+                        WHERE sm.productId=? AND sm.batchId=(
+                            SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
+                        )
+                        GROUP BY sm.batchId
+                      ) v JOIN batches b ON b.id=v.batchId
+                    ''', (it['productId'], it['productId'], it['lotNo']))
+                else:
+                    lots = self.q('''
+                      SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                             COALESCE((
+                                 SELECT sm2.cost FROM stock_movements sm2
+                                 WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                                   AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                                 ORDER BY sm2.id DESC LIMIT 1
+                             ), 0) AS costBase
+                      FROM (
+                        SELECT sm.productId, sm.batchId, SUM(sm.qty*1) AS qtyBase
+                        FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
+                      ) v JOIN batches b ON b.id=v.batchId
+                      WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
+                      ORDER BY DATE(b.expiryDate)
+                    ''', (it['productId'],))
 
                 for lot in lots:
                     if need_base <= 0:
                         break
                     take_base = min(need_base, float(lot['qtyBase']))
                     take_in_unit = take_base / to_base
+                    cost_in_unit = float(lot['costBase']) * to_base
                     self.conn.execute(
-                        "INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, receivingUnit, reason, createdAt) VALUES(?,?,?,?, 'DISPATCH', ?,?,?)",
-                        (it['productId'], lot['batchId'], it['unitCode'], -take_in_unit, receiving_unit, reason, created_at)
+                        "INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, cost, receivingUnit, reason, createdAt) VALUES(?,?,?,?, 'DISPATCH', ?,?,?,?)",
+                        (it['productId'], lot['batchId'], it['unitCode'], -take_in_unit, cost_in_unit, receiving_unit, reason, created_at)
                     )
                     # Ghi chi tiết phiếu xuất
                     self.conn.execute(
-                        "INSERT INTO dispatch_items(dispatchId, productId, batchId, unitCode, qty, lotNo, expiryDate) VALUES(?,?,?,?,?,?,?)",
-                        (dispatch_id, it['productId'], lot['batchId'], it['unitCode'], take_in_unit, lot['lotNo'], lot['expiryDate'])
+                        "INSERT INTO dispatch_items(dispatchId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost) VALUES(?,?,?,?,?,?,?,?)",
+                        (dispatch_id, it['productId'], lot['batchId'], it['unitCode'], take_in_unit, lot['lotNo'], lot['expiryDate'], cost_in_unit)
                     )
                     dispatch_details.append({
                         'productId': it['productId'],
@@ -538,7 +570,8 @@ class DB:
                         'qty': take_in_unit,
                         'lotNo': lot['lotNo'],
                         'expiryDate': lot['expiryDate'],
-                        'batchId': lot['batchId']
+                        'batchId': lot['batchId'],
+                        'cost': cost_in_unit
                     })
                     need_base -= take_base
 
@@ -618,7 +651,7 @@ class DB:
                 created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
             # Tạo số phiếu nhập
-            note_number = f"PNK-{dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
+            note_number = f"PN-{dt.datetime.now().strftime('%y%m%d%H%M%S')}"
             cur = self.conn.execute(
                 "INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt) VALUES(?,?,?,?,?)",
                 (note_number, supplier, reason, note, created_at)
@@ -2766,7 +2799,6 @@ Hiện tại bạn vẫn có thể:
             doc.build(story)
             os.startfile(pdf_path)
             self.toast("Đã in phiếu nhập ra PDF và mở file thành công")
-            
         except Exception as e:
             messagebox.showerror("Lỗi in PDF", f"Không thể xuất file PDF: {str(e)}")
 
@@ -2838,12 +2870,16 @@ Hiện tại bạn vẫn có thể:
                      bootstyle='secondary', width=8).pack(side='left', padx=6)
 
         tb.Label(top, text='Tìm tên:').pack(side='left')
-        self.search_pos = tb.Entry(top, width=30)
+        self.search_pos = tb.Entry(top, width=20)
         self.search_pos.pack(side='left', padx=6)
 
         tb.Label(top, text='Chọn:').pack(side='left')
-        self.cmb_prod_pos = tb.Combobox(top, state='readonly', width=45)
+        self.cmb_prod_pos = tb.Combobox(top, state='readonly', width=30)
         self.cmb_prod_pos.pack(side='left', padx=6)
+
+        tb.Label(top, text='Chọn lô:').pack(side='left')
+        self.cmb_lot_pos = tb.Combobox(top, state='readonly', width=18)
+        self.cmb_lot_pos.pack(side='left', padx=6)
 
         tb.Label(top, text='SL xuất:').pack(side='left')
         self.ent_qty_pos = tb.Entry(top, width=8)
@@ -2854,11 +2890,13 @@ Hiện tại bạn vẫn có thể:
         # --- Bind sự kiện
         self.search_pos.bind('<KeyRelease>', lambda e: self.filter_product_list_dispatch())
         self.search_pos.bind('<Down>', lambda e: (self.cmb_prod_pos.focus_set(),
-                                                  self.cmb_prod_pos.event_generate('<Alt-Down>')))
+                                                   self.cmb_prod_pos.event_generate('<Alt-Down>')))
 
         self.cmb_prod_pos.bind('<<ComboboxSelected>>', lambda e: self.update_dispatch_unit_label())
         self.cmb_prod_pos.bind('<Escape>', lambda e: self.search_pos.focus_set())
-        self.cmb_prod_pos.bind('<Return>', lambda e: self.ent_qty_pos.focus_set())
+        self.cmb_prod_pos.bind('<Return>', lambda e: (self.cmb_lot_pos.focus_set(),
+                                                      self.cmb_lot_pos.event_generate('<Alt-Down>')))
+        self.cmb_lot_pos.bind('<Return>', lambda e: self.ent_qty_pos.focus_set())
 
         # --- Nút tác vụ
         btns = tb.Frame(frm)
@@ -2874,15 +2912,19 @@ Hiện tại bạn vẫn có thể:
         info.pack(fill='x', padx=8, pady=(0, 4))
         self.lbl_unit_pos = tb.Label(info, text='Đơn vị tính: -', font=('Segoe UI', 10))
         self.lbl_unit_pos.pack(side='left', padx=(8, 12))
-        
-        # Bảng giỏ hàng xuất
-        cols = ('productId', 'productName', 'unitCode', 'qty')
+
+        # Báº£ng giÃ³ hÃ ng xuáº¥t
+        cols = ('productId', 'productName', 'lotNo', 'expiryDate', 'unitCode', 'price', 'qty', 'amount')
         self.tree_cart = tb.Treeview(frm, columns=cols, show='headings', height=10)
         for c, w, t, anchor in [
-            ('productId', 70, 'PID', 'center'),
-            ('productName', 450, 'Tên hàng hóa', 'w'),
-            ('unitCode', 120, 'ĐVT', 'center'),
-            ('qty', 150, 'Số lượng xuất', 'e')
+            ('productId', 60, 'PID', 'center'),
+            ('productName', 250, 'Tên hàng hóa', 'w'),
+            ('lotNo', 100, 'Số lô', 'center'),
+            ('expiryDate', 100, 'Hạn dùng', 'center'),
+            ('unitCode', 80, 'ĐVT', 'center'),
+            ('price', 100, 'Đơn giá', 'e'),
+            ('qty', 100, 'SL xuất', 'e'),
+            ('amount', 120, 'Thành tiền', 'e')
         ]:
             self.tree_cart.heading(c, text=t, command=(lambda col=c: self.sort_tree(self.tree_cart, col)))
             self.tree_cart.column(c, width=w, anchor=anchor)
@@ -2906,10 +2948,42 @@ Hiện tại bạn vẫn có thể:
         sel = self.cmb_prod_pos.get()
         if not sel:
             self.lbl_unit_pos.config(text='Đơn vị tính: -')
+            self.cmb_lot_pos['values'] = []
+            self.cmb_lot_pos.set('')
             return
         pid = int(sel.split(' — ')[0])
         du = self.db.default_unit_of(pid) or '-'
-        self.lbl_unit_pos.config(text=f'Đơn vị tính: {du}')
+        
+        # Lấy các lô hàng khả dụng theo FEFO
+        lots = self.db.q('''
+          SELECT b.lotNo, b.expiryDate, SUM(sm.qty*1) AS qtyBase
+          FROM stock_movements sm
+          JOIN batches b ON b.id = sm.batchId
+          WHERE sm.productId=?
+          GROUP BY sm.batchId
+          HAVING qtyBase > 0 AND DATE(b.expiryDate) >= DATE('now')
+          ORDER BY DATE(b.expiryDate)
+        ''', (pid,))
+        
+        lot_info_strs = []
+        for lot in lots[:3]:
+            lot_info_strs.append(f"{lot['lotNo']} (HSD: {lot['expiryDate']}) - Còn: {lot['qtyBase']:g}")
+        if len(lots) > 3:
+            lot_info_strs.append("...")
+            
+        if lot_info_strs:
+            lots_str = "  |  Lô khả dụng trong kho (FEFO): " + ", ".join(lot_info_strs)
+        else:
+            lots_str = "  |  HẾT HÀNG TRONG KHO"
+            
+        self.lbl_unit_pos.config(text=f'Đơn vị tính: {du}{lots_str}')
+        
+        # Cập nhật danh sách chọn lô thủ công
+        lot_options = ["[Tự động - FEFO]"]
+        for lot in lots:
+            lot_options.append(f"{lot['lotNo']} (HSD: {lot['expiryDate']}) - Tồn: {lot['qtyBase']:g}")
+        self.cmb_lot_pos['values'] = lot_options
+        self.cmb_lot_pos.current(0)
 
     def fill_product_by_barcode_dispatch(self, only_select=False):
         bc = self.ent_barcode.get().strip()
@@ -2973,9 +3047,48 @@ Hiện tại bạn vẫn có thể:
         
         name = self.name_by_id(pid)
         
+        # Lấy thông tin lô hàng chọn thủ công
+        chosen_val = self.cmb_lot_pos.get()
+        chosen_lot = None
+        if chosen_val and chosen_val != "[Tự động - FEFO]":
+            chosen_lot = chosen_val.split(" (HSD:")[0].strip()
+            
+        # Kiểm tra xem có lô hàng nào cận hạn hơn lô được chọn hay không
+        if chosen_lot:
+            lots = self.db.q('''
+              SELECT b.lotNo, b.expiryDate, SUM(sm.qty*1) AS qtyBase
+              FROM stock_movements sm
+              JOIN batches b ON b.id = sm.batchId
+              WHERE sm.productId=?
+              GROUP BY sm.batchId
+              HAVING qtyBase > 0 AND DATE(b.expiryDate) >= DATE('now')
+              ORDER BY DATE(b.expiryDate)
+            ''', (pid,))
+            
+            chosen_expiry = None
+            for lot in lots:
+                if lot['lotNo'] == chosen_lot:
+                    chosen_expiry = lot['expiryDate']
+                    break
+                    
+            if chosen_expiry:
+                earlier_lots = []
+                for lot in lots:
+                    if lot['lotNo'] != chosen_lot and lot['expiryDate'] < chosen_expiry:
+                        earlier_lots.append(f"Lô {lot['lotNo']} (HSD: {lot['expiryDate']}) - Còn: {lot['qtyBase']:g}")
+                
+                if earlier_lots:
+                    warning_msg = f"Cảnh báo: Có lô hàng cận hạn dùng hơn so với lô bạn chọn:\n\n"
+                    warning_msg += "\n".join(earlier_lots[:3])
+                    if len(earlier_lots) > 3:
+                        warning_msg += "\n..."
+                    warning_msg += "\n\nHãy cân nhắc kỹ càng! Bạn có chắc chắn muốn tiếp tục chọn lô đã chọn?"
+                    if not messagebox.askyesno("Cảnh báo cận hạn", warning_msg):
+                        return
+                        
         merged = False
         for it in self.cart_dispatch:
-            if it['productId'] == pid and it['unitCode'] == unit:
+            if it['productId'] == pid and it['unitCode'] == unit and it.get('lotNo') == chosen_lot:
                 it['qty'] = round(it['qty'] + qty, 4)
                 merged = True
                 break
@@ -2984,7 +3097,8 @@ Hiện tại bạn vẫn có thể:
                 'productId': pid,
                 'productName': name,
                 'unitCode': unit,
-                'qty': qty
+                'qty': qty,
+                'lotNo': chosen_lot
             })
 
         self.refresh_dispatch_cart_view()
@@ -2996,10 +3110,24 @@ Hiện tại bạn vẫn có thể:
         sel = self.tree_cart.selection()
         if not sel:
             return
-        idx = self.tree_cart.index(sel[0])
-        if 0 <= idx < len(self.cart_dispatch):
-            self.cart_dispatch.pop(idx)
-            self.refresh_dispatch_cart_view()
+        item_vals = self.tree_cart.item(sel[0])['values']
+        if not item_vals:
+            return
+        pid = int(item_vals[0])
+        unit = item_vals[4]  # Cột ĐVT có chỉ số là 4
+        lot = item_vals[2]   # Cột Số lô có chỉ số là 2
+        
+        # Tìm xem sản phẩm có trong giỏ hàng xuất không
+        # Ưu tiên tìm trùng khớp cả ID, ĐVT và Số lô
+        exact_exists = any(it['productId'] == pid and it['unitCode'] == unit and it.get('lotNo') == lot for it in self.cart_dispatch)
+        
+        if exact_exists:
+            self.cart_dispatch = [it for it in self.cart_dispatch if not (it['productId'] == pid and it['unitCode'] == unit and it.get('lotNo') == lot)]
+        else:
+            # Nếu không tìm thấy trùng khớp Số lô chính xác (có thể do xuất tự động FEFO nên trong cart lotNo=None), xóa cả sản phẩm với ĐVT đó
+            self.cart_dispatch = [it for it in self.cart_dispatch if not (it['productId'] == pid and it['unitCode'] == unit)]
+            
+        self.refresh_dispatch_cart_view()
 
     def clear_dispatch_cart(self):
         if self.cart_dispatch and messagebox.askyesno('Xác nhận', 'Xóa toàn bộ danh sách xuất kho?'):
@@ -3009,10 +3137,97 @@ Hiện tại bạn vẫn có thể:
     def refresh_dispatch_cart_view(self):
         for i in self.tree_cart.get_children():
             self.tree_cart.delete(i)
-        for idx, it in enumerate(self.cart_dispatch):
-            self.tree_cart.insert('', 'end',
-                values=(it['productId'], it['productName'], it['unitCode'], f"{it['qty']:g}"),
-                tags=('odd',) if idx % 2 else ())
+        
+        idx = 0
+        for it in self.cart_dispatch:
+            pid = it['productId']
+            name = it['productName']
+            unitCode = it['unitCode']
+            qty = it['qty']
+            
+            # Lấy thông tin tồn kho của các lô sắp xếp theo HSD (FEFO) hoặc theo lô được chọn
+            to_base, _ = self.db.unit_info(pid, unitCode)
+            if to_base is None:
+                to_base = 1.0
+            need_base = qty * to_base
+            
+            if it.get('lotNo'):
+                lots = self.db.q('''
+                  SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                         COALESCE((
+                             SELECT sm2.cost FROM stock_movements sm2
+                             WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                               AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                             ORDER BY sm2.id DESC LIMIT 1
+                         ), 0) AS costBase
+                  FROM (
+                    SELECT sm.productId, sm.batchId, SUM(sm.qty*1) AS qtyBase
+                    FROM stock_movements sm 
+                    WHERE sm.productId=? AND sm.batchId=(
+                        SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
+                    )
+                    GROUP BY sm.batchId
+                  ) v JOIN batches b ON b.id=v.batchId
+                ''', (pid, pid, it['lotNo']))
+            else:
+                lots = self.db.q('''
+                  SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                         COALESCE((
+                             SELECT sm2.cost FROM stock_movements sm2
+                             WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                               AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                             ORDER BY sm2.id DESC LIMIT 1
+                         ), 0) AS costBase
+                  FROM (
+                    SELECT sm.productId, sm.batchId, SUM(sm.qty*1) AS qtyBase
+                    FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
+                  ) v JOIN batches b ON b.id=v.batchId
+                  WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
+                  ORDER BY DATE(b.expiryDate)
+                ''', (pid,))
+            
+            allocated = []
+            for lot in lots:
+                if need_base <= 0:
+                    break
+                take_base = min(need_base, float(lot['qtyBase']))
+                take_in_unit = take_base / to_base
+                cost_in_unit = float(lot['costBase']) * to_base
+                sub_total = take_in_unit * cost_in_unit
+                allocated.append({
+                    'lotNo': lot['lotNo'],
+                    'expiryDate': lot['expiryDate'],
+                    'cost': cost_in_unit,
+                    'qty': take_in_unit,
+                    'total': sub_total
+                })
+                need_base -= take_base
+                
+            if need_base > 0:
+                # Trường hợp không đủ tồn kho
+                price = self.db.unit_price(pid, unitCode)
+                allocated.append({
+                    'lotNo': 'KHÔNG ĐỦ KHO',
+                    'expiryDate': '-',
+                    'cost': price,
+                    'qty': need_base / to_base,
+                    'total': (need_base / to_base) * price
+                })
+                
+            for alloc in allocated:
+                self.tree_cart.insert('', 'end',
+                    values=(
+                        pid,
+                        name,
+                        alloc['lotNo'],
+                        alloc['expiryDate'],
+                        unitCode,
+                        f"{alloc['cost']:,.0f}",
+                        f"{alloc['qty']:g}",
+                        f"{alloc['total']:,.0f}"
+                    ),
+                    tags=('odd',) if idx % 2 else ())
+                idx += 1
 
     def confirm_dispatch(self):
         if not self.cart_dispatch:
@@ -3267,30 +3482,54 @@ Hiện tại bạn vẫn có thể:
                     Paragraph("Tên thuốc, vaccine, VTYT", style_table_header),
                     Paragraph("ĐVT", style_table_header),
                     Paragraph("Số lượng", style_table_header),
+                    Paragraph("Đơn giá", style_table_header),
+                    Paragraph("Thành tiền", style_table_header),
                     Paragraph("Số lô", style_table_header),
                     Paragraph("Hạn dùng", style_table_header),
                     Paragraph("Ghi chú", style_table_header)
                 ]
             ]
             
+            total_sum = 0.0
             for idx, it in enumerate(self.last_dispatch_items, 1):
+                qty = it['qty']
+                cost = it.get('cost') or 0.0
+                sub_total = qty * cost
+                total_sum += sub_total
+                
                 table_data.append([
                     Paragraph(str(idx), style_cell_center),
                     Paragraph(it['productName'], style_cell),
                     Paragraph(it['unitCode'], style_cell_center),
-                    Paragraph(f"{it['qty']:g}", style_cell_right),
+                    Paragraph(f"{qty:g}", style_cell_right),
+                    Paragraph(f"{cost:,.0f}" if cost > 0 else "0", style_cell_right),
+                    Paragraph(f"{sub_total:,.0f}" if sub_total > 0 else "0", style_cell_right),
                     Paragraph(it['lotNo'] or '', style_cell_center),
                     Paragraph(it['expiryDate'] or '', style_cell_center),
                     Paragraph('', style_cell)
                 ])
                 
-            col_widths = [30, 190, 50, 70, 70, 70, 30]
+            # Thêm dòng tổng cộng
+            table_data.append([
+                Paragraph("<b>Tổng cộng</b>", style_cell_center),
+                Paragraph("", style_cell),
+                Paragraph("", style_cell_center),
+                Paragraph("", style_cell_right),
+                Paragraph("", style_cell_right),
+                Paragraph(f"<b>{total_sum:,.0f}</b>", style_cell_right),
+                Paragraph("", style_cell_center),
+                Paragraph("", style_cell_center),
+                Paragraph("", style_cell)
+            ])
+                
+            col_widths = [25, 145, 35, 45, 60, 70, 55, 55, 20]
             items_table = Table(table_data, colWidths=col_widths)
             items_table.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f2f2f2')),
                 ('ALIGN', (0,0), (-1,-1), 'CENTER'),
                 ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
                 ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                ('SPAN', (0, -1), (4, -1)),
                 ('TOPPADDING', (0,0), (-1,-1), 6),
                 ('BOTTOMPADDING', (0,0), (-1,-1), 6),
             ]))
@@ -4346,7 +4585,8 @@ Hiện tại bạn vẫn có thể:
                     'unitCode': it['unitCode'],
                     'qty': it['qty'],
                     'lotNo': it['lotNo'],
-                    'expiryDate': it['expiryDate']
+                    'expiryDate': it['expiryDate'],
+                    'cost': it.get('cost') or 0.0
                 })
                 
             self.last_dispatch_items = dispatch_items
@@ -5789,7 +6029,7 @@ Hiện tại bạn vẫn có thể:
             self.db.conn.execute("BEGIN TRANSACTION")
             
             purchase_id = None
-            note_number = f"PNK-INITIAL-{dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
+            note_number = f"PN-INIT-{dt.datetime.now().strftime('%y%m%d%H%M%S')}"
             created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
             has_stock_data = False
@@ -7487,7 +7727,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     conn.row_factory = sqlite3.Row
                     conn.execute('PRAGMA foreign_keys = ON')
                     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    note_num = f"PNK-MOB-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                    note_num = f"PN-MOB-{datetime.now().strftime('%y%m%d%H%M%S')}"
                     
                     with conn:
                         cur = conn.execute("""
@@ -7560,7 +7800,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 conn.row_factory = sqlite3.Row
                 conn.execute('PRAGMA foreign_keys = ON')
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                note_num = f"PNK-MOB-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                note_num = f"PN-MOB-{datetime.now().strftime('%y%m%d%H%M%S')}"
                 
                 with conn:
                     prod = conn.execute("SELECT name, defaultUnit FROM products WHERE id=?", (product_id,)).fetchone()
@@ -7635,7 +7875,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     conn.row_factory = sqlite3.Row
                     conn.execute('PRAGMA foreign_keys = ON')
                     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    note_num = f"PXK-MOB-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                    note_num = f"PX-MOB-{datetime.now().strftime('%y%m%d%H%M%S')}"
                     
                     with conn:
                         for item in items:
@@ -7730,7 +7970,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 conn.execute('PRAGMA foreign_keys = ON')
                 
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                note_num = f"PXK-MOB-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                note_num = f"PX-MOB-{datetime.now().strftime('%y%m%d%H%M%S')}"
                 
                 with conn:
                     prod = conn.execute("SELECT name, defaultUnit FROM products WHERE id=?", (product_id,)).fetchone()
