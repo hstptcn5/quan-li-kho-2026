@@ -55,6 +55,11 @@
   - **Nâng cấp Báo cáo XNT**: Bổ sung hiển thị và xuất báo cáo XNT chi tiết theo từng **Số lô** và **Hạn sử dụng** của sản phẩm (nhóm theo `productId` + `batchId` và sắp xếp theo FEFO).
   - **Thêm tính năng Biên bản kiểm kê**: Bổ sung nút **`Biên bản kiểm kê (PDF)`** (mẫu C33-HD) cho phép kết xuất biên bản kiểm kê kho tại thời điểm tùy chọn có sẵn cột Số lượng sổ sách và ô trống để đếm thực tế.
   - **Đồng bộ màu sắc giao diện**: Chuyển tất cả các nút tab trên thanh Toolbar chính thành màu xanh dương nhạt (`info`) đồng điệu với theme Flatly.
+  - **Tái cấu trúc mã nguồn (Modularization)**: Tách tệp nguồn khổng lồ `nhathuoc2.py` (hơn 10.000 dòng) thành các tệp module chuyên biệt: `config.py` (cấu hình), `database.py` (cơ sở dữ liệu), `managers.py` (quản lý sao lưu/báo cáo/danh mục), `scanner.py` (mã vạch), `server.py` (HTTP Server kiểm kho di động), `ui.py` (giao diện người dùng chính), và điểm chạy mới `quanly_xnt.py`.
+  - **Nhật ký nhiệt độ & độ ẩm GSP**: Thêm bảng và các phương thức SQLite theo dõi nhiệt độ, độ ẩm hàng ngày (Sáng/Chiều) cho các tủ lạnh/kho bảo quản vắc xin, tích hợp tab quản lý mới, vẽ biểu đồ biến thiên (Matplotlib) và xuất Sổ nhật ký PDF A4 ngang chuẩn GSP.
+  - **Chuẩn hóa nhãn biểu mẫu**: Đổi nhãn báo cáo XNT thành `Mẫu số: S12-H` (Sổ thẻ kho) theo đúng nghiệp vụ kế toán công.
+  - **Cơ chế tự động trích xuất ui.py (Self-Extraction)**: Thêm mã tự động giải nén và ghi đè stub vào `nhathuoc2.py` để giữ tính tương thích ngược khi người dùng chạy script cũ.
+
 
 ---
 
@@ -84,15 +89,15 @@ File `build.bat` đã được cấu hình đầy đủ để cài đặt thư v
 2. Chờ chương trình tự động thực hiện và nhấn một phím bất kỳ để hoàn tất.
 3. Toàn bộ file chạy và tài liệu hướng dẫn sẽ nằm trong thư mục **`dist/`**.
 
-### Cách 2: Đóng gói bằng file cấu hình `.spec`
-Nếu bạn chỉ muốn đóng gói riêng lẻ ứng dụng chính bằng dòng lệnh PyInstaller, hãy sử dụng file cấu hình **`QuanLyKhoCDC.spec`** đã được tùy biến sẵn:
+### Cách 2: Đóng gói bằng lệnh PyInstaller trực tiếp
+Nếu bạn muốn tự chạy lệnh đóng gói ứng dụng chính bằng dòng lệnh PyInstaller, hãy chạy lệnh sau:
 ```bash
 # Bước 1: Cài đặt các thư viện liên quan
 pip install -r requirements.txt
 
-# Bước 2: Đóng gói ứng dụng thông qua spec file
-pyinstaller --noconfirm QuanLyKhoCDC.spec
+# Bước 2: Đóng gói ứng dụng từ điểm chạy mới quanly_xnt.py
+pyinstaller --onefile --windowed --name="QuanLyKho" --add-data="thuoc.csv;." --add-data="%PYZBAR_DIR%;pyzbar" quanly_xnt.py
 ```
-File **`QuanLyKhoCDC.exe`** sau khi đóng gói sẽ nằm trong thư mục **`dist/`**.
+File **`QuanLyKho.exe`** sau khi đóng gói sẽ nằm trong thư mục **`dist/`**.
 
 

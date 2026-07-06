@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# nhathuoc2.py — Tương thích ngược: chuyển hướng sang quanly_xnt.py
+# quanly_xnt.py — Điểm khởi chạy chính của ứng dụng
 from ui import App
 
 if __name__ == '__main__':

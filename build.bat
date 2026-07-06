@@ -73,7 +73,7 @@ pyinstaller ^
     --hidden-import=qrcode ^
     --distpath="dist" ^
     --workpath="build" ^
-    nhathuoc2.py
+    quanly_xnt.py
 
 if errorlevel 1 (
     echo ERROR: Failed to build main application
