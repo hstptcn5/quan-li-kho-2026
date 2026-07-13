@@ -29,7 +29,8 @@
 - **Tự động cài đặt thư viện**: Phát hiện thiếu `reportlab`, hỏi ý kiến người dùng và tự động chạy ngầm `pip install` chỉ trong vài giây.
 
 ### 📈 Báo cáo Xuất - Nhập - Tồn (XNT) & Báo cáo nâng cao
-- **Đồng bộ hóa XNT**: Đã sửa lỗi lọc dữ liệu, tính toán lượng xuất cấp phát (`DISPATCH`) vào cột "Xuất trong kỳ" trong báo cáo XNT chung.
+- **Đồng bộ hóa XNT**: Đã sửa lỗi lọc dữ liệu, tính toán lượng xuất cấp phát (`DISPATCH`) vào cột "Xuất trong kỳ" trong báo cáo XNT chung. Đã khắc phục triệt để lỗi lệch tham số parameter SQL giúp lọc chính xác theo từng Nguồn kinh phí (ví dụ: Quỹ toàn cầu, TCMR,...).
+- **Lập phiếu xuất chọn Nguồn linh hoạt**: Cho phép thủ kho tùy chọn xuất kho theo nguồn tự động (hệ thống tự động phân tách khấu trừ theo nguồn khả dụng có hàng) hoặc chỉ định đích danh nguồn xuất thủ công. Thông tin nguồn kinh phí được in rõ ràng trên cột "Nguồn" của PDF phiếu xuất kho A4 (mẫu C31-HD) thay thế cho cột "Ghi chú".
 - **Lịch sử phiếu**: Thêm màn hình hiển thị danh sách phiếu xuất/nhập đã lập theo khoảng ngày. Hỗ trợ xem chi tiết và in lại phiếu PDF cũ bất cứ lúc nào.
 - **Thống kê nâng cao**: Doanh thu/Cấp phát theo ngày, Thống kê theo đơn vị nhận, Top sản phẩm cấp phát nhiều nhất, Biểu đồ đường xu hướng cấp phát trực quan.
 - **Xuất file đồng bộ**: Hỗ trợ xuất dữ liệu hiển thị trên màn hình ra các định dạng Excel, PDF, CSV.

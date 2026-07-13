@@ -11,6 +11,7 @@ from datetime import datetime
 import datetime as dt_module
 
 from config import DB_PATH
+from database import DB
 
 QR_CODE_AVAILABLE = False
 try:
@@ -386,6 +387,66 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 combined.sort(key=lambda x: x["createdAt"], reverse=True)
                 
                 self.send_json({"success": True, "activities": combined[:8]})
+            except Exception as e:
+                self.send_json({"success": False, "message": str(e)}, 500)
+
+        elif path == "/api/partners":
+            try:
+                db = DB(DB_PATH)
+                suppliers = db.get_suppliers()
+                receiving_units = db.get_receiving_units()
+                fund_sources = db.get_fund_sources()
+                self.send_json({
+                    "success": True,
+                    "suppliers": suppliers,
+                    "receivingUnits": receiving_units,
+                    "fundSources": fund_sources
+                })
+            except Exception as e:
+                self.send_json({"success": False, "message": str(e)}, 500)
+
+        elif path == "/api/temperature-locations":
+            try:
+                db = DB(DB_PATH)
+                locations = db.get_temperature_locations()
+                self.send_json({
+                    "success": True,
+                    "locations": locations
+                })
+            except Exception as e:
+                self.send_json({"success": False, "message": str(e)}, 500)
+
+        elif path == "/api/temperature-logs":
+            month = query.get("month", [None])[0]
+            location = query.get("location", [None])[0]
+            try:
+                db = DB(DB_PATH)
+                logs = db.get_temperature_logs(month, location)
+                self.send_json({
+                    "success": True,
+                    "logs": logs
+                })
+            except Exception as e:
+                self.send_json({"success": False, "message": str(e)}, 500)
+
+        elif path == "/api/xnt-report":
+            month = query.get("month", [None])[0]
+            fund_source = query.get("fundSource", [None])[0]
+            if not month or "-" not in month:
+                month = datetime.now().strftime("%Y-%m")
+            try:
+                year_part, month_part = map(int, month.split("-"))
+                import calendar
+                _, last_day = calendar.monthrange(year_part, month_part)
+                start_date = f"{month}-01"
+                end_date = f"{month}-{last_day:02d}"
+                
+                db = DB(DB_PATH)
+                report = db.xnt_report(start_date, end_date, fund_source)
+                self.send_json({
+                    "success": True,
+                    "report": report
+                })
             except Exception as e:
                 self.send_json({"success": False, "message": str(e)}, 500)
 
@@ -1217,143 +1278,75 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             reason = data.get("reason", "Nhập qua điện thoại").strip() or "Nhập qua điện thoại"
             note = data.get("note", "Tạo tự động từ điện thoại").strip() or "Tạo tự động từ điện thoại"
 
-            if items is not None:
-                if not isinstance(items, list) or len(items) == 0:
-                    self.send_json({"success": False, "message": "Danh sách mặt hàng nhập trống"}, 400)
+            if items is None:
+                product_id = data.get("productId")
+                qty = data.get("qty")
+                lot_no = str(data.get("lotNo", "")).strip()
+                expiry_date = str(data.get("expiryDate", "")).strip()
+                fund_source = str(data.get("fundSource", "")).strip()
+                cost = float(data.get("cost", 0.0))
+                
+                if not product_id or qty is None or not lot_no or not expiry_date:
+                    self.send_json({"success": False, "message": "Vui lòng nhập đầy đủ thông tin"}, 400)
                     return
+                items = [{
+                    "productId": product_id,
+                    "qty": qty,
+                    "lotNo": lot_no,
+                    "expiryDate": expiry_date,
+                    "fundSource": fund_source,
+                    "cost": cost
+                }]
+
+            if not isinstance(items, list) or len(items) == 0:
+                self.send_json({"success": False, "message": "Danh sách mặt hàng nhập trống"}, 400)
+                return
+
+            try:
+                db = DB(DB_PATH)
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                
                 for item in items:
                     p_id = item.get("productId")
                     qty = item.get("qty")
                     lot_no = str(item.get("lotNo", "")).strip()
                     expiry_date = str(item.get("expiryDate", "")).strip()
-                    if not p_id or not qty or not lot_no or not expiry_date:
+                    if not p_id or qty is None or not lot_no or not expiry_date:
                         self.send_json({"success": False, "message": "Thông tin mặt hàng nhập không đầy đủ"}, 400)
+                        conn.close()
                         return
                     try:
                         item["qty"] = float(qty)
                         if item["qty"] <= 0: raise ValueError()
                     except ValueError:
                         self.send_json({"success": False, "message": "Số lượng phải là số dương lớn hơn 0"}, 400)
-                        return
-                
-                try:
-                    conn = sqlite3.connect(DB_PATH)
-                    conn.row_factory = sqlite3.Row
-                    conn.execute('PRAGMA foreign_keys = ON')
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    note_num = f"PN-MOB-{datetime.now().strftime('%y%m%d%H%M%S')}"
-                    
-                    with conn:
-                        cur = conn.execute("""
-                            INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt)
-                            VALUES(?, ?, ?, ?, ?)
-                        """, (note_num, supplier, reason, note, now_str))
-                        purchase_id = cur.lastrowid
-                        
-                        for item in items:
-                            p_id = item["productId"]
-                            qty = item["qty"]
-                            lot_no = str(item["lotNo"]).strip()
-                            expiry_date = str(item["expiryDate"]).strip()
-                            
-                            prod = conn.execute("SELECT defaultUnit FROM products WHERE id=?", (p_id,)).fetchone()
-                            if not prod:
-                                raise Exception(f"Không tìm thấy sản phẩm ID {p_id}")
-                            unit = prod['defaultUnit']
-                            
-                            batch = conn.execute("SELECT id FROM batches WHERE productId=? AND lotNo=?", (p_id, lot_no)).fetchone()
-                            if batch:
-                                batch_id = batch['id']
-                            else:
-                                cur_b = conn.execute("INSERT INTO batches(productId, lotNo, expiryDate) VALUES(?,?,?)", (p_id, lot_no, expiry_date))
-                                batch_id = cur_b.lastrowid
-                                
-                            conn.execute("""
-                                INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost)
-                                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (purchase_id, p_id, batch_id, unit, qty, lot_no, expiry_date, 0.0))
-                            
-                            conn.execute("""
-                                INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, cost, reason, createdAt)
-                                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (p_id, batch_id, unit, qty, 'PURCHASE', 0.0, reason, now_str))
-                            
-                    conn.close()
-                    if hasattr(self.server, 'app_instance') and self.server.app_instance:
-                        self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
-                        
-                    self.send_json({
-                        "success": True, 
-                        "message": f"Đã tạo phiếu nhập {note_num} với {len(items)} mặt hàng",
-                        "purchaseId": purchase_id,
-                        "noteNumber": note_num
-                    })
-                except Exception as e:
-                    self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
-                return
-
-            # Single-item logic (backward compatible)
-            product_id = data.get("productId")
-            qty = data.get("qty")
-            lot_no = data.get("lotNo", "").strip()
-            expiry_date = data.get("expiryDate", "").strip()
-            
-            if not product_id or not qty or not lot_no or not expiry_date:
-                self.send_json({"success": False, "message": "Vui lòng nhập đầy đủ thông tin"}, 400)
-                return
-                
-            try:
-                qty = float(qty)
-                if qty <= 0: raise ValueError()
-            except ValueError:
-                self.send_json({"success": False, "message": "Số lượng phải là số dương lớn hơn 0"}, 400)
-                return
-                
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                conn.row_factory = sqlite3.Row
-                conn.execute('PRAGMA foreign_keys = ON')
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                note_num = f"PN-MOB-{datetime.now().strftime('%y%m%d%H%M%S')}"
-                
-                with conn:
-                    prod = conn.execute("SELECT name, defaultUnit FROM products WHERE id=?", (product_id,)).fetchone()
-                    if not prod:
-                        self.send_json({"success": False, "message": "Không tìm thấy sản phẩm"}, 404)
                         conn.close()
                         return
-                    unit = prod['defaultUnit']
-                    
-                    batch = conn.execute("SELECT id FROM batches WHERE productId=? AND lotNo=?", (product_id, lot_no)).fetchone()
-                    if batch:
-                        batch_id = batch['id']
-                    else:
-                        cur = conn.execute("INSERT INTO batches(productId, lotNo, expiryDate) VALUES(?,?,?)", (product_id, lot_no, expiry_date))
-                        batch_id = cur.lastrowid
                         
-                    cur = conn.execute("""
-                        INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt)
-                        VALUES(?, ?, ?, ?, ?)
-                    """, (note_num, supplier, reason, note, now_str))
-                    purchase_id = cur.lastrowid
-                    
-                    conn.execute("""
-                        INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost)
-                        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (purchase_id, product_id, batch_id, unit, qty, lot_no, expiry_date, 0.0))
-                    
-                    conn.execute("""
-                        INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, cost, reason, createdAt)
-                        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (product_id, batch_id, unit, qty, 'PURCHASE', 0.0, reason, now_str))
-                    
+                    if not item.get("unitCode"):
+                        prod = conn.execute("SELECT defaultUnit FROM products WHERE id=?", (p_id,)).fetchone()
+                        if not prod:
+                            self.send_json({"success": False, "message": f"Không tìm thấy sản phẩm ID {p_id}"}, 404)
+                            conn.close()
+                            return
+                        item["unitCode"] = prod["defaultUnit"]
+                        
+                    if "cost" not in item:
+                        item["cost"] = 0.0
+                    if "fundSource" not in item:
+                        item["fundSource"] = ""
+                        
                 conn.close()
+                
+                purchase_id, note_num, details = db.record_purchase(items, supplier, reason, note)
+                
                 if hasattr(self.server, 'app_instance') and self.server.app_instance:
                     self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
                     
                 self.send_json({
-                    "success": True, 
-                    "message": f"Đã nhập thành công {qty} {unit} vào lô {lot_no}",
+                    "success": True,
+                    "message": f"Đã tạo phiếu nhập {note_num} thành công!",
                     "purchaseId": purchase_id,
                     "noteNumber": note_num
                 })
@@ -1366,182 +1359,82 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             reason_str = data.get("reason", "Xuất qua điện thoại").strip() or "Xuất qua điện thoại"
             note = data.get("note", "Tạo tự động từ điện thoại").strip() or "Tạo tự động từ điện thoại"
 
-            if items is not None:
-                if not isinstance(items, list) or len(items) == 0:
-                    self.send_json({"success": False, "message": "Danh sách mặt hàng xuất trống"}, 400)
+            if items is None:
+                product_id = data.get("productId")
+                lot_no = str(data.get("lotNo", "")).strip()
+                qty = data.get("qty")
+                fund_source = str(data.get("fundSource", "")).strip()
+                
+                if not product_id or qty is None:
+                    self.send_json({"success": False, "message": "Vui lòng nhập đầy đủ thông tin"}, 400)
                     return
+                items = [{
+                    "productId": product_id,
+                    "qty": qty,
+                    "lotNo": lot_no,
+                    "fundSource": fund_source
+                }]
+
+            if not isinstance(items, list) or len(items) == 0:
+                self.send_json({"success": False, "message": "Danh sách mặt hàng xuất trống"}, 400)
+                return
+
+            try:
+                db = DB(DB_PATH)
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                
                 for item in items:
                     p_id = item.get("productId")
                     qty = item.get("qty")
                     lot_no = str(item.get("lotNo", "")).strip()
-                    if not p_id or not qty or not lot_no:
+                    fund_source = str(item.get("fundSource", "")).strip()
+                    
+                    if not p_id or qty is None:
                         self.send_json({"success": False, "message": "Thông tin mặt hàng xuất không đầy đủ"}, 400)
+                        conn.close()
                         return
                     try:
                         item["qty"] = float(qty)
                         if item["qty"] <= 0: raise ValueError()
                     except ValueError:
                         self.send_json({"success": False, "message": "Số lượng phải là số dương lớn hơn 0"}, 400)
-                        return
-                
-                try:
-                    conn = sqlite3.connect(DB_PATH)
-                    conn.row_factory = sqlite3.Row
-                    conn.execute('PRAGMA foreign_keys = ON')
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    note_num = f"PX-MOB-{datetime.now().strftime('%y%m%d%H%M%S')}"
-                    
-                    with conn:
-                        for item in items:
-                            p_id = item["productId"]
-                            qty = item["qty"]
-                            lot_no = item["lotNo"]
-                            
-                            prod = conn.execute("SELECT name, defaultUnit FROM products WHERE id=?", (p_id,)).fetchone()
-                            if not prod:
-                                raise Exception(f"Không tìm thấy sản phẩm ID {p_id}")
-                            unit = prod['defaultUnit']
-                            
-                            batch = conn.execute("SELECT id, expiryDate FROM batches WHERE productId=? AND lotNo=?", (p_id, lot_no)).fetchone()
-                            if not batch:
-                                self.send_json({"success": False, "message": f"Không tìm thấy lô '{lot_no}' của sản phẩm '{prod['name']}'"}, 400)
-                                conn.close()
-                                return
-                            batch_id = batch['id']
-                            item["batchId"] = batch_id
-                            item["expiryDate"] = batch['expiryDate']
-                            item["unit"] = unit
-                            
-                            existing_qty = conn.execute("""
-                                SELECT COALESCE(SUM(qty), 0) as qtyBase
-                                FROM stock_movements
-                                WHERE productId=? AND batchId=?
-                            """, (p_id, batch_id)).fetchone()
-                            
-                            current_stock = float(existing_qty['qtyBase']) if existing_qty else 0.0
-                            if current_stock < qty:
-                                self.send_json({"success": False, "message": f"Mặt hàng '{prod['name']}' lô '{lot_no}' không đủ tồn kho (cần {qty}, có {current_stock} {unit})"}, 400)
-                                conn.close()
-                                return
-                        
-                        cur = conn.execute("""
-                            INSERT INTO dispatch_notes(noteNumber, receivingUnit, reason, note, createdAt)
-                            VALUES(?, ?, ?, ?, ?)
-                        """, (note_num, receiving_unit, reason_str, note, now_str))
-                        dispatch_id = cur.lastrowid
-                        
-                        for item in items:
-                            p_id = item["productId"]
-                            qty = item["qty"]
-                            lot_no = item["lotNo"]
-                            batch_id = item["batchId"]
-                            expiry_date = item["expiryDate"]
-                            unit = item["unit"]
-                            
-                            conn.execute("""
-                                INSERT INTO dispatch_items(dispatchId, productId, batchId, unitCode, qty, lotNo, expiryDate)
-                                VALUES(?, ?, ?, ?, ?, ?, ?)
-                            """, (dispatch_id, p_id, batch_id, unit, qty, lot_no, expiry_date))
-                            
-                            conn.execute("""
-                                INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, reason, createdAt)
-                                VALUES(?, ?, ?, ?, ?, ?, ?)
-                            """, (p_id, batch_id, unit, -qty, 'DISPATCH', reason_str, now_str))
-                            
-                    conn.close()
-                    if hasattr(self.server, 'app_instance') and self.server.app_instance:
-                        self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
-                        
-                    self.send_json({
-                        "success": True, 
-                        "message": f"Đã tạo phiếu xuất {note_num} với {len(items)} mặt hàng",
-                        "dispatchId": dispatch_id,
-                        "noteNumber": note_num
-                    })
-                except Exception as e:
-                    self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
-                return
-
-            # Single-item logic (backward compatible)
-            product_id = data.get("productId")
-            lot_no = data.get("lotNo", "").strip()
-            qty = data.get("qty")
-            
-            if not product_id or not lot_no or not qty:
-                self.send_json({"success": False, "message": "Vui lòng nhập đầy đủ thông tin"}, 400)
-                return
-                
-            try:
-                qty = float(qty)
-                if qty <= 0: raise ValueError()
-            except ValueError:
-                self.send_json({"success": False, "message": "Số lượng phải là số dương lớn hơn 0"}, 400)
-                return
-                
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                conn.row_factory = sqlite3.Row
-                conn.execute('PRAGMA foreign_keys = ON')
-                
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                note_num = f"PX-MOB-{datetime.now().strftime('%y%m%d%H%M%S')}"
-                
-                with conn:
-                    prod = conn.execute("SELECT name, defaultUnit FROM products WHERE id=?", (product_id,)).fetchone()
-                    if not prod:
-                        self.send_json({"success": False, "message": "Không tìm thấy sản phẩm"}, 404)
-                        conn.close()
-                        return
-                    unit = prod['defaultUnit']
-                    
-                    batch = conn.execute("SELECT id, lotNo, expiryDate FROM batches WHERE productId=? AND lotNo=?", (product_id, lot_no)).fetchone()
-                    if not batch:
-                        self.send_json({"success": False, "message": f"Không tìm thấy lô hàng '{lot_no}' của sản phẩm này"}, 404)
-                        conn.close()
-                        return
-                    batch_id = batch['id']
-                    expiry_date = batch['expiryDate']
-                    
-                    existing_qty = conn.execute("""
-                        SELECT COALESCE(SUM(qty), 0) as qtyBase
-                        FROM stock_movements
-                        WHERE productId=? AND batchId=?
-                    """, (product_id, batch_id)).fetchone()
-                    
-                    current_stock = float(existing_qty['qtyBase']) if existing_qty else 0.0
-                    if current_stock < qty:
-                        self.send_json({"success": False, "message": f"Số lượng xuất ({qty}) vượt quá số lượng tồn của lô ({current_stock} {unit})"}, 400)
                         conn.close()
                         return
                         
-                    cur = conn.execute("""
-                        INSERT INTO dispatch_notes(noteNumber, receivingUnit, reason, note, createdAt)
-                        VALUES(?, ?, ?, ?, ?)
-                    """, (note_num, receiving_unit, reason_str, note, now_str))
-                    dispatch_id = cur.lastrowid
-                    
-                    conn.execute("""
-                        INSERT INTO dispatch_items(dispatchId, productId, batchId, unitCode, qty, lotNo, expiryDate)
-                        VALUES(?, ?, ?, ?, ?, ?, ?)
-                    """, (dispatch_id, product_id, batch_id, unit, qty, lot_no, expiry_date))
-                    
-                    conn.execute("""
-                        INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, reason, createdAt)
-                        VALUES(?, ?, ?, ?, ?, ?, ?)
-                    """, (product_id, batch_id, unit, -qty, 'DISPATCH', reason_str, now_str))
-                    
+                    if not item.get("unitCode"):
+                        prod = conn.execute("SELECT defaultUnit FROM products WHERE id=?", (p_id,)).fetchone()
+                        if not prod:
+                            self.send_json({"success": False, "message": f"Không tìm thấy sản phẩm ID {p_id}"}, 404)
+                            conn.close()
+                            return
+                        item["unitCode"] = prod["defaultUnit"]
+                        
+                    if not lot_no or lot_no == "[Tự động - FEFO]":
+                        item["lotNo"] = None
+                    else:
+                        item["lotNo"] = lot_no
+                        
+                    if not fund_source or fund_source == "[Tự động trừ kho]":
+                        item["fundSource"] = None
+                    else:
+                        item["fundSource"] = fund_source
+                        
                 conn.close()
+                
+                dispatch_id, note_num, details = db.dispatch(items, receiving_unit, reason_str, note)
+                
                 if hasattr(self.server, 'app_instance') and self.server.app_instance:
                     self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
                     
                 self.send_json({
-                    "success": True, 
-                    "message": f"Đã xuất thành công {qty} {unit} từ lô {lot_no}",
+                    "success": True,
+                    "message": f"Đã tạo phiếu xuất {note_num} thành công!",
                     "dispatchId": dispatch_id,
                     "noteNumber": note_num
                 })
             except Exception as e:
-                self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
+                self.send_json({"success": False, "message": f"Lỗi xuất kho: {str(e)}"}, 500)
                 
         elif path == "/api/update-barcode":
             product_id = data.get("productId")
@@ -1693,8 +1586,8 @@ MOBILE_HTML = """<!DOCTYPE html>
             background: transparent;
             border: none;
             color: var(--text-muted);
-            padding: 10px;
-            font-size: 0.9rem;
+            padding: 8px 4px;
+            font-size: 0.82rem;
             font-weight: 600;
             cursor: pointer;
             border-radius: 8px;
@@ -1702,7 +1595,21 @@ MOBILE_HTML = """<!DOCTYPE html>
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 6px;
+            gap: 4px;
+        }
+        .tab-btn span {
+            display: inline;
+        }
+        @media (max-width: 480px) {
+            .tab-btn {
+                padding: 6px 2px;
+                font-size: 0.72rem;
+                flex-direction: column;
+                gap: 2px;
+            }
+            .tab-btn span {
+                font-size: 0.62rem;
+            }
         }
         .tab-btn.active {
             background: var(--primary);
@@ -2197,6 +2104,41 @@ MOBILE_HTML = """<!DOCTYPE html>
             from { transform: translateY(20px); opacity: 0; }
             to { transform: translateY(0); opacity: 1; }
         }
+        .report-table-wrapper {
+            overflow-x: auto;
+            margin-top: 10px;
+            border-radius: 8px;
+            border: 1px solid var(--glass-border);
+            background: #fff;
+        }
+        .report-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.78rem;
+            text-align: left;
+            min-width: 500px;
+        }
+        .report-table th, .report-table td {
+            padding: 8px 10px;
+            border-bottom: 1px solid rgba(0,0,0,0.06);
+            white-space: nowrap;
+        }
+        .report-table th {
+            background: rgba(2, 132, 199, 0.06);
+            font-weight: 700;
+            color: var(--primary);
+        }
+        .report-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+        .report-table tr:nth-child(even) {
+            background: rgba(0,0,0,0.01);
+        }
+        .temp-status-alert {
+            background: rgba(225, 29, 72, 0.08) !important;
+            color: var(--danger) !important;
+            border-left: 3px solid var(--danger) !important;
+        }
     </style>
 </head>
 <body>
@@ -2230,8 +2172,9 @@ MOBILE_HTML = """<!DOCTYPE html>
             
             <div id="cart-form-fields">
                 <div class="form-group" style="margin-bottom: 10px;">
-                    <label id="cart-partner-label" style="font-weight: 600; font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Nhà cung cấp *</label>
-                    <input type="text" id="cart-partner-input" class="form-control" placeholder="Nhập tên đối tác..." />
+                    <label id="cart-partner-label" style="font-weight: 600; font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Đối tác *</label>
+                    <select id="cart-partner-select" class="form-control" style="width: 100%;" onchange="toggleCartCustomPartner()"></select>
+                    <input type="text" id="cart-partner-input" class="form-control" style="display: none; margin-top: 6px;" placeholder="Nhập tên đối tác..." />
                 </div>
                 <div class="form-group" style="margin-bottom: 10px;">
                     <label id="cart-reason-label" style="font-weight: 600; font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Lý do thực hiện *</label>
@@ -2318,9 +2261,11 @@ MOBILE_HTML = """<!DOCTYPE html>
         </div>
 
         <div class="nav-tabs">
-            <button class="tab-btn active" onclick="switchTab('tab-checker')">🔍 Kiểm Kho</button>
-            <button class="tab-btn" onclick="switchTab('tab-catalog')">📋 Danh Sách</button>
-            <button class="tab-btn" onclick="switchTab('tab-history')">📜 Lịch Sử</button>
+            <button class="tab-btn active" onclick="switchTab('tab-checker')">🔍 <span>Kiểm Kho</span></button>
+            <button class="tab-btn" onclick="switchTab('tab-temp')">🌡️ <span>Nhiệt Độ</span></button>
+            <button class="tab-btn" onclick="switchTab('tab-xnt')">📊 <span>Báo cáo XNT</span></button>
+            <button class="tab-btn" onclick="switchTab('tab-catalog')">📋 <span>Danh Sách</span></button>
+            <button class="tab-btn" onclick="switchTab('tab-history')">📜 <span>Lịch Sử</span></button>
         </div>
 
         <div id="cart-status-bar" style="display: none; gap: 8px; width: 100%; margin-top: 5px; margin-bottom: 10px;">
@@ -2352,6 +2297,16 @@ MOBILE_HTML = """<!DOCTYPE html>
                     <div id="form-purchase" class="form-container">
                         <div class="form-title">📥 Nhập kho nhanh</div>
                         <div class="form-group">
+                            <label>Nhà cung cấp</label>
+                            <select id="pur-supplier" class="form-control" onchange="toggleCustomSupplier()"></select>
+                            <input type="text" id="pur-supplier-custom" class="form-control" style="display: none; margin-top: 6px;" placeholder="Nhập nhà cung cấp mới..." />
+                        </div>
+                        <div class="form-group">
+                            <label>Nguồn kinh phí</label>
+                            <select id="pur-fund" class="form-control" onchange="toggleCustomFund()"></select>
+                            <input type="text" id="pur-fund-custom" class="form-control" style="display: none; margin-top: 6px;" placeholder="Nhập nguồn kinh phí mới..." />
+                        </div>
+                        <div class="form-group">
                             <label>Số lượng nhập (Đơn vị tính gốc)</label>
                             <input type="number" id="pur-qty" class="form-control" placeholder="Ví dụ: 10" step="any" required />
                         </div>
@@ -2375,8 +2330,17 @@ MOBILE_HTML = """<!DOCTYPE html>
                     <div id="form-dispatch" class="form-container">
                         <div class="form-title">📤 Xuất kho nhanh</div>
                         <div class="form-group">
+                            <label>Đơn vị nhận</label>
+                            <select id="disp-unit" class="form-control" onchange="toggleCustomDispatchUnit()"></select>
+                            <input type="text" id="disp-unit-custom" class="form-control" style="display: none; margin-top: 6px;" placeholder="Nhập đơn vị nhận mới..." />
+                        </div>
+                        <div class="form-group">
                             <label>Chọn lô xuất</label>
-                            <select id="disp-batch-id" class="form-control"></select>
+                            <select id="disp-batch-id" class="form-control" onchange="onDispatchBatchChange()"></select>
+                        </div>
+                        <div class="form-group">
+                            <label>Nguồn xuất</label>
+                            <select id="disp-fund" class="form-control"></select>
                         </div>
                         <div class="form-group">
                             <label>Số lượng xuất (Đơn vị tính gốc)</label>
@@ -2409,6 +2373,92 @@ MOBILE_HTML = """<!DOCTYPE html>
                 </div>
             </div>
         </div>
+
+        <div id="tab-temp" class="tab-content">
+            <div class="card">
+                <div class="form-title">🌡️ Nhật ký nhiệt độ & độ ẩm</div>
+                <div class="form-group">
+                    <label>Ngày ghi nhận</label>
+                    <input type="date" id="temp-date" class="form-control" required />
+                </div>
+                <div class="form-group">
+                    <label>Buổi ghi nhận</label>
+                    <select id="temp-session" class="form-control">
+                        <option value="Sáng">Sáng</option>
+                        <option value="Chiều">Chiều</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Vị trí bảo quản</label>
+                    <select id="temp-location-select" class="form-control" onchange="toggleCustomTempLocation()"></select>
+                    <input type="text" id="temp-location-custom" class="form-control" style="display: none; margin-top: 6px;" placeholder="Nhập tên tủ/kho mới..." />
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    <div class="form-group">
+                        <label>Nhiệt độ (°C) *</label>
+                        <input type="number" id="temp-val" class="form-control" placeholder="Ví dụ: 5.2" step="any" required />
+                    </div>
+                    <div class="form-group">
+                        <label>Độ ẩm (%)</label>
+                        <input type="number" id="temp-humidity" class="form-control" placeholder="Ví dụ: 60" step="any" />
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Người ghi nhận</label>
+                    <input type="text" id="temp-recorded-by" class="form-control" placeholder="Tên người ghi..." />
+                </div>
+                <button class="btn-submit" style="width: 100%; margin-top: 10px; padding: 12px; border-radius: 8px;" onclick="submitTemperatureLog()">💾 Lưu chỉ số</button>
+            </div>
+
+            <div class="card">
+                <div style="font-weight: 700; font-size: 0.95rem; color: var(--primary); display: flex; align-items: center; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--glass-border); padding-bottom: 6px;">
+                    📋 Nhật ký đo gần đây
+                </div>
+                <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                    <input type="month" id="temp-filter-month" class="form-control" style="flex: 1;" onchange="loadTemperatureLogs()" />
+                    <select id="temp-filter-location" class="form-control" style="flex: 1;" onchange="loadTemperatureLogs()"></select>
+                </div>
+                <div id="temp-logs-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 250px; overflow-y: auto;">
+                    <div style="text-align: center; color: var(--text-muted); padding: 15px;">Đang tải nhật ký...</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="tab-xnt" class="tab-content">
+            <div class="card">
+                <div class="form-title">📊 Tra cứu Xuất Nhập Tồn</div>
+                <div class="form-group">
+                    <label>Chọn tháng tra cứu</label>
+                    <input type="month" id="xnt-filter-month" class="form-control" required />
+                </div>
+                <div class="form-group">
+                    <label>Nguồn kinh phí</label>
+                    <select id="xnt-filter-fund" class="form-control"></select>
+                </div>
+                <button class="btn-submit" style="width: 100%; margin-top: 10px; padding: 12px; border-radius: 8px;" onclick="loadXNTReport()">📊 Xem báo cáo</button>
+            </div>
+
+            <div class="card" id="xnt-report-card" style="display: none;">
+                <div style="font-weight: 700; font-size: 0.95rem; color: var(--primary); display: flex; align-items: center; gap: 6px; margin-bottom: 12px;">
+                    📋 Bảng số liệu XNT
+                </div>
+                <div class="report-table-wrapper">
+                    <table class="report-table">
+                        <thead>
+                            <tr>
+                                <th>Tên hàng / Vật tư</th>
+                                <th>Số lô / Nguồn</th>
+                                <th style="text-align: right;">Đầu kỳ</th>
+                                <th style="text-align: right;">Nhập</th>
+                                <th style="text-align: right;">Xuất</th>
+                                <th style="text-align: right;">Cuối kỳ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="xnt-report-body">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
 
         <div id="tab-catalog" class="tab-content">
             <div class="card">
@@ -2486,15 +2536,19 @@ MOBILE_HTML = """<!DOCTYPE html>
             
             document.getElementById(tabId).classList.add('active');
             
-            let btnIndex = 0;
-            if (tabId === 'tab-catalog') btnIndex = 1;
-            else if (tabId === 'tab-history') btnIndex = 2;
-            document.querySelectorAll('.tab-btn')[btnIndex].classList.add('active');
+            const activeBtn = Array.from(document.querySelectorAll('.tab-btn')).find(btn => btn.getAttribute('onclick').includes(tabId));
+            if (activeBtn) {
+                activeBtn.classList.add('active');
+            }
             
             if (tabId === 'tab-catalog') {
                 loadCatalog('');
             } else if (tabId === 'tab-history') {
                 loadRecentActivities();
+            } else if (tabId === 'tab-temp') {
+                loadTemperatureLogs();
+            } else if (tabId === 'tab-xnt') {
+                loadXNTReport();
             }
         }
 
@@ -2671,12 +2725,24 @@ MOBILE_HTML = """<!DOCTYPE html>
                 const lotNo = document.getElementById('pur-lot').value.trim();
                 const expiry = document.getElementById('pur-expiry').value;
                 
+                const fundSelect = document.getElementById('pur-fund');
+                let fundSource = fundSelect.value;
+                if (fundSource === '__custom__') {
+                    fundSource = document.getElementById('pur-fund-custom').value.trim();
+                } else {
+                    fundSource = fundSource.trim();
+                }
+                
                 if (!qty || qty <= 0 || !lotNo || !expiry) {
                     showToast("Vui lòng điền đầy đủ thông tin nhập kho!", "error");
                     return;
                 }
                 
-                const existingIdx = purchaseCart.findIndex(item => item.productId === currentProduct.id && item.lotNo === lotNo);
+                const existingIdx = purchaseCart.findIndex(item => 
+                    item.productId === currentProduct.id && 
+                    item.lotNo === lotNo && 
+                    (item.fundSource || '') === fundSource
+                );
                 if (existingIdx > -1) {
                     purchaseCart[existingIdx].qty += qty;
                 } else {
@@ -2686,7 +2752,8 @@ MOBILE_HTML = """<!DOCTYPE html>
                         unit: currentProduct.unit,
                         qty: qty,
                         lotNo: lotNo,
-                        expiryDate: expiry
+                        expiryDate: expiry,
+                        fundSource: fundSource
                     });
                 }
                 localStorage.setItem('mob_purchase_cart', JSON.stringify(purchaseCart));
@@ -2696,13 +2763,18 @@ MOBILE_HTML = """<!DOCTYPE html>
             } else if (type === 'dispatch') {
                 const lotNo = document.getElementById('disp-batch-id').value;
                 const qty = parseFloat(document.getElementById('disp-qty').value);
+                const fundSource = document.getElementById('disp-fund').value;
                 
                 if (!lotNo || !qty || qty <= 0) {
                     showToast("Vui lòng điền đầy đủ thông tin xuất kho!", "error");
                     return;
                 }
                 
-                const existingIdx = dispatchCart.findIndex(item => item.productId === currentProduct.id && item.lotNo === lotNo);
+                const existingIdx = dispatchCart.findIndex(item => 
+                    item.productId === currentProduct.id && 
+                    item.lotNo === lotNo && 
+                    (item.fundSource || '') === fundSource
+                );
                 if (existingIdx > -1) {
                     dispatchCart[existingIdx].qty += qty;
                 } else {
@@ -2711,7 +2783,8 @@ MOBILE_HTML = """<!DOCTYPE html>
                         productName: currentProduct.name,
                         unit: currentProduct.unit,
                         qty: qty,
-                        lotNo: lotNo
+                        lotNo: lotNo,
+                        fundSource: fundSource
                     });
                 }
                 localStorage.setItem('mob_dispatch_cart', JSON.stringify(dispatchCart));
@@ -2729,11 +2802,20 @@ MOBILE_HTML = """<!DOCTYPE html>
             
             const title = document.getElementById('cart-modal-title');
             const partnerLabel = document.getElementById('cart-partner-label');
+            const partnerSelect = document.getElementById('cart-partner-select');
             const partnerInput = document.getElementById('cart-partner-input');
             const reasonInput = document.getElementById('cart-reason-input');
             const noteInput = document.getElementById('cart-note-input');
             
             const cart = type === 'purchase' ? purchaseCart : dispatchCart;
+            
+            let htmlPartner = `<option value="">-- Chọn đối tác --</option>`;
+            const listPartners = type === 'purchase' ? partnersData.suppliers : partnersData.receivingUnits;
+            listPartners.forEach(p => {
+                htmlPartner += `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`;
+            });
+            htmlPartner += `<option value="__custom__">Khác (Nhập tay)...</option>`;
+            partnerSelect.innerHTML = htmlPartner;
             
             if (type === 'purchase') {
                 title.textContent = '📥 Giỏ Hàng Nhập Kho';
@@ -2748,6 +2830,8 @@ MOBILE_HTML = """<!DOCTYPE html>
             }
             noteInput.value = '';
             partnerInput.value = '';
+            partnerSelect.value = '';
+            toggleCartCustomPartner();
             
             if (cart.length === 0) {
                 container.innerHTML = '<div class="no-result">Giỏ hàng trống.</div>';
@@ -2755,10 +2839,14 @@ MOBILE_HTML = """<!DOCTYPE html>
                 cart.forEach((item, index) => {
                     const row = document.createElement('div');
                     row.className = 'cart-item-row';
+                    let metaText = `SL: ${item.qty} ${item.unit}`;
+                    if (item.lotNo) metaText += ` | Lô: ${item.lotNo}`;
+                    if (item.expiryDate) metaText += ` | HSD: ${item.expiryDate}`;
+                    if (item.fundSource) metaText += ` | Nguồn: ${item.fundSource}`;
                     row.innerHTML = `
                         <div class="cart-item-details">
                             <div class="cart-item-name">${item.productName}</div>
-                            <div class="cart-item-meta">Lô: ${item.lotNo} | SL: ${item.qty} ${item.unit} ${item.expiryDate ? ' | HSD: ' + item.expiryDate : ''}</div>
+                            <div class="cart-item-meta">${metaText}</div>
                         </div>
                         <button class="btn-cart-remove" onclick="removeFromCart('${type}', ${index})">❌</button>
                     `;
@@ -2785,9 +2873,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                 localStorage.setItem('mob_dispatch_cart', JSON.stringify(dispatchCart));
             }
             updateCartStatus();
-            if (document.getElementById('cart-modal').style.display === 'flex') {
-                openCartModal(type);
-            }
+            openCartModal(type);
         }
 
         function submitCart(type, printTarget) {
@@ -2797,7 +2883,13 @@ MOBILE_HTML = """<!DOCTYPE html>
                 return;
             }
             
-            const partner = document.getElementById('cart-partner-input').value.trim();
+            const partnerSelect = document.getElementById('cart-partner-select');
+            let partner = partnerSelect.value;
+            if (partner === '__custom__') {
+                partner = document.getElementById('cart-partner-input').value.trim();
+            } else {
+                partner = partner.trim();
+            }
             const reason = document.getElementById('cart-reason-input').value.trim();
             const note = document.getElementById('cart-note-input').value.trim();
             
@@ -2879,7 +2971,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                 submitBtnPhone.disabled = false;
                 submitBtnPc.innerHTML = oldPcText;
                 submitBtnPhone.innerHTML = oldPhoneText;
-                showToast("Lỗi kết nối máy chủ", "error");
+                showToast("Lỗi kết nối máy chủ: " + err, "error");
             });
         }
 
@@ -3132,6 +3224,22 @@ MOBILE_HTML = """<!DOCTYPE html>
             const lotNo = document.getElementById('pur-lot').value.trim();
             const expiry = document.getElementById('pur-expiry').value;
             
+            const supplierSelect = document.getElementById('pur-supplier');
+            let supplier = supplierSelect.value;
+            if (supplier === '__custom__') {
+                supplier = document.getElementById('pur-supplier-custom').value.trim();
+            } else {
+                supplier = supplier.trim();
+            }
+            
+            const fundSelect = document.getElementById('pur-fund');
+            let fundSource = fundSelect.value;
+            if (fundSource === '__custom__') {
+                fundSource = document.getElementById('pur-fund-custom').value.trim();
+            } else {
+                fundSource = fundSource.trim();
+            }
+            
             if (!qty || qty <= 0 || !lotNo || !expiry) {
                 showToast("Vui lòng điền đầy đủ và chính xác thông tin!", "error");
                 return;
@@ -3144,7 +3252,9 @@ MOBILE_HTML = """<!DOCTYPE html>
                     productId: currentProduct.id,
                     qty: qty,
                     lotNo: lotNo,
-                    expiryDate: expiry
+                    expiryDate: expiry,
+                    supplier: supplier || "Nhập kho di động",
+                    fundSource: fundSource
                 })
             })
             .then(res => res.json())
@@ -3167,6 +3277,15 @@ MOBILE_HTML = """<!DOCTYPE html>
             const lotNo = document.getElementById('disp-batch-id').value;
             const qty = parseFloat(document.getElementById('disp-qty').value);
             const reason = document.getElementById('disp-reason').value.trim();
+            const fundSource = document.getElementById('disp-fund').value;
+            
+            const unitSelect = document.getElementById('disp-unit');
+            let receivingUnit = unitSelect.value;
+            if (receivingUnit === '__custom__') {
+                receivingUnit = document.getElementById('disp-unit-custom').value.trim();
+            } else {
+                receivingUnit = receivingUnit.trim();
+            }
             
             if (!lotNo || !qty || qty <= 0) {
                 showToast("Vui lòng nhập đầy đủ thông tin!", "error");
@@ -3180,7 +3299,9 @@ MOBILE_HTML = """<!DOCTYPE html>
                     productId: currentProduct.id,
                     lotNo: lotNo,
                     qty: qty,
-                    reason: reason
+                    reason: reason,
+                    receivingUnit: receivingUnit || "Điện thoại di động",
+                    fundSource: fundSource
                 })
             })
             .then(res => res.json())
@@ -3447,8 +3568,320 @@ MOBILE_HTML = """<!DOCTYPE html>
             false
         );
         html5QrcodeScanner.render(onScanSuccess, onScanFailure);
+        let partnersData = {
+            suppliers: [],
+            receivingUnits: [],
+            fundSources: [],
+            tempLocations: []
+        };
+
+        function loadPartnersAndFunds() {
+            const todayStr = new Date().toISOString().split('T')[0];
+            document.getElementById('temp-date').value = todayStr;
+            
+            const currentMonthStr = todayStr.substring(0, 7); // YYYY-MM
+            document.getElementById('temp-filter-month').value = currentMonthStr;
+            document.getElementById('xnt-filter-month').value = currentMonthStr;
+            
+            const savedRecordedBy = localStorage.getItem('temp-recorded-by');
+            if (savedRecordedBy) {
+                document.getElementById('temp-recorded-by').value = savedRecordedBy;
+            }
+
+            fetch('/api/partners')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        partnersData.suppliers = data.suppliers || [];
+                        partnersData.receivingUnits = data.receivingUnits || [];
+                        partnersData.fundSources = data.fundSources || [];
+                        
+                        populateDropdowns();
+                    }
+                })
+                .catch(err => console.error("Lỗi fetch partners:", err));
+                
+            fetch('/api/temperature-locations')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        partnersData.tempLocations = data.locations || [];
+                        populateTempLocations();
+                    }
+                })
+                .catch(err => console.error("Lỗi fetch temp locations:", err));
+        }
+
+        function populateDropdowns() {
+            const purSupplier = document.getElementById('pur-supplier');
+            let htmlSupplier = '<option value="">-- Chọn nhà cung cấp --</option>';
+            partnersData.suppliers.forEach(s => {
+                htmlSupplier += `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`;
+            });
+            htmlSupplier += '<option value="__custom__">Khác (Nhập tay)...</option>';
+            purSupplier.innerHTML = htmlSupplier;
+            toggleCustomSupplier();
+
+            const purFund = document.getElementById('pur-fund');
+            let htmlFund = '<option value="">-- Không chọn --</option>';
+            partnersData.fundSources.forEach(f => {
+                htmlFund += `<option value="${escapeHtml(f)}">${escapeHtml(f)}</option>`;
+            });
+            htmlFund += '<option value="__custom__">Khác (Nhập tay)...</option>';
+            purFund.innerHTML = htmlFund;
+            toggleCustomFund();
+
+            const dispUnit = document.getElementById('disp-unit');
+            let htmlUnit = '<option value="">-- Chọn đơn vị nhận --</option>';
+            partnersData.receivingUnits.forEach(u => {
+                htmlUnit += `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`;
+            });
+            htmlUnit += '<option value="__custom__">Khác (Nhập tay)...</option>';
+            dispUnit.innerHTML = htmlUnit;
+            toggleCustomDispatchUnit();
+
+            const dispFund = document.getElementById('disp-fund');
+            let htmlDispFund = '<option value="">[Tự động trừ kho]</option>';
+            partnersData.fundSources.forEach(f => {
+                htmlDispFund += `<option value="${escapeHtml(f)}">${escapeHtml(f)}</option>`;
+            });
+            dispFund.innerHTML = htmlDispFund;
+
+            const xntFund = document.getElementById('xnt-filter-fund');
+            let htmlXNTFund = '<option value="">Tất cả các nguồn</option>';
+            partnersData.fundSources.forEach(f => {
+                htmlXNTFund += `<option value="${escapeHtml(f)}">${escapeHtml(f)}</option>`;
+            });
+            xntFund.innerHTML = htmlXNTFund;
+        }
+
+        function populateTempLocations() {
+            const tempLocSelect = document.getElementById('temp-location-select');
+            let html = '<option value="">-- Chọn vị trí --</option>';
+            partnersData.tempLocations.forEach(loc => {
+                html += `<option value="${escapeHtml(loc)}">${escapeHtml(loc)}</option>`;
+            });
+            html += '<option value="__custom__">Khác (Nhập tay)...</option>';
+            tempLocSelect.innerHTML = html;
+            toggleCustomTempLocation();
+            
+            const tempFilterLoc = document.getElementById('temp-filter-location');
+            let htmlFilter = '<option value="">Tất cả vị trí</option>';
+            partnersData.tempLocations.forEach(loc => {
+                htmlFilter += `<option value="${escapeHtml(loc)}">${escapeHtml(loc)}</option>`;
+            });
+            tempFilterLoc.innerHTML = htmlFilter;
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        }
+
+        function toggleCustomSupplier() {
+            const select = document.getElementById('pur-supplier');
+            const custom = document.getElementById('pur-supplier-custom');
+            custom.style.display = select.value === '__custom__' ? 'block' : 'none';
+        }
+
+        function toggleCustomFund() {
+            const select = document.getElementById('pur-fund');
+            const custom = document.getElementById('pur-fund-custom');
+            custom.style.display = select.value === '__custom__' ? 'block' : 'none';
+        }
+
+        function toggleCustomDispatchUnit() {
+            const select = document.getElementById('disp-unit');
+            const custom = document.getElementById('disp-unit-custom');
+            custom.style.display = select.value === '__custom__' ? 'block' : 'none';
+        }
+
+        function toggleCustomTempLocation() {
+            const select = document.getElementById('temp-location-select');
+            const custom = document.getElementById('temp-location-custom');
+            custom.style.display = select.value === '__custom__' ? 'block' : 'none';
+        }
+
+        function toggleCartCustomPartner() {
+            const select = document.getElementById('cart-partner-select');
+            const input = document.getElementById('cart-partner-input');
+            input.style.display = select.value === '__custom__' ? 'block' : 'none';
+        }
+
+        function onDispatchBatchChange() {
+            // Can be extended to preset default lot-specific fund source if desired
+        }
+
+        function submitTemperatureLog() {
+            const logDate = document.getElementById('temp-date').value;
+            const session = document.getElementById('temp-session').value;
+            
+            const locSelect = document.getElementById('temp-location-select');
+            let location = locSelect.value;
+            if (location === '__custom__') {
+                location = document.getElementById('temp-location-custom').value.trim();
+            } else {
+                location = location.trim();
+            }
+            
+            const temperature = parseFloat(document.getElementById('temp-val').value);
+            const humidityVal = document.getElementById('temp-humidity').value.trim();
+            const humidity = humidityVal ? parseFloat(humidityVal) : null;
+            const recordedBy = document.getElementById('temp-recorded-by').value.trim();
+            
+            if (!logDate || !location || isNaN(temperature)) {
+                showToast("Vui lòng nhập đầy đủ Ngày, Vị trí và Nhiệt độ!", "error");
+                return;
+            }
+            
+            if (recordedBy) {
+                localStorage.setItem('temp-recorded-by', recordedBy);
+            }
+            
+            fetch('/api/temperature-log', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    logDate: logDate,
+                    session: session,
+                    location: location,
+                    temperature: temperature,
+                    humidity: humidity,
+                    recordedBy: recordedBy
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(data.message, "success");
+                    document.getElementById('temp-val').value = '';
+                    document.getElementById('temp-humidity').value = '';
+                    
+                    fetch('/api/temperature-locations')
+                        .then(res => res.json())
+                        .then(locData => {
+                            if (locData.success) {
+                                partnersData.tempLocations = locData.locations || [];
+                                populateTempLocations();
+                                document.getElementById('temp-location-select').value = location;
+                                toggleCustomTempLocation();
+                            }
+                            loadTemperatureLogs();
+                        });
+                } else {
+                    showToast(data.message, "error");
+                }
+            })
+            .catch(err => showToast("Lỗi kết nối máy chủ", "error"));
+        }
+
+        function loadTemperatureLogs() {
+            const filterMonth = document.getElementById('temp-filter-month').value;
+            const filterLoc = document.getElementById('temp-filter-location').value;
+            const listDiv = document.getElementById('temp-logs-list');
+            
+            if (!filterMonth) {
+                listDiv.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 15px;">Chọn tháng để tra cứu</div>';
+                return;
+            }
+            
+            listDiv.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 15px;">Đang tải nhật ký...</div>';
+            
+            let url = `/api/temperature-logs?month=${filterMonth}`;
+            if (filterLoc) {
+                url += `&location=${encodeURIComponent(filterLoc)}`;
+            }
+            
+            fetch(url)
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success || data.logs.length === 0) {
+                        listDiv.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 15px;">Không có dữ liệu cho bộ lọc này.</div>';
+                        return;
+                    }
+                    
+                    let html = '';
+                    data.logs.forEach(log => {
+                        const isAlert = log.temperature < 2.0 || log.temperature > 25.0;
+                        const alertClass = isAlert ? 'temp-status-alert' : '';
+                        
+                        html += `
+                            <div class="card ${alertClass}" style="margin: 0; padding: 10px; border-radius: 8px; border: 1px solid var(--glass-border); font-size: 0.8rem;">
+                                <div style="display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 4px;">
+                                    <span>📍 ${escapeHtml(log.location)}</span>
+                                    <span>📅 ${log.logDate} (${log.session})</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; color: var(--text-light);">
+                                    <span>🌡️ Nhiệt độ: <strong>${log.temperature}°C</strong></span>
+                                    <span>💧 Độ ẩm: <strong>${log.humidity !== null ? log.humidity + '%' : 'N/A'}</strong></span>
+                                </div>
+                                <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 4px; border-top: 1px dashed rgba(0,0,0,0.05); padding-top: 4px; display: flex; justify-content: space-between;">
+                                    <span>Người ghi: ${escapeHtml(log.recordedBy || 'N/A')}</span>
+                                    <span>${isAlert ? '⚠️ Chỉ số ngoài ngưỡng an toàn!' : '✅ Bình thường'}</span>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    listDiv.innerHTML = html;
+                })
+                .catch(err => {
+                    listDiv.innerHTML = '<div style="text-align: center; color: var(--danger); padding: 15px;">Lỗi tải dữ liệu.</div>';
+                });
+        }
+
+        function loadXNTReport() {
+            const filterMonth = document.getElementById('xnt-filter-month').value;
+            const filterFund = document.getElementById('xnt-filter-fund').value;
+            const reportCard = document.getElementById('xnt-report-card');
+            const tbody = document.getElementById('xnt-report-body');
+            
+            if (!filterMonth) {
+                showToast("Vui lòng chọn tháng tra cứu!", "error");
+                return;
+            }
+            
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 15px; color: var(--text-muted);">Đang tính toán báo cáo...</td></tr>';
+            reportCard.style.display = 'block';
+            
+            let url = `/api/xnt-report?month=${filterMonth}`;
+            if (filterFund) {
+                url += `&fund=${encodeURIComponent(filterFund)}`;
+            }
+            
+            fetch(url)
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success || data.report.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 15px; color: var(--text-muted);">Không có số liệu nhập xuất trong tháng này.</td></tr>';
+                        return;
+                    }
+                    
+                    let html = '';
+                    data.report.forEach(row => {
+                        const lotText = row.lotNo || '-';
+                        const fundText = row.fundSource || '-';
+                        
+                        html += `
+                            <tr>
+                                <td style="font-weight: 600;">${escapeHtml(row.productName)}</td>
+                                <td>Lô: ${escapeHtml(lotText)}<br><small style="color: var(--text-muted);">${escapeHtml(fundText)}</small></td>
+                                <td style="text-align: right; font-weight: 500;">${row.openingQty} ${escapeHtml(row.unit)}</td>
+                                <td style="text-align: right; color: #0d9488; font-weight: 500;">+${row.importedQty}</td>
+                                <td style="text-align: right; color: #e11d48; font-weight: 500;">-${row.exportedQty}</td>
+                                <td style="text-align: right; font-weight: 700; color: var(--primary);">${row.closingQty} ${escapeHtml(row.unit)}</td>
+                            </tr>
+                        `;
+                    });
+                    tbody.innerHTML = html;
+                })
+                .catch(err => {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 15px; color: var(--danger);">Không thể tải dữ liệu báo cáo.</td></tr>';
+                });
+        }
+
         updateCartStatus();
         loadDashboardStats();
+        loadPartnersAndFunds();
     </script>
 </body>
 </html>"""

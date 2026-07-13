@@ -54,12 +54,21 @@ echo PyZbar package located at: %PYZBAR_DIR%
 
 echo.
 echo Building main application...
+
+REM Copy DLLs ra thu muc tam de add-binary vao root cua bundle
+echo Copying pyzbar DLLs to temp directory...
+if not exist "_pyzbar_dlls" mkdir "_pyzbar_dlls"
+copy "%PYZBAR_DIR%\libzbar-64.dll" "_pyzbar_dlls\" >nul 2>&1
+copy "%PYZBAR_DIR%\libiconv.dll" "_pyzbar_dlls\" >nul 2>&1
+
 pyinstaller ^
     --onefile ^
     --windowed ^
     --name="QuanLyKho" ^
     --add-data="thuoc.csv;." ^
     --add-data="%PYZBAR_DIR%;pyzbar" ^
+    --add-binary="_pyzbar_dlls\libzbar-64.dll;." ^
+    --add-binary="_pyzbar_dlls\libiconv.dll;." ^
     --hidden-import=pandas ^
     --hidden-import=matplotlib ^
     --hidden-import=cv2 ^
@@ -74,6 +83,9 @@ pyinstaller ^
     --distpath="dist" ^
     --workpath="build" ^
     quanly_xnt.py
+
+REM Cleanup temp DLL folder
+if exist "_pyzbar_dlls" rmdir /s /q "_pyzbar_dlls"
 
 if errorlevel 1 (
     echo ERROR: Failed to build main application

@@ -208,6 +208,7 @@ class App(tb.Window):
         
         # Tạo toolbar sau khi đã có các tabs
         self.create_toolbar()
+        self.nb.bind("<<NotebookTabChanged>>", self.on_tab_changed)
         
         self.build_products_tab(); self.build_purchase_tab(); self.build_dispatch_tab()
         self.build_stock_tab(); self.build_alerts_tab(); self.build_report_tab()
@@ -227,6 +228,21 @@ class App(tb.Window):
             text='Database: Đang kết nối...')
         self.db_status.pack(side='right')
         
+        # Hotkeys
+        self.bind('<F1>', lambda e: self.nb.select(self.tab_products))
+        self.bind('<F2>', lambda e: self.nb.select(self.tab_purchase))
+        self.bind('<F3>', lambda e: self.nb.select(self.tab_dispatch))
+        self.bind('<F4>', lambda e: self.nb.select(self.tab_stock))
+        self.bind('<F5>', lambda e: self.nb.select(self.tab_alerts))
+        self.bind('<F6>', lambda e: self.nb.select(self.tab_report))
+        self.bind('<F7>', lambda e: self.nb.select(self.tab_backup))
+        self.bind('<F8>', lambda e: self.nb.select(self.tab_advanced_reports))
+        self.bind('<F10>', lambda e: self.nb.select(self.tab_mobile))
+        self.bind('<F11>', lambda e: self.nb.select(self.tab_temp_log))
+        self.bind('<Control-f>', lambda e: self.focus_search())
+        self.bind('<F9>', lambda e: self.print_dispatch_note())
+        self.bind('<Control-Return>', lambda e: self.confirm_dispatch())
+
         # Cập nhật status database
         self.update_db_status()
         
@@ -243,21 +259,6 @@ class App(tb.Window):
             self.db_status.config(text=f"Database: {product_count} sản phẩm • {batch_count} lô • {sale_count} đơn hàng")
         except Exception as e:
             self.db_status.config(text=f"Database: Lỗi - {str(e)}")
-        
-        # Hotkeys
-        self.bind('<F1>', lambda e: self.nb.select(self.tab_products))
-        self.bind('<F2>', lambda e: self.nb.select(self.tab_purchase))
-        self.bind('<F3>', lambda e: self.nb.select(self.tab_dispatch))
-        self.bind('<F4>', lambda e: self.nb.select(self.tab_stock))
-        self.bind('<F5>', lambda e: self.nb.select(self.tab_alerts))
-        self.bind('<F6>', lambda e: self.nb.select(self.tab_report))
-        self.bind('<F7>', lambda e: self.nb.select(self.tab_backup))
-        self.bind('<F8>', lambda e: self.nb.select(self.tab_advanced_reports))
-        self.bind('<F10>', lambda e: self.nb.select(self.tab_mobile))
-        self.bind('<F11>', lambda e: self.nb.select(self.tab_temp_log))
-        self.bind('<Control-f>', lambda e: self.focus_search())
-        self.bind('<F9>', lambda e: self.print_dispatch_note())
-        self.bind('<Control-Return>', lambda e: self.confirm_dispatch())
 
     def create_toolbar(self):
         tbbar = tb.Frame(self); tbbar.pack(fill='x', padx=8, pady=(8,8))
@@ -268,23 +269,24 @@ class App(tb.Window):
         
         # Các nút chính với style cải thiện
         buttons_config = [
-            ('🏷️ Sản phẩm', 'info', self.tab_products, 'F1'),
-            ('📦 Nhập hàng', 'info', self.tab_purchase, 'F2'),
-            ('📤 Xuất kho', 'info', self.tab_dispatch, 'F3'),
-            ('📊 Tồn kho', 'info', self.tab_stock, 'F4'),
-            ('⏰ Hết hạn', 'info', self.tab_alerts, 'F5'),
-            ('📄 Báo cáo XNT', 'info', self.tab_report, 'F6'),
-            ('💾 Backup', 'info', self.tab_backup, 'F7'),
-            ('📈 Báo cáo nâng cao', 'info', self.tab_advanced_reports, 'F8'),
-            ('📱 Kiểm kho di động', 'info', self.tab_mobile, 'F10'),
-            ('🌡️ Nhật ký nhiệt độ', 'info', self.tab_temp_log, 'F11')
+            ('🏷️ Sản phẩm', self.tab_products, 'F1'),
+            ('📦 Nhập hàng', self.tab_purchase, 'F2'),
+            ('📤 Xuất kho', self.tab_dispatch, 'F3'),
+            ('📊 Tồn kho', self.tab_stock, 'F4'),
+            ('⏰ Hết hạn', self.tab_alerts, 'F5'),
+            ('📄 Báo cáo XNT', self.tab_report, 'F6'),
+            ('💾 Backup', self.tab_backup, 'F7'),
+            ('📈 Báo cáo nâng cao', self.tab_advanced_reports, 'F8'),
+            ('📱 Kiểm kho di động', self.tab_mobile, 'F10'),
+            ('🌡️ Nhật ký nhiệt độ', self.tab_temp_log, 'F11')
         ]
 
-        
-        for text, style, tab, shortcut in buttons_config:
-            btn = tb.Button(main_buttons, text=text, bootstyle=style,
+        self.toolbar_buttons = {}
+        for text, tab, shortcut in buttons_config:
+            btn = tb.Button(main_buttons, text=text, bootstyle='outline-info',
                           command=lambda t=tab: self.nb.select(t))
             btn.pack(side='left', padx=2)
+            self.toolbar_buttons[tab] = btn
             # Thêm tooltip với phím tắt
             self.create_tooltip(btn, f"{text} ({shortcut})")
         
@@ -299,9 +301,23 @@ class App(tb.Window):
         
         # Nút backup nhanh
         backup_btn = tb.Button(tbbar, text='💾 Backup nhanh', bootstyle='outline-success',
-                              command=self.create_manual_backup)
+                               command=self.create_manual_backup)
         backup_btn.pack(side='right', padx=4)
         self.create_tooltip(backup_btn, "Tạo backup ngay lập tức")
+
+    def on_tab_changed(self, event=None):
+        try:
+            selected_tab = self.nb.select()
+            if not selected_tab:
+                return
+            selected_widget = self.nametowidget(selected_tab)
+            for tab, btn in self.toolbar_buttons.items():
+                if tab == selected_widget:
+                    btn.configure(bootstyle='info')
+                else:
+                    btn.configure(bootstyle='outline-info')
+        except Exception as e:
+            print("Error updating active tab highlight:", e)
 
     def create_tooltip(self, widget, text):
         """Tạo tooltip cho widget"""
@@ -1050,22 +1066,42 @@ Hiện tại bạn vẫn có thể:
         self.ent_cost.grid(row=2, column=1, sticky='w', padx=6, pady=(6,8))
         self._numberize(self.ent_cost)
 
+        tb.Label(box, text='Nguồn kinh phí:').grid(row=2, column=2, sticky='e', padx=6, pady=(6,8))
+        self.cmb_item_fund = tb.Combobox(
+            box,
+            values=[
+                'TCMR (Tiêm chủng mở rộng)',
+                'Ngân sách địa phương',
+                'Dự án viện trợ',
+                'Mua sắm đấu thầu',
+                'Nguồn khác'
+            ],
+            width=25
+        )
+        self.cmb_item_fund.set('TCMR (Tiêm chủng mở rộng)')
+        self.cmb_item_fund.grid(row=2, column=3, columnspan=3, sticky='w', padx=6, pady=(6,8))
+
         # --- Nút tác vụ
         btns = tb.Frame(frm)
         btns.pack(fill='x', padx=8, pady=8)
-        tb.Button(btns, text='+ Thêm vào danh sách nhập', bootstyle='secondary', command=self.add_to_purchase_cart).pack(side='left', padx=4)
-        tb.Button(btns, text='Xóa dòng', bootstyle='warning', command=self.remove_selected_purchase_item).pack(side='left', padx=4)
-        tb.Button(btns, text='Xóa danh sách', bootstyle='danger', command=self.clear_purchase_cart).pack(side='left', padx=4)
-        tb.Button(btns, text='Xác nhận nhập kho', bootstyle='success', command=self.confirm_purchase).pack(side='left', padx=8)
-        tb.Button(btns, text='In phiếu nhập kho', bootstyle='info', command=self.print_purchase_note).pack(side='left', padx=8)
+        
+        # Nhóm chính bên trái
+        tb.Button(btns, text='+ Thêm vào giỏ hàng', bootstyle='primary', command=self.add_to_purchase_cart).pack(side='left', padx=4)
+        tb.Button(btns, text='Xác nhận nhập kho', bootstyle='success', command=self.confirm_purchase).pack(side='left', padx=4)
+        tb.Button(btns, text='In phiếu nhập kho', bootstyle='info', command=self.print_purchase_note).pack(side='left', padx=4)
+        
+        # Nhóm xóa hủy bên phải (phòng tránh bấm nhầm)
+        tb.Button(btns, text='Xóa danh sách', bootstyle='danger-outline', command=self.clear_purchase_cart).pack(side='right', padx=4)
+        tb.Button(btns, text='Xóa dòng', bootstyle='warning', command=self.remove_selected_purchase_item).pack(side='right', padx=4)
 
         # --- Bảng danh sách hàng nhập tạm thời
-        cols = ('product','productName','unit','qty','lot','exp','cost','total')
+        cols = ('product','productName','unit','qty','lot','exp','cost','fundSource','total')
         self.tree_purchase_cart = tb.Treeview(frm, columns=cols, show='headings')
         for c, w, t, anchor in [
-            ('product',70,'PID','center'),('productName',300,'Tên thuốc/vaccine/VTYT','w'),
-            ('unit',80,'ĐVT','center'),('qty',100,'SL','e'),('lot',120,'Số lô','w'),
-            ('exp',100,'HSD','center'),('cost',120,'Đơn giá nhập','e'),('total',130,'Thành tiền','e')
+            ('product',50,'PID','center'),('productName',220,'Tên thuốc/vaccine/VTYT','w'),
+            ('unit',60,'ĐVT','center'),('qty',60,'SL','e'),('lot',80,'Số lô','w'),
+            ('exp',80,'HSD','center'),('cost',95,'Đơn giá nhập','e'),
+            ('fundSource',135,'Nguồn kinh phí','w'),('total',105,'Thành tiền','e')
         ]:
             self.tree_purchase_cart.heading(c, text=t, command=(lambda col=c: self.sort_tree(self.tree_purchase_cart, col)))
             self.tree_purchase_cart.column(c, width=w, anchor=anchor)
@@ -1125,10 +1161,11 @@ Hiện tại bạn vẫn có thể:
             messagebox.showerror('Lỗi', 'Đơn giá nhập không được âm'); return
 
         name = self.name_by_id(pid)
+        fund_source = self.cmb_item_fund.get().strip()
         
         merged = False
         for it in self.cart_purchase:
-            if it['productId'] == pid and it['lotNo'] == lot:
+            if it['productId'] == pid and it['lotNo'] == lot and it.get('fundSource') == fund_source:
                 it['qty'] = round(it['qty'] + qty, 4)
                 it['cost'] = cost
                 merged = True
@@ -1141,7 +1178,8 @@ Hiện tại bạn vẫn có thể:
                 'qty': qty,
                 'lotNo': lot,
                 'expiryDate': exp,
-                'cost': cost
+                'cost': cost,
+                'fundSource': fund_source
             })
 
         self.refresh_purchase_cart_view()
@@ -1177,6 +1215,7 @@ Hiện tại bạn vẫn có thể:
                     it['lotNo'], 
                     it['expiryDate'], 
                     f"{it['cost']:,.0f}", 
+                    it.get('fundSource', ''),
                     f"{total_val:,.0f}"
                 ),
                 tags=('odd',) if idx % 2 else ())
@@ -1219,6 +1258,8 @@ Hiện tại bạn vẫn có thể:
             self.refresh_purchase_cart_view()
             self.refresh_stock()
             self.refresh_suppliers_combo()
+            if hasattr(self, 'refresh_report_funds_combo'):
+                self.refresh_report_funds_combo()
             messagebox.showinfo('Thành công', f'Đã nhập kho thành công!\nSố phiếu: {note_number}')
             
             # Tự động hỏi in phiếu nhập kho
@@ -1512,41 +1553,58 @@ Hiện tại bạn vẫn có thể:
         self.ent_dispatch_note.grid(row=1, column=1, columnspan=5, padx=6, pady=6, sticky='ew')
         info_note.columnconfigure(1, weight=1)
 
-        # --- Hàng điều khiển chọn sản phẩm
-        top = tb.Frame(frm)
-        top.pack(fill='x', padx=8, pady=4)
+        # --- Khung thao tác chọn hàng xuất
+        op_frame = tb.Labelframe(frm, text='🛒 Thao tác chọn hàng xuất', bootstyle='light')
+        op_frame.pack(fill='x', padx=8, pady=4)
 
-        tb.Label(top, text='Barcode:').pack(side='left')
-        self.ent_barcode = tb.Entry(top, width=18)
-        self.ent_barcode.pack(side='left', padx=6)
+        # Hàng 0: Barcode & Quét, Tìm nhanh, Chọn sản phẩm
+        tb.Label(op_frame, text='Barcode:').grid(row=0, column=0, padx=6, pady=6, sticky='w')
+        barcode_inner = tb.Frame(op_frame)
+        barcode_inner.grid(row=0, column=1, padx=6, pady=6, sticky='ew')
+        
+        self.ent_barcode = tb.Entry(barcode_inner, width=12)
+        self.ent_barcode.pack(side='left', fill='x', expand=True, padx=(0, 4))
         self.ent_barcode.bind('<Return>', lambda e: self.scan_and_add_dispatch())
         self.ent_barcode.bind('<KP_Enter>', lambda e: self.scan_and_add_dispatch())
         
-        # Nút quét barcode bằng camera
         if BARCODE_AVAILABLE:
-            tb.Button(top, text='📷 Quét', command=self.open_barcode_scanner_dispatch, 
-                     bootstyle='info', width=8).pack(side='left', padx=6)
+            btn_scan = tb.Button(barcode_inner, text='📷 Quét', command=self.open_barcode_scanner_dispatch, 
+                                 bootstyle='info', width=6)
         else:
-            tb.Button(top, text='📷 Quét', command=self.show_barcode_install_info, 
-                     bootstyle='secondary', width=8).pack(side='left', padx=6)
+            btn_scan = tb.Button(barcode_inner, text='📷 Quét', command=self.show_barcode_install_info, 
+                                 bootstyle='secondary', width=6)
+        btn_scan.pack(side='right')
 
-        tb.Label(top, text='Tìm tên:').pack(side='left')
-        self.search_pos = tb.Entry(top, width=20)
-        self.search_pos.pack(side='left', padx=6)
+        tb.Label(op_frame, text='Tìm nhanh:').grid(row=0, column=2, padx=6, pady=6, sticky='w')
+        self.search_pos = tb.Entry(op_frame, width=15)
+        self.search_pos.grid(row=0, column=3, padx=6, pady=6, sticky='ew')
 
-        tb.Label(top, text='Chọn:').pack(side='left')
-        self.cmb_prod_pos = tb.Combobox(top, state='readonly', width=30)
-        self.cmb_prod_pos.pack(side='left', padx=6)
+        tb.Label(op_frame, text='Chọn sản phẩm:').grid(row=0, column=4, padx=6, pady=6, sticky='w')
+        self.cmb_prod_pos = tb.Combobox(op_frame, state='readonly', width=35)
+        self.cmb_prod_pos.grid(row=0, column=5, padx=6, pady=6, sticky='ew')
 
-        tb.Label(top, text='Chọn lô:').pack(side='left')
-        self.cmb_lot_pos = tb.Combobox(top, state='readonly', width=18)
-        self.cmb_lot_pos.pack(side='left', padx=6)
+        # Hàng 1: Chọn lô, Nguồn xuất, SL xuất
+        tb.Label(op_frame, text='Chọn lô:').grid(row=1, column=0, padx=6, pady=6, sticky='w')
+        self.cmb_lot_pos = tb.Combobox(op_frame, state='readonly', width=20)
+        self.cmb_lot_pos.grid(row=1, column=1, padx=6, pady=6, sticky='ew')
 
-        tb.Label(top, text='SL xuất:').pack(side='left')
-        self.ent_qty_pos = tb.Entry(top, width=8)
+        tb.Label(op_frame, text='Nguồn xuất:').grid(row=1, column=2, padx=6, pady=6, sticky='w')
+        self.cmb_fund_pos = tb.Combobox(op_frame, state='readonly', width=20)
+        self.cmb_fund_pos.grid(row=1, column=3, padx=6, pady=6, sticky='ew')
+
+        tb.Label(op_frame, text='SL xuất:').grid(row=1, column=4, padx=6, pady=6, sticky='w')
+        qty_inner = tb.Frame(op_frame)
+        qty_inner.grid(row=1, column=5, padx=6, pady=6, sticky='w')
+        
+        self.ent_qty_pos = tb.Entry(qty_inner, width=10)
         self.ent_qty_pos.insert(0, '1')
-        self.ent_qty_pos.pack(side='left', padx=6)
+        self.ent_qty_pos.pack(side='left', padx=(0, 10))
         self._numberize(self.ent_qty_pos)
+
+        # Cấu hình co giãn các cột trong op_frame
+        op_frame.columnconfigure(1, weight=1)
+        op_frame.columnconfigure(3, weight=1)
+        op_frame.columnconfigure(5, weight=2)
 
         # --- Bind sự kiện
         self.search_pos.bind('<KeyRelease>', lambda e: self.filter_product_list_dispatch())
@@ -1557,16 +1615,23 @@ Hiện tại bạn vẫn có thể:
         self.cmb_prod_pos.bind('<Escape>', lambda e: self.search_pos.focus_set())
         self.cmb_prod_pos.bind('<Return>', lambda e: (self.cmb_lot_pos.focus_set(),
                                                       self.cmb_lot_pos.event_generate('<Alt-Down>')))
-        self.cmb_lot_pos.bind('<Return>', lambda e: self.ent_qty_pos.focus_set())
+        self.cmb_lot_pos.bind('<<ComboboxSelected>>', lambda e: self.update_dispatch_funds())
+        self.cmb_lot_pos.bind('<Return>', lambda e: (self.cmb_fund_pos.focus_set(),
+                                                      self.cmb_fund_pos.event_generate('<Alt-Down>')))
+        self.cmb_fund_pos.bind('<Return>', lambda e: self.ent_qty_pos.focus_set())
 
         # --- Nút tác vụ
         btns = tb.Frame(frm)
         btns.pack(fill='x', padx=8, pady=8)
-        tb.Button(btns, text='+ Thêm vào danh sách xuất', bootstyle='secondary', command=self.add_to_dispatch_cart).pack(side='left', padx=4)
-        tb.Button(btns, text='Xóa dòng', bootstyle='warning', command=self.remove_selected_dispatch_item).pack(side='left', padx=4)
-        tb.Button(btns, text='Xóa danh sách', bootstyle='danger', command=self.clear_dispatch_cart).pack(side='left', padx=4)
-        tb.Button(btns, text='Xác nhận xuất kho', bootstyle='success', command=self.confirm_dispatch).pack(side='left', padx=8)
-        tb.Button(btns, text='In phiếu xuất kho', bootstyle='info', command=self.print_dispatch_note).pack(side='left', padx=8)
+        
+        # Nhóm chính bên trái
+        tb.Button(btns, text='+ Thêm vào giỏ hàng', bootstyle='primary', command=self.add_to_dispatch_cart).pack(side='left', padx=4)
+        tb.Button(btns, text='Xác nhận xuất kho', bootstyle='success', command=self.confirm_dispatch).pack(side='left', padx=4)
+        tb.Button(btns, text='In phiếu xuất kho', bootstyle='info', command=self.print_dispatch_note).pack(side='left', padx=4)
+        
+        # Nhóm xóa hủy bên phải (phòng tránh bấm nhầm)
+        tb.Button(btns, text='Xóa danh sách', bootstyle='danger-outline', command=self.clear_dispatch_cart).pack(side='right', padx=4)
+        tb.Button(btns, text='Xóa dòng', bootstyle='warning', command=self.remove_selected_dispatch_item).pack(side='right', padx=4)
 
         # --- Info tổng quan đơn vị
         info = tb.Frame(frm)
@@ -1575,17 +1640,18 @@ Hiện tại bạn vẫn có thể:
         self.lbl_unit_pos.pack(side='left', padx=(8, 12))
 
         # Báº£ng giÃ³ hÃ ng xuáº¥t
-        cols = ('productId', 'productName', 'lotNo', 'expiryDate', 'unitCode', 'price', 'qty', 'amount')
+        cols = ('productId', 'productName', 'lotNo', 'expiryDate', 'fundSource', 'unitCode', 'price', 'qty', 'amount')
         self.tree_cart = tb.Treeview(frm, columns=cols, show='headings', height=10)
         for c, w, t, anchor in [
             ('productId', 60, 'PID', 'center'),
-            ('productName', 250, 'Tên hàng hóa', 'w'),
+            ('productName', 220, 'Tên hàng hóa', 'w'),
             ('lotNo', 100, 'Số lô', 'center'),
             ('expiryDate', 100, 'Hạn dùng', 'center'),
-            ('unitCode', 80, 'ĐVT', 'center'),
-            ('price', 100, 'Đơn giá', 'e'),
-            ('qty', 100, 'SL xuất', 'e'),
-            ('amount', 120, 'Thành tiền', 'e')
+            ('fundSource', 120, 'Nguồn kinh phí', 'w'),
+            ('unitCode', 60, 'ĐVT', 'center'),
+            ('price', 80, 'Đơn giá', 'e'),
+            ('qty', 80, 'SL xuất', 'e'),
+            ('amount', 100, 'Thành tiền', 'e')
         ]:
             self.tree_cart.heading(c, text=t, command=(lambda col=c: self.sort_tree(self.tree_cart, col)))
             self.tree_cart.column(c, width=w, anchor=anchor)
@@ -1645,6 +1711,49 @@ Hiện tại bạn vẫn có thể:
             lot_options.append(f"{lot['lotNo']} (HSD: {lot['expiryDate']}) - Tồn: {lot['qtyBase']:g}")
         self.cmb_lot_pos['values'] = lot_options
         self.cmb_lot_pos.current(0)
+        self.update_dispatch_funds()
+
+    def update_dispatch_funds(self):
+        sel = self.cmb_prod_pos.get()
+        if not sel:
+            self.cmb_fund_pos['values'] = []
+            self.cmb_fund_pos.set('')
+            return
+        pid = int(sel.split(' — ')[0])
+        
+        # Lấy lô được chọn
+        chosen_val = self.cmb_lot_pos.get()
+        chosen_lot = None
+        if chosen_val and chosen_val != "[Tự động - FEFO]":
+            chosen_lot = chosen_val.split(" (HSD:")[0].strip()
+            
+        if chosen_lot:
+            # Lọc nguồn theo lô cụ thể
+            funds = self.db.q('''
+                SELECT sm.fundSource, SUM(sm.qty*1) AS qtyBase
+                FROM stock_movements sm
+                JOIN batches b ON b.id = sm.batchId
+                WHERE sm.productId=? AND b.lotNo=?
+                GROUP BY sm.fundSource
+                HAVING qtyBase > 0
+            ''', (pid, chosen_lot))
+        else:
+            # Lọc nguồn theo sản phẩm nói chung (tổng tất cả các lô)
+            funds = self.db.q('''
+                SELECT fundSource, SUM(qty*1) AS qtyBase
+                FROM stock_movements
+                WHERE productId=?
+                GROUP BY fundSource
+                HAVING qtyBase > 0
+            ''', (pid,))
+            
+        fund_options = ["[Tự động trừ kho]"]
+        for f in funds:
+            f_name = f['fundSource'] or 'Không rõ nguồn'
+            fund_options.append(f"{f_name} - Tồn: {f['qtyBase']:g}")
+            
+        self.cmb_fund_pos['values'] = fund_options
+        self.cmb_fund_pos.current(0)
 
     def fill_product_by_barcode_dispatch(self, only_select=False):
         bc = self.ent_barcode.get().strip()
@@ -1747,9 +1856,20 @@ Hiện tại bạn vẫn có thể:
                     if not messagebox.askyesno("Cảnh báo cận hạn", warning_msg):
                         return
                         
+        # Lấy nguồn kinh phí chọn thủ công
+        chosen_fund_val = self.cmb_fund_pos.get()
+        chosen_fund = None
+        if chosen_fund_val and chosen_fund_val != "[Tự động trừ kho]":
+            chosen_fund = chosen_fund_val.split(" - Tồn:")[0].strip()
+            if chosen_fund == "Không rõ nguồn":
+                chosen_fund = ""
+                         
         merged = False
         for it in self.cart_dispatch:
-            if it['productId'] == pid and it['unitCode'] == unit and it.get('lotNo') == chosen_lot:
+            if (it['productId'] == pid 
+                and it['unitCode'] == unit 
+                and it.get('lotNo') == chosen_lot 
+                and it.get('fundSource') == chosen_fund):
                 it['qty'] = round(it['qty'] + qty, 4)
                 merged = True
                 break
@@ -1759,7 +1879,8 @@ Hiện tại bạn vẫn có thể:
                 'productName': name,
                 'unitCode': unit,
                 'qty': qty,
-                'lotNo': chosen_lot
+                'lotNo': chosen_lot,
+                'fundSource': chosen_fund
             })
 
         self.refresh_dispatch_cart_view()
@@ -1775,15 +1896,18 @@ Hiện tại bạn vẫn có thể:
         if not item_vals:
             return
         pid = int(item_vals[0])
-        unit = item_vals[4]  # Cột ĐVT có chỉ số là 4
         lot = item_vals[2]   # Cột Số lô có chỉ số là 2
+        fund = item_vals[4]  # Cột Nguồn kinh phí có chỉ số là 4
+        unit = item_vals[5]  # Cột ĐVT có chỉ số là 5
         
+        if fund == '[Tự động]':
+            fund = None
+            
         # Tìm xem sản phẩm có trong giỏ hàng xuất không
-        # Ưu tiên tìm trùng khớp cả ID, ĐVT và Số lô
-        exact_exists = any(it['productId'] == pid and it['unitCode'] == unit and it.get('lotNo') == lot for it in self.cart_dispatch)
+        exact_exists = any(it['productId'] == pid and it['unitCode'] == unit and it.get('lotNo') == lot and it.get('fundSource') == fund for it in self.cart_dispatch)
         
         if exact_exists:
-            self.cart_dispatch = [it for it in self.cart_dispatch if not (it['productId'] == pid and it['unitCode'] == unit and it.get('lotNo') == lot)]
+            self.cart_dispatch = [it for it in self.cart_dispatch if not (it['productId'] == pid and it['unitCode'] == unit and it.get('lotNo') == lot and it.get('fundSource') == fund)]
         else:
             # Nếu không tìm thấy trùng khớp Số lô chính xác (có thể do xuất tự động FEFO nên trong cart lotNo=None), xóa cả sản phẩm với ĐVT đó
             self.cart_dispatch = [it for it in self.cart_dispatch if not (it['productId'] == pid and it['unitCode'] == unit)]
@@ -1882,6 +2006,7 @@ Hiện tại bạn vẫn có thể:
                         name,
                         alloc['lotNo'],
                         alloc['expiryDate'],
+                        it.get('fundSource') or '[Tự động]',
                         unitCode,
                         f"{alloc['cost']:,.0f}",
                         f"{alloc['qty']:g}",
@@ -2147,7 +2272,7 @@ Hiện tại bạn vẫn có thể:
                     Paragraph("Thành tiền", style_table_header),
                     Paragraph("Số lô", style_table_header),
                     Paragraph("Hạn dùng", style_table_header),
-                    Paragraph("Ghi chú", style_table_header)
+                    Paragraph("Nguồn", style_table_header)
                 ]
             ]
             
@@ -2167,7 +2292,7 @@ Hiện tại bạn vẫn có thể:
                     Paragraph(f"{sub_total:,.0f}" if sub_total > 0 else "0", style_cell_right),
                     Paragraph(it['lotNo'] or '', style_cell_center),
                     Paragraph(it['expiryDate'] or '', style_cell_center),
-                    Paragraph('', style_cell)
+                    Paragraph(it.get('fundSource') or '', style_cell)
                 ])
                 
             # Thêm dòng tổng cộng
@@ -2183,7 +2308,7 @@ Hiện tại bạn vẫn có thể:
                 Paragraph("", style_cell)
             ])
                 
-            col_widths = [25, 145, 35, 45, 60, 70, 55, 55, 20]
+            col_widths = [20, 130, 30, 40, 50, 60, 50, 50, 80]
             items_table = Table(table_data, colWidths=col_widths)
             items_table.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f2f2f2')),
@@ -2313,23 +2438,29 @@ Hiện tại bạn vẫn có thể:
         self.de_to.entry.insert(0, dt.datetime.now().strftime("%Y-%m-%d"))      # hôm nay
         self.de_to.pack(side='left', padx=(0,12))
 
+        tb.Label(top, text='Nguồn:').pack(side='left', padx=(0,6))
+        self.cmb_report_fund = tb.Combobox(top, width=22, state='readonly')
+        self.cmb_report_fund.pack(side='left', padx=(0,12))
+        self.cmb_report_fund.bind('<<ComboboxSelected>>', lambda e: self.refresh_report())
+
         tb.Button(top, text='Làm mới', bootstyle='primary', command=self.refresh_report).pack(side='left', padx=6)
         tb.Button(top, text='Xuất CSV…', bootstyle='info', command=self.export_report_csv).pack(side='left', padx=6)
         tb.Button(top, text='Xuất PDF…', bootstyle='danger', command=self.export_report_pdf).pack(side='left', padx=6)
         tb.Button(top, text='Biên bản kiểm kê (PDF)', bootstyle='warning', command=self.print_inventory_check_pdf).pack(side='left', padx=6)
 
         # Bảng Xuất–Nhập–Tồn
-        cols = ('product','productName','lotNo','expiryDate','opening','inbound','outbound','closing')
+        cols = ('product','productName','lotNo','expiryDate','fundSource','opening','inbound','outbound','closing')
         self.tree_report = tb.Treeview(frm, columns=cols, show='headings')
         for c, w, t, anchor in [
             ('product',50,'PID','center'),
-            ('productName',300,'Tên thuốc/vaccine/VTYT','w'),
-            ('lotNo',100,'Số lô','center'),
-            ('expiryDate',100,'Hạn sử dụng','center'),
-            ('opening',100,'Tồn đầu kỳ','e'),
-            ('inbound',100,'Nhập','e'),
-            ('outbound',100,'Xuất','e'),
-            ('closing',100,'Tồn cuối kỳ','e'),
+            ('productName',220,'Tên thuốc/vaccine/VTYT','w'),
+            ('lotNo',80,'Số lô','center'),
+            ('expiryDate',90,'Hạn sử dụng','center'),
+            ('fundSource',110,'Nguồn kinh phí','w'),
+            ('opening',80,'Tồn đầu','e'),
+            ('inbound',80,'Nhập','e'),
+            ('outbound',80,'Xuất','e'),
+            ('closing',80,'Tồn cuối','e'),
         ]:
             self.tree_report.heading(c, text=t, command=(lambda col=c: self.sort_tree(self.tree_report, col)))
             self.tree_report.column(c, width=w, anchor=anchor)
@@ -3401,7 +3532,7 @@ Hiện tại bạn vẫn có thể:
                 messagebox.showwarning('Thiếu thông tin', 'Vui lòng chọn đầy đủ ngày bắt đầu và kết thúc')
                 return
             
-            data = self.report_manager.get_profit_report(start_date, end_date)
+            data = self.db.get_dispatch_stats_by_unit(start_date, end_date)
             self.current_report_type = 'receiving_unit'
             self.display_profit_report(data)
             
@@ -3420,18 +3551,19 @@ Hiện tại bạn vẫn có thể:
             
             # Title
             tb.Label(main_frame, text="THỐNG KÊ CẤP PHÁT THEO ĐƠN VỊ NHẬN", 
-                    font=('Segoe UI', 14, 'bold'), bootstyle='primary').pack(pady=(0, 15))
+                    font=('Segoe UI', 14, 'bold'), bootstyle='primary').pack(pady=(0, 5))
+            tb.Label(main_frame, text="💡 Nhấp đúp vào một đơn vị để xem chi tiết các mặt hàng đã cấp phát", 
+                    font=('Segoe UI', 9, 'italic'), bootstyle='secondary').pack(pady=(0, 10))
             
             # Bảng dữ liệu
-            cols = ('date', 'unit', 'notes_count', 'total_qty', 'items_count')
+            cols = ('unit', 'notes_count', 'total_qty', 'total_value')
             tree = tb.Treeview(main_frame, columns=cols, show='headings', height=15)
             
             for c, w, t, anchor in [
-                ('date', 120, 'Ngày xuất', 'center'),
-                ('unit', 300, 'Đơn vị nhận', 'w'),
+                ('unit', 350, 'Đơn vị nhận', 'w'),
                 ('notes_count', 130, 'Số phiếu nhận', 'e'),
                 ('total_qty', 150, 'Tổng số lượng nhận', 'e'),
-                ('items_count', 150, 'Số loại sản phẩm nhận', 'e')
+                ('total_value', 180, 'Tổng giá trị nhận (VNĐ)', 'e')
             ]:
                 tree.heading(c, text=t)
                 tree.column(c, width=w, anchor=anchor)
@@ -3441,34 +3573,135 @@ Hiện tại bạn vẫn có thể:
             tree.pack(fill='both', expand=True)
             
             # Load dữ liệu
-            total_notes = total_qty_sum = 0
+            total_notes = 0
+            total_qty_sum = 0.0
+            total_val_sum = 0.0
             for idx, row in enumerate(data):
-                unit_name = row.get('product_name', '') or ''
-                notes_count = row.get('qty', 0) or 0
-                total_qty = row.get('revenue', 0) or 0
-                items_count = row.get('cost', 0) or 0
+                unit_name = row.get('receivingUnit', '') or ''
+                notes_count = row.get('noteCount', 0) or 0
+                total_qty = row.get('totalQty', 0) or 0
+                total_value = row.get('totalValue', 0.0) or 0.0
                 
                 total_notes += notes_count
                 total_qty_sum += total_qty
+                total_val_sum += total_value
                 
                 tags = ['odd'] if idx % 2 else []
                 
                 tree.insert('', 'end', values=(
-                    row.get('sale_date', ''),
                     unit_name,
                     f"{notes_count:,}",
                     f"{total_qty:,.0f}",
-                    f"{items_count:,}"
+                    f"{total_value:,.0f}"
                 ), tags=tags)
             
             # Dòng tổng
             if data:
                 tree.insert('', 'end', values=(
-                    'TỔNG', '',
+                    'TỔNG CỘNG',
                     f"{total_notes:,}",
                     f"{total_qty_sum:,.0f}",
-                    ''
+                    f"{total_val_sum:,.0f}"
                 ), tags=('total',))
+            
+            # Bind Double-Click Event
+            tree.bind('<Double-1>', lambda event: self.show_receiving_unit_drilldown(tree))
+            
+            # Chuyển sang tab chi tiết
+            self.adv_report_nb.select(self.adv_detail_tab)
+            
+        except Exception as e:
+            messagebox.showerror('Lỗi', str(e))
+
+    def show_receiving_unit_drilldown(self, tree):
+        sel = tree.selection()
+        if not sel:
+            return
+        
+        values = tree.item(sel[0], 'values')
+        receiving_unit = values[0]
+        if receiving_unit == 'TỔNG CỘNG' or not receiving_unit:
+            return
+            
+        start_date = self.adv_de_from.entry.get().strip()
+        end_date = self.adv_de_to.entry.get().strip()
+        
+        try:
+            details = self.db.get_dispatch_detail_by_unit(receiving_unit, start_date, end_date)
+            if not details:
+                messagebox.showinfo("Thông báo", "Không có chi tiết cấp phát cho đơn vị này.")
+                return
+                
+            # Tạo popup window
+            pop = tk.Toplevel(self)
+            pop.title(f"Chi tiết cấp phát: {receiving_unit}")
+            pop.geometry("950x500")
+            pop.grab_set()  # Modal window
+            
+            # Main frame
+            main_frm = tb.Frame(pop)
+            main_frm.pack(fill='both', expand=True, padx=10, pady=10)
+            
+            # Header
+            tb.Label(main_frm, text=f"CHI TIẾT CẤP PHÁT CHO ĐƠN VỊ", font=('Segoe UI', 14, 'bold'), bootstyle='primary').pack(anchor='w', pady=(0, 5))
+            tb.Label(main_frm, text=f"Đơn vị: {receiving_unit} ({start_date} -> {end_date})", font=('Segoe UI', 11, 'bold')).pack(anchor='w', pady=(0, 10))
+            
+            # Treeview
+            cols = ('note_no', 'date', 'reason', 'product', 'qty', 'lot', 'exp', 'fund', 'cost', 'total')
+            tree_detail = tb.Treeview(main_frm, columns=cols, show='headings')
+            
+            for c, w, t, anchor in [
+                ('note_no', 100, 'Số phiếu', 'center'),
+                ('date', 80, 'Ngày xuất', 'center'),
+                ('reason', 90, 'Lý do', 'w'),
+                ('product', 180, 'Tên sản phẩm', 'w'),
+                ('qty', 50, 'SL', 'e'),
+                ('lot', 70, 'Số lô', 'center'),
+                ('exp', 80, 'HSD', 'center'),
+                ('fund', 90, 'Nguồn kinh phí', 'w'),
+                ('cost', 80, 'Đơn giá', 'e'),
+                ('total', 90, 'Thành tiền', 'e')
+            ]:
+                tree_detail.heading(c, text=t)
+                tree_detail.column(c, width=w, anchor=anchor)
+                
+            tree_detail.tag_configure('odd', background='#f6f8fa')
+            tree_detail.pack(fill='both', expand=True, pady=(0, 10))
+            
+            # Insert data
+            tot_qty = 0
+            tot_val = 0.0
+            for idx, r in enumerate(details):
+                qty = float(r['qty'])
+                cost = float(r['cost'] or 0)
+                sub_total = qty * cost
+                tot_qty += qty
+                tot_val += sub_total
+                
+                tags = ('odd',) if idx % 2 else ()
+                # format date
+                created_date = r['createdAt']
+                if len(created_date) > 10:
+                    created_date = created_date[:10]
+                    
+                tree_detail.insert('', 'end', values=(
+                    r['noteNumber'],
+                    created_date,
+                    r['reason'] or '',
+                    r['productName'],
+                    f"{qty:g}",
+                    r['lotNo'] or '',
+                    r['expiryDate'] or '',
+                    r.get('fundSource') or '',
+                    f"{cost:,.0f}",
+                    f"{sub_total:,.0f}"
+                ), tags=tags)
+                
+            # Footer summary label
+            tb.Label(main_frm, text=f"Tổng số lượng: {tot_qty:g}  |  Tổng giá trị: {tot_val:,.0f} VNĐ", font=('Segoe UI', 10, 'bold'), bootstyle='success').pack(anchor='e')
+            
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không thể lấy chi tiết cấp phát: {str(e)}")
             
             # Chuyển sang tab chi tiết
             self.adv_report_nb.select(self.adv_detail_tab)
@@ -3632,7 +3865,8 @@ Hiện tại bạn vẫn có thể:
         if not start_s or not end_s:
             messagebox.showwarning('Thiếu ngày', 'Chọn đủ Từ ngày và Đến ngày'); return
 
-        rows = self.db.xnt_report(start_s, end_s)
+        fund_source = self.cmb_report_fund.get().strip() if hasattr(self, 'cmb_report_fund') else 'Tất cả'
+        rows = self.db.xnt_report(start_s, end_s, fund_source)
         if not rows:
             messagebox.showinfo('Thông báo','Không có dữ liệu'); return
 
@@ -3647,13 +3881,23 @@ Hiện tại bạn vẫn có thể:
         tot_open = tot_in = tot_out = tot_close = 0.0
         with open(path, 'w', newline='', encoding='utf-8') as f:
             w = csv.writer(f)
-            w.writerow(['productId','productName','opening','inbound','outbound','closing'])
+            w.writerow(['Mã SP', 'Tên sản phẩm', 'Số lô', 'Hạn sử dụng', 'Nguồn kinh phí', 'Tồn đầu', 'Nhập', 'Xuất', 'Tồn cuối'])
             for r in rows:
-                w.writerow([r['productId'], r['productName'], r['opening'], r['inbound'], r['outbound'], r['closing']])
+                w.writerow([
+                    r['productId'], 
+                    r['productName'], 
+                    r.get('lotNo') or '', 
+                    r.get('expiryDate') or '', 
+                    r.get('fundSource') or '',
+                    r['opening'], 
+                    r['inbound'], 
+                    r['outbound'], 
+                    r['closing']
+                ])
                 tot_open  += float(r['opening']); tot_in += float(r['inbound'])
                 tot_out   += float(r['outbound']); tot_close += float(r['closing'])
             w.writerow([])
-            w.writerow(['', 'TOTAL', round(tot_open,4), round(tot_in,4), round(tot_out,4), round(tot_close,4)])
+            w.writerow(['', 'TỔNG CỘNG', '', '', '', round(tot_open,4), round(tot_in,4), round(tot_out,4), round(tot_close,4)])
 
         self.toast('Đã lưu báo cáo X–N–T')
 
@@ -3663,7 +3907,8 @@ Hiện tại bạn vẫn có thể:
         if not start_s or not end_s:
             messagebox.showwarning('Thiếu ngày', 'Chọn đủ Từ ngày và Đến ngày'); return
 
-        rows = self.db.xnt_report(start_s, end_s)
+        fund_source = self.cmb_report_fund.get().strip() if hasattr(self, 'cmb_report_fund') else 'Tất cả'
+        rows = self.db.xnt_report(start_s, end_s, fund_source)
         if not rows:
             messagebox.showinfo('Thông báo', 'Không có dữ liệu báo cáo trong khoảng thời gian này'); return
 
@@ -3773,6 +4018,9 @@ Hiện tại bạn vẫn có thể:
             except Exception:
                 date_range_str = f"Từ ngày {start_s} đến ngày {end_s}"
                 
+            if fund_source and fund_source != 'Tất cả':
+                date_range_str += f" — Nguồn: {fund_source}"
+
             story.append(Paragraph(date_range_str, style_subtitle))
             story.append(Spacer(1, 10))
             
@@ -3785,6 +4033,7 @@ Hiện tại bạn vẫn có thể:
                     Paragraph("ĐVT", style_table_header),
                     Paragraph("Số lô", style_table_header),
                     Paragraph("Hạn dùng", style_table_header),
+                    Paragraph("Nguồn kinh phí", style_table_header),
                     Paragraph("Tồn đầu", style_table_header),
                     Paragraph("Nhập", style_table_header),
                     Paragraph("Xuất", style_table_header),
@@ -3811,6 +4060,7 @@ Hiện tại bạn vẫn có thể:
                     Paragraph(r['unit'] or '-', style_cell_center),
                     Paragraph(r['lotNo'] or '', style_cell_center),
                     Paragraph(r['expiryDate'] or '', style_cell_center),
+                    Paragraph(r.get('fundSource') or '', style_cell),
                     Paragraph(f"{o_val:g}", style_cell_right),
                     Paragraph(f"{i_val:g}", style_cell_right),
                     Paragraph(f"{ou_val:g}", style_cell_right),
@@ -3825,20 +4075,21 @@ Hiện tại bạn vẫn có thể:
                 Paragraph("", style_cell_center),
                 Paragraph("", style_cell_center),
                 Paragraph("", style_cell_center),
+                Paragraph("", style_cell),
                 Paragraph(f"<b>{tot_open:g}</b>", style_cell_right),
                 Paragraph(f"<b>{tot_in:g}</b>", style_cell_right),
                 Paragraph(f"<b>{tot_out:g}</b>", style_cell_right),
                 Paragraph(f"<b>{tot_close:g}</b>", style_cell_right)
             ])
             
-            col_widths = [25, 45, 257, 45, 65, 65, 65, 65, 65, 65]
+            col_widths = [25, 45, 197, 45, 65, 65, 60, 65, 65, 65, 65]
             items_table = Table(table_data, colWidths=col_widths)
             items_table.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f2f2f2')),
                 ('ALIGN', (0,0), (-1,-1), 'CENTER'),
                 ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
                 ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-                ('SPAN', (0, -1), (5, -1)),
+                ('SPAN', (0, -1), (6, -1)),
                 ('TOPPADDING', (0,0), (-1,-1), 5),
                 ('BOTTOMPADDING', (0,0), (-1,-1), 5),
             ]))
@@ -3894,7 +4145,8 @@ Hiện tại bạn vẫn có thể:
         if not end_s:
             messagebox.showwarning('Thiếu ngày', 'Hãy chọn ngày đến (ngày kết thúc kiểm kê) ở ô Đến ngày'); return
 
-        rows = self.db.xnt_report('2000-01-01', end_s)
+        fund_source = self.cmb_report_fund.get().strip() if hasattr(self, 'cmb_report_fund') else 'Tất cả'
+        rows = self.db.xnt_report('2000-01-01', end_s, fund_source)
         items = [r for r in rows if float(r['closing']) > 0]
         
         if not items:
@@ -4007,6 +4259,9 @@ Hiện tại bạn vẫn có thể:
             except Exception:
                 date_str = f"Thời điểm kiểm kê: ngày {end_s}"
                 
+            if fund_source and fund_source != 'Tất cả':
+                date_str += f" — Nguồn: {fund_source}"
+
             story.append(Paragraph(date_str, style_subtitle))
             
             # Ban kiểm kê
@@ -4029,6 +4284,7 @@ Hiện tại bạn vẫn có thể:
                     Paragraph("ĐVT", style_table_header),
                     Paragraph("Số lô", style_table_header),
                     Paragraph("Hạn dùng", style_table_header),
+                    Paragraph("Nguồn kinh phí", style_table_header),
                     Paragraph("Số lượng<br/>sổ sách", style_table_header),
                     Paragraph("Số lượng<br/>thực tế", style_table_header),
                     Paragraph("Chênh lệch<br/>(Thừa/Thiếu)", style_table_header),
@@ -4048,6 +4304,7 @@ Hiện tại bạn vẫn có thể:
                     Paragraph(r['unit'] or '-', style_cell_center),
                     Paragraph(r['lotNo'] or '', style_cell_center),
                     Paragraph(r['expiryDate'] or '', style_cell_center),
+                    Paragraph(r.get('fundSource') or '', style_cell),
                     Paragraph(f"{c_val:g}", style_cell_right),
                     Paragraph("", style_cell_center),
                     Paragraph("", style_cell_center),
@@ -4062,20 +4319,21 @@ Hiện tại bạn vẫn có thể:
                 Paragraph("", style_cell_center),
                 Paragraph("", style_cell_center),
                 Paragraph("", style_cell_center),
+                Paragraph("", style_cell),
                 Paragraph(f"<b>{tot_books:g}</b>", style_cell_right),
                 Paragraph("", style_cell_center),
                 Paragraph("", style_cell_center),
                 Paragraph("", style_cell_center)
             ])
             
-            col_widths = [25, 45, 292, 40, 60, 60, 60, 60, 60, 60]
+            col_widths = [25, 45, 232, 40, 60, 60, 60, 60, 60, 60, 60]
             items_table = Table(table_data, colWidths=col_widths)
             items_table.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f2f2f2')),
                 ('ALIGN', (0,0), (-1,-1), 'CENTER'),
                 ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
                 ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-                ('SPAN', (0, -1), (5, -1)),
+                ('SPAN', (0, -1), (6, -1)),
                 ('TOPPADDING', (0,0), (-1,-1), 5),
                 ('BOTTOMPADDING', (0,0), (-1,-1), 5),
             ]))
@@ -4285,20 +4543,19 @@ Hiện tại bạn vẫn có thể:
                         'headers': ['Thời gian', 'Số phiếu xuất', 'Tổng số lượng xuất', 'Số loại sản phẩm', 'SL trung bình/phiếu']
                     }
                 elif self.current_report_type == 'receiving_unit':
-                    data = self.report_manager.get_profit_report(start_date, end_date)
+                    data = self.db.get_dispatch_stats_by_unit(start_date, end_date)
                     data_list = []
                     for row in data:
                         data_list.append([
-                            row.get('sale_date', ''),
-                            row.get('product_name', ''),
-                            row.get('qty', 0),
-                            row.get('revenue', 0),
-                            row.get('cost', 0)
+                            row.get('receivingUnit', ''),
+                            row.get('noteCount', 0),
+                            row.get('totalQty', 0),
+                            row.get('totalValue', 0.0)
                         ])
                     return {
                         'title': f'Thống kê cấp phát theo đơn vị nhận từ {start_date} đến {end_date}',
                         'data': data_list,
-                        'headers': ['Ngày xuất', 'Đơn vị nhận', 'Số phiếu nhận', 'Tổng số lượng nhận', 'Số loại sản phẩm nhận']
+                        'headers': ['Đơn vị nhận', 'Số phiếu xuất', 'Tổng số lượng nhận', 'Tổng giá trị nhận (VNĐ)']
                     }
                 elif self.current_report_type == 'top_products':
                     data = self.report_manager.get_top_products(start_date, end_date, 20)
@@ -4389,7 +4646,8 @@ Hiện tại bạn vẫn có thể:
         if not start_s or not end_s:
             messagebox.showwarning('Thiếu ngày', 'Chọn đủ Từ ngày và Đến ngày'); return
 
-        rows = self.db.xnt_report(start_s, end_s)
+        fund_source = self.cmb_report_fund.get().strip() if hasattr(self, 'cmb_report_fund') else 'Tất cả'
+        rows = self.db.xnt_report(start_s, end_s, fund_source)
 
         tot_open = tot_in = tot_out = tot_close = 0.0
         for idx, r in enumerate(rows):
@@ -4406,6 +4664,7 @@ Hiện tại bạn vẫn có thể:
                     r['productName'],
                     r['lotNo'] or '',
                     r['expiryDate'] or '',
+                    r.get('fundSource', ''),
                     f"{r['opening']:g}", 
                     f"{r['inbound']:g}", 
                     f"{r['outbound']:g}", 
@@ -4418,12 +4677,45 @@ Hiện tại bạn vẫn có thể:
         if rows:
             self.tree_report.insert(
                 '', 'end',
-                values=('', 'TỔNG CỘNG', '', '', f"{tot_open:g}", f"{tot_in:g}", f"{tot_out:g}", f"{tot_close:g}"),
+                values=('', 'TỔNG CỘNG', '', '', '', f"{tot_open:g}", f"{tot_in:g}", f"{tot_out:g}", f"{tot_close:g}"),
                 tags=('total',)
             )
 
+    def refresh_report_funds_combo(self):
+        try:
+            funds = self.db.get_fund_sources()
+            vals = ['Tất cả']
+            for f in funds:
+                if f and f not in vals:
+                    vals.append(f)
+            # Add defaults to list if they aren't in DB yet to make it easier for user to select
+            defaults = ['TCMR (Tiêm chủng mở rộng)', 'Ngân sách địa phương', 'Dự án viện trợ', 'Mua sắm đấu thầu', 'Nguồn khác']
+            for d in defaults:
+                if d not in vals:
+                    vals.append(d)
+            if hasattr(self, 'cmb_report_fund'):
+                current_val = self.cmb_report_fund.get()
+                self.cmb_report_fund['values'] = vals
+                if current_val in vals:
+                    self.cmb_report_fund.set(current_val)
+                else:
+                    self.cmb_report_fund.set('Tất cả')
+
+            if hasattr(self, 'cmb_item_fund'):
+                current_item_val = self.cmb_item_fund.get()
+                item_vals = [v for v in vals if v != 'Tất cả']
+                self.cmb_item_fund['values'] = item_vals
+                if current_item_val:
+                    self.cmb_item_fund.set(current_item_val)
+                else:
+                    self.cmb_item_fund.set('TCMR (Tiêm chủng mở rộng)')
+        except Exception as e:
+            print(f"Lỗi tải danh sách nguồn kinh phí: {e}")
+
 
     def on_ready(self):
+        if hasattr(self, 'refresh_report_funds_combo'):
+            self.refresh_report_funds_combo()
         self.refresh_products(); self.refresh_stock(); self.refresh_alerts(); self.refresh_report()
         self.refresh_backup_list()
         # Load advanced reports summary

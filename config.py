@@ -1,4 +1,4 @@
-# config.py — Cấu hình toàn cục cho phần mềm Quản lý XNT thuốc, vaccine và VTYT
+# config.py — Cấu hình toàn cục cho phần mềm Quản lý XNT thuốc, vaccine và VTYT.
 import os
 import shutil
 
@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   cost REAL,
   receivingUnit TEXT,
   reason TEXT,
+  fundSource TEXT,
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -194,7 +195,8 @@ CREATE TABLE IF NOT EXISTS purchase_items (
   qty REAL NOT NULL,
   lotNo TEXT,
   expiryDate TEXT,
-  cost REAL NOT NULL
+  cost REAL NOT NULL,
+  fundSource TEXT
 );
 
 CREATE TABLE IF NOT EXISTS temperature_logs (

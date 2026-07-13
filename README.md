@@ -12,6 +12,12 @@
 
 **Hệ thống Quản lý XNT CDC** là ứng dụng phần mềm Desktop được thiết kế chuyên biệt cho Trung tâm Kiểm soát bệnh tật (CDC) và các đơn vị y tế dự phòng nhằm tối ưu hóa công tác quản lý thuốc, vaccine và vật tư y tế. 
 
+### 💡 Sự khác biệt và tính độc bản:
+Trong bối cảnh thị trường hiện tại, **rất hiếm hoặc hầu như không có phần mềm quản lý kho nào vừa miễn phí vừa hỗ trợ tích hợp chặt chẽ giữa máy tính (PC) và điện thoại di động một cách thuận tiện như vậy**:
+*   *Các phần mềm đám mây (KiotViet, Sapo...)*: Yêu cầu kết nối internet liên tục, phải trả phí thuê bao hàng tháng, và không hỗ trợ các tiêu chuẩn nghiệp vụ đặc thù của y tế công như FEFO tự động hay biểu mẫu kế toán nhà nước (Thông tư 107).
+*   *Các phần mềm offline truyền thống*: Nặng nề, yêu cầu cài đặt máy chủ cơ sở dữ liệu phức tạp (SQL Server, MySQL), và hoàn toàn không kết nối được với điện thoại nếu không có internet.
+*   **Giải pháp của chúng tôi**: Cực kỳ **gọn, nhẹ** (chỉ một file chạy duy nhất, dùng SQLite không cần cài server), hoạt động **ngoại tuyến (offline) 100%** nhưng vẫn có khả năng kết nối mạng LAN Wi-Fi để biến điện thoại thành thiết bị quét và nhập liệu di động tức thời.
+
 Hệ thống được phát triển trên nền tảng **Python & SQLite**, sử dụng giao diện đồ họa hiện đại **ttkbootstrap** (Flatly Theme) và tích hợp các tiêu chuẩn nghiêm ngặt của Bộ Y tế về Thực hành tốt bảo quản thuốc (**GSP**) cũng như chế độ kế toán hành chính sự nghiệp (**Thông tư 107/2017/TT-BTC**).
 
 ---
@@ -45,9 +51,14 @@ Hệ thống được phát triển trên nền tảng **Python & SQLite**, sử
 *   **Thống kê nâng cao**: Phân tích biểu đồ xu hướng cấp phát y tế theo thời gian, theo dõi chi tiết sản lượng chuyển giao cho từng đơn vị nhận (các Trạm y tế, Trung tâm y tế huyện...).
 *   **Định dạng xuất đa dạng**: Hỗ trợ xuất dữ liệu ra Excel (.xlsx), PDF và CSV.
 
-### 5. 📱 Quét mã vạch thông minh bằng Điện thoại di động
-*   **Companion Web Server**: Tích hợp một HTTP server mini chạy ngầm trên cổng 5000 để biến camera điện thoại trong mạng LAN thành máy quét vạch không dây.
-*   **Quét thời gian thực**: Hỗ trợ EAN-13, UPC-A, Code 128 và QR Code, tự động tra cứu danh mục và đưa vào giỏ hàng lập phiếu.
+### 5. 📱 Quét mã vạch và nhập liệu trên điện thoại (Tích hợp LAN tiện dụng)
+*   **Không tốn chi phí thiết bị**: Không cần đầu tư máy quét mã vạch chuyên dụng đắt đỏ. Điện thoại di động (Android/iOS) của bạn sẽ lập tức trở thành máy kiểm kho thông qua kết nối Wi-Fi nội bộ.
+*   **Các tính năng thực hiện trực tiếp trên điện thoại**:
+    *   *Quét mã vạch thời gian thực*: Sử dụng camera điện thoại quét EAN-13, UPC-A, Code 128, QR Code để nhận diện thuốc/vaccine lập tức.
+    *   *Tra cứu danh mục tại chỗ*: Tự động hiển thị tên sản phẩm, đơn vị tính chuẩn khi quét trúng mã.
+    *   *Lập giỏ hàng di động*: Nhập số lượng, số lô và hạn sử dụng của sản phẩm trực tiếp trên giao diện web điện thoại ngay khi đứng kiểm tra tại các kệ hàng vật lý.
+    *   *Đồng bộ PC tức thời*: Giỏ hàng tạm từ điện thoại sẽ đồng bộ thẳng vào giỏ hàng lập phiếu trên phần mềm PC trong mạng nội bộ, giúp thủ kho không phải đi lại giữa bàn làm việc và các tủ bảo quản lạnh để gõ tay số liệu.
+
 
 ### 6. 💾 Cơ chế An toàn dữ liệu & Không cần License
 *   **Sao lưu tự động**: Backup cơ sở dữ liệu SQLite định kỳ hàng ngày vào lúc 23:00.
