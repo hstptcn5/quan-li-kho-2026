@@ -66,6 +66,7 @@ pyinstaller ^
     --windowed ^
     --name="QuanLyKho" ^
     --add-data="thuoc.csv;." ^
+    --add-data="static;static" ^
     --add-data="%PYZBAR_DIR%;pyzbar" ^
     --add-binary="_pyzbar_dlls\libzbar-64.dll;." ^
     --add-binary="_pyzbar_dlls\libiconv.dll;." ^

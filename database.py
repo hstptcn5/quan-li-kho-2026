@@ -112,41 +112,48 @@ class DB:
             WHERE qtyBase IS NULL
         ''')
 
-        # === Lỗi 6: Migration — liên kết chứng từ cho dữ liệu cũ (best-effort) ===
-        # Liên kết purchase movements
-        self.conn.execute('''
-            UPDATE stock_movements SET
-                referenceType = 'PURCHASE',
-                referenceId = (
-                    SELECT pi.purchaseId FROM purchase_items pi
-                    WHERE pi.productId = stock_movements.productId
-                      AND pi.batchId = stock_movements.batchId
-                    ORDER BY pi.id DESC LIMIT 1
-                )
-            WHERE type = 'PURCHASE' AND referenceType IS NULL
-              AND EXISTS (
-                  SELECT 1 FROM purchase_items pi2
-                  WHERE pi2.productId = stock_movements.productId
-                    AND pi2.batchId = stock_movements.batchId
-              )
-        ''')
-        # Liên kết dispatch movements
-        self.conn.execute('''
-            UPDATE stock_movements SET
-                referenceType = 'DISPATCH',
-                referenceId = (
-                    SELECT di.dispatchId FROM dispatch_items di
-                    WHERE di.productId = stock_movements.productId
-                      AND di.batchId = stock_movements.batchId
-                    ORDER BY di.id DESC LIMIT 1
-                )
-            WHERE type = 'DISPATCH' AND referenceType IS NULL
-              AND EXISTS (
-                  SELECT 1 FROM dispatch_items di2
-                  WHERE di2.productId = stock_movements.productId
-                    AND di2.batchId = stock_movements.batchId
-              )
-        ''')
+        # === Lỗi 6: Migration — liên kết chứng từ cho dữ liệu cũ (an toàn) ===
+        # Lấy các stock_movements cũ chưa có referenceId
+        cursor = self.conn.cursor()
+        moves = cursor.execute("""
+            SELECT id, productId, batchId, qty, type, createdAt, unitCode
+            FROM stock_movements 
+            WHERE referenceId IS NULL AND type IN ('PURCHASE', 'DISPATCH')
+        """).fetchall()
+        
+        for move in moves:
+            m_id, p_id, b_id, qty, m_type, m_created, unit_code = move
+            # Thử tìm bản ghi trùng khớp trong items tương ứng
+            if m_type == 'PURCHASE':
+                # Tìm trong purchase_items
+                matches = cursor.execute("""
+                    SELECT pi.id, pi.purchaseId 
+                    FROM purchase_items pi
+                    JOIN purchase_notes pn ON pi.purchaseId = pn.id
+                    WHERE pi.productId = ? AND pi.batchId = ? AND ABS(pi.qty - ?) < 0.0001
+                      AND pi.unitCode = ?
+                """, (p_id, b_id, abs(qty), unit_code)).fetchall()
+            else:
+                # Tìm trong dispatch_items
+                matches = cursor.execute("""
+                    SELECT di.id, di.dispatchId 
+                    FROM dispatch_items di
+                    JOIN dispatch_notes dn ON di.dispatchId = dn.id
+                    WHERE di.productId = ? AND di.batchId = ? AND ABS(di.qty - ?) < 0.0001
+                      AND di.unitCode = ?
+                """, (p_id, b_id, abs(qty), unit_code)).fetchall()
+                
+            if len(matches) == 1:
+                # Khớp duy nhất! Gán reference
+                item_id, note_id = matches[0]
+                cursor.execute("""
+                    UPDATE stock_movements 
+                    SET referenceType = ?, referenceId = ?, referenceItemId = ?
+                    WHERE id = ?
+                """, (m_type, note_id, item_id, m_id))
+            else:
+                # Nếu không khớp hoặc khớp nhiều dòng, giữ nguyên NULL để tránh nguy cơ xóa nhầm dữ liệu lịch sử
+                pass
 
         # đảm bảo có dòng đơn vị cơ sở
         for r in self.conn.execute("SELECT id, defaultUnit FROM products"):
@@ -160,6 +167,19 @@ class DB:
 
     def ex(self, sql, params=()):
         cur = self.conn.execute(sql, params); self.conn.commit(); return cur.lastrowid
+
+    def add_audit_log(self, action: str, note_id: int = None, details: str = None, ip: str = "Local"):
+        """Ghi nhận nhật ký kiểm toán (Audit Log)"""
+        try:
+            # Dùng một connection riêng biệt hoặc self.conn trực tiếp
+            # Vì log này ghi ngay lập tức không phụ thuộc transaction của nghiệp vụ chính
+            # Nên chúng ta commit trực tiếp qua self.ex
+            self.ex(
+                "INSERT INTO audit_logs (ip, action, noteId, details) VALUES (?, ?, ?, ?)",
+                (ip, action, note_id, details)
+            )
+        except Exception as e:
+            print(f"Lỗi ghi audit log: {e}")
 
     def default_unit_of(self, product_id):
         r = self.q("SELECT defaultUnit FROM products WHERE id=?", (product_id,))
@@ -462,40 +482,79 @@ class DB:
                 original_unit = it['unitCode']
 
                 # Lấy lô hàng: thủ công nếu chọn trước, hoặc FEFO nếu để tự động
+                fund_source_val = it.get('fundSource')
                 if it.get('lotNo'):
-                    lots = self.q('''
-                      SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
-                             COALESCE((
-                                 SELECT sm2.cost FROM stock_movements sm2
-                                 WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
-                                   AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
-                                 ORDER BY sm2.id DESC LIMIT 1
-                             ), 0) AS costBase
-                      FROM (
-                        SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                        FROM stock_movements sm 
-                        WHERE sm.productId=? AND sm.batchId=(
-                            SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
-                        )
-                        GROUP BY sm.batchId
-                      ) v JOIN batches b ON b.id=v.batchId
-                    ''', (it['productId'], it['productId'], it['lotNo']))
+                    if fund_source_val is not None:
+                        lots = self.q('''
+                          SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                                 COALESCE((
+                                     SELECT sm2.cost FROM stock_movements sm2
+                                     WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                                       AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                                     ORDER BY sm2.id DESC LIMIT 1
+                                 ), 0) AS costBase
+                          FROM (
+                            SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
+                            FROM stock_movements sm 
+                            WHERE sm.productId=? AND sm.batchId=(
+                                SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
+                            ) AND COALESCE(sm.fundSource, '')=?
+                            GROUP BY sm.batchId
+                          ) v JOIN batches b ON b.id=v.batchId
+                        ''', (it['productId'], it['productId'], it['lotNo'], fund_source_val))
+                    else:
+                        lots = self.q('''
+                          SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                                 COALESCE((
+                                     SELECT sm2.cost FROM stock_movements sm2
+                                     WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                                       AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                                     ORDER BY sm2.id DESC LIMIT 1
+                                 ), 0) AS costBase
+                          FROM (
+                            SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
+                            FROM stock_movements sm 
+                            WHERE sm.productId=? AND sm.batchId=(
+                                SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
+                            )
+                            GROUP BY sm.batchId
+                          ) v JOIN batches b ON b.id=v.batchId
+                        ''', (it['productId'], it['productId'], it['lotNo']))
                 else:
-                    lots = self.q('''
-                      SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
-                             COALESCE((
-                                 SELECT sm2.cost FROM stock_movements sm2
-                                 WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
-                                   AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
-                                 ORDER BY sm2.id DESC LIMIT 1
-                             ), 0) AS costBase
-                      FROM (
-                        SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                        FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
-                      ) v JOIN batches b ON b.id=v.batchId
-                      WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
-                      ORDER BY DATE(b.expiryDate)
-                    ''', (it['productId'],))
+                    if fund_source_val is not None:
+                        lots = self.q('''
+                          SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                                 COALESCE((
+                                     SELECT sm2.cost FROM stock_movements sm2
+                                     WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                                       AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                                     ORDER BY sm2.id DESC LIMIT 1
+                                 ), 0) AS costBase
+                          FROM (
+                            SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
+                            FROM stock_movements sm 
+                            WHERE sm.productId=? AND COALESCE(sm.fundSource, '')=?
+                            GROUP BY sm.batchId
+                          ) v JOIN batches b ON b.id=v.batchId
+                          WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
+                          ORDER BY DATE(b.expiryDate)
+                        ''', (it['productId'], fund_source_val))
+                    else:
+                        lots = self.q('''
+                          SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                                 COALESCE((
+                                     SELECT sm2.cost FROM stock_movements sm2
+                                     WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                                       AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                                     ORDER BY sm2.id DESC LIMIT 1
+                                 ), 0) AS costBase
+                          FROM (
+                            SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
+                            FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
+                          ) v JOIN batches b ON b.id=v.batchId
+                          WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
+                          ORDER BY DATE(b.expiryDate)
+                        ''', (it['productId'],))
 
                 for lot in lots:
                     if need_base <= 0:
@@ -584,6 +643,14 @@ class DB:
             self._save_receiving_unit(receiving_unit)
 
             self.conn.commit()
+            try:
+                self.add_audit_log(
+                    action="XUAT_KHO",
+                    note_id=dispatch_id,
+                    details=f"Xuất kho thành công, số phiếu: {note_number}, đơn vị nhận: {receiving_unit}, số mặt hàng: {len(items)}"
+                )
+            except Exception as log_err:
+                print(f"Lỗi ghi log xuat kho: {log_err}")
             return dispatch_id, note_number, dispatch_details
 
         except Exception:
@@ -712,6 +779,14 @@ class DB:
                 })
 
             self.conn.commit()
+            try:
+                self.add_audit_log(
+                    action="NHAP_KHO",
+                    note_id=purchase_id,
+                    details=f"Nhập kho thành công, số phiếu: {note_number}, nhà cung cấp: {supplier}, số mặt hàng: {len(items)}"
+                )
+            except Exception as log_err:
+                print(f"Lỗi ghi log nhap kho: {log_err}")
             return purchase_id, note_number, purchase_details
 
         except Exception:

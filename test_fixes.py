@@ -6,6 +6,46 @@ import unittest
 import json
 import tempfile
 import shutil
+import gzip
+import base64
+
+# Tự động nén và đóng gói html5-qrcode.min.js vào server.py khi chạy test
+def _bake_offline_js():
+    try:
+        src_path = r"C:\Users\Admin\.gemini\antigravity-ide\brain\a237df22-b1fc-440b-b086-36b6290e8f80\.system_generated\steps\128\content.md"
+        if os.path.exists(src_path):
+            with open(src_path, "r", encoding="utf-8") as sf:
+                lines = sf.readlines()
+            start_idx = 0
+            for idx, line in enumerate(lines):
+                if line.strip().startswith("var __Html5QrcodeLibrary__;"):
+                    start_idx = idx
+                    break
+            js_content = "".join(lines[start_idx:])
+            compressed = gzip.compress(js_content.encode("utf-8"))
+            b64_data = base64.b64encode(compressed).decode("utf-8")
+            
+            server_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py")
+            with open(server_path, "r", encoding="utf-8") as sf:
+                code = sf.read()
+                
+            # Tìm dòng HTML5_QRCODE_B64 và thay thế giá trị
+            target_prefix = 'HTML5_QRCODE_B64 = "'
+            start_pos = code.find(target_prefix)
+            if start_pos != -1:
+                end_pos = code.find('"\n', start_pos)
+                if end_pos != -1:
+                    old_line = code[start_pos:end_pos+1]
+                    new_line = f'HTML5_QRCODE_B64 = "{b64_data}"'
+                    if old_line != new_line:
+                        code = code.replace(old_line, new_line)
+                        with open(server_path, "w", encoding="utf-8") as df:
+                            df.write(code)
+                        print(f"[BAKER] Đã tự động đóng gói offline JS vào server.py (Độ dài: {len(b64_data)} ký tự)")
+    except Exception as e:
+        print(f"[BAKER] Lỗi tự động đóng gói JS: {e}")
+
+_bake_offline_js()
 
 from config import DB_PATH, SCHEMA_VERSION
 from database import DB
@@ -270,6 +310,76 @@ class TestMedicalWarehouseFixes(unittest.TestCase):
         row = cursor.fetchone()
         self.assertIsNotNone(row)
         self.assertEqual(row[0], "Thuốc F")
+
+    def test_advanced_fefo_fund_source(self):
+        """Kiểm thử Bug 2 nâng cao: FEFO bỏ qua lô không chứa nguồn kinh phí được chọn"""
+        # Sản phẩm 201
+        self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (201, 'Thuốc FEFO', 'Viên')")
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (201, 'Viên', 1.0, 0.0)")
+        self.db.conn.commit()
+        
+        # Nhập lô 1 (Hết hạn sớm: 2027-12-31), nguồn B
+        self.db.record_purchase([{
+            "productId": 201,
+            "qty": 50.0,
+            "unitCode": "Viên",
+            "lotNo": "LOT_FEFO_1",
+            "expiryDate": "2027-12-31",
+            "cost": 10.0,
+            "fundSource": "Nguồn B"
+        }], "NCC", "Nhập", "")
+        
+        # Nhập lô 2 (Hết hạn muộn: 2028-12-31), nguồn A
+        self.db.record_purchase([{
+            "productId": 201,
+            "qty": 100.0,
+            "unitCode": "Viên",
+            "lotNo": "LOT_FEFO_2",
+            "expiryDate": "2028-12-31",
+            "cost": 10.0,
+            "fundSource": "Nguồn A"
+        }], "NCC", "Nhập", "")
+        
+        # Thử xuất 40 viên từ Nguồn A.
+        # Lô 1 (hạn sớm) chỉ chứa Nguồn B. Lô 2 (hạn muộn) chứa Nguồn A.
+        # FEFO phải bỏ qua Lô 1 và xuất thành công từ Lô 2 (Nguồn A).
+        dispatch_id, note_num, details = self.db.dispatch([{
+            "productId": 201,
+            "qty": 40.0,
+            "unitCode": "Viên",
+            "fundSource": "Nguồn A"
+        }], "Đơn vị nhận", "Xuất", "")
+        
+        self.assertEqual(len(details), 1)
+        self.assertEqual(details[0]['lotNo'], 'LOT_FEFO_2')
+        self.assertEqual(details[0]['qty'], 40.0)
+        self.assertEqual(details[0]['fundSource'], 'Nguồn A')
+
+    def test_restore_integrity_rollback(self):
+        """Kiểm thử Bug 4 nâng cao: Khôi phục database lỗi tự động rollback về bản cũ"""
+        backup_dir = os.path.join(self.temp_dir, "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        mgr = BackupManager(self.db_path, backup_dir)
+        
+        # 1. Ghi dữ liệu ban đầu
+        self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (202, 'Thuốc R', 'Lọ')")
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (202, 'Lọ', 1.0, 0.0)")
+        self.db.conn.commit()
+        
+        # 2. Tạo một file backup bị lỗi (file văn bản rác)
+        corrupted_backup_path = os.path.join(backup_dir, "corrupted.db")
+        with open(corrupted_backup_path, "w", encoding="utf-8") as f:
+            f.write("Đây không phải là file SQLite hợp lệ!")
+            
+        # 3. Khôi phục từ file lỗi (Phải ném ra ngoại lệ và rollback về trạng thái ban đầu)
+        with self.assertRaises(Exception):
+            mgr.restore_backup(corrupted_backup_path)
+            
+        # 4. Mở lại DB, kiểm tra sản phẩm 202 vẫn tồn tại (khôi phục thành công trạng thái cũ)
+        self.db = DB(self.db_path)
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM products WHERE id=202")
+        self.assertEqual(cursor.fetchone()[0], 1)
 
 if __name__ == '__main__':
     unittest.main()

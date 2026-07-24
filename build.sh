@@ -56,6 +56,7 @@ pyinstaller \
     --windowed \
     --name="QuanLyKho" \
     --add-data="thuoc.csv:." \
+    --add-data="static:static" \
     --add-data="${PYZBAR_DIR}:pyzbar" \
     --hidden-import=pandas \
     --hidden-import=matplotlib \

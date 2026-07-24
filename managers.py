@@ -74,6 +74,7 @@ class BackupManager:
     
     def restore_backup(self, backup_path: str) -> bool:
         """Khôi phục từ backup (Lỗi 4: Sử dụng Backup API an toàn + Integrity check)"""
+        current_backup = None
         try:
             if not os.path.exists(backup_path):
                 raise Exception("File backup không tồn tại")
@@ -104,7 +105,17 @@ class BackupManager:
             return True
             
         except Exception as e:
-            raise Exception(f"Lỗi khôi phục backup: {str(e)}")
+            if current_backup and os.path.exists(current_backup):
+                try:
+                    src = sqlite3.connect(current_backup)
+                    dst = sqlite3.connect(self.db_path)
+                    with dst:
+                        src.backup(dst)
+                    dst.close()
+                    src.close()
+                except Exception as rb_err:
+                    print(f"Failed to rollback database after failed restore: {rb_err}")
+            raise Exception(f"Lỗi khôi phục backup (đã tự động phục hồi bản cũ): {str(e)}")
     
     def export_data(self, export_path: str) -> bool:
         """Export toàn bộ dữ liệu ra file JSON (Lỗi 5: Thêm schemaVersion, audit_logs)"""

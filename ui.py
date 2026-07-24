@@ -541,6 +541,13 @@ class App(tb.Window):
             pass
         
         self.toast(f'Đã tạo sản phẩm #{pid}')
+        try:
+            self.db.add_audit_log(
+                action="TAO_SAN_PHAM",
+                details=f"Tạo sản phẩm mới thành công: {name} (#{pid}), ĐVCS: {base}, Loại: {product_type}, SDK: {reg_number}"
+            )
+        except Exception as log_err:
+            print(f"Lỗi ghi log tao san pham: {log_err}")
         self.refresh_products()
         
         # Clear form
@@ -2589,15 +2596,52 @@ Hiện tại bạn vẫn có thể:
             'Bạn có chắc chắn muốn tiếp tục?'):
             
             try:
+                # 1. Kiểm tra trạng thái máy chủ di động và dừng nếu đang chạy
+                server_was_running = False
+                if self.mobile_server and self.mobile_server.is_running:
+                    server_was_running = True
+                    try:
+                        self.mobile_server.stop()
+                    except Exception as server_err:
+                        print(f"Lỗi khi dừng server trước khi restore: {server_err}")
+                
+                # 2. Đóng kết nối cơ sở dữ liệu chính đang mở
+                try:
+                    self.db.conn.close()
+                except Exception as conn_err:
+                    print(f"Lỗi khi đóng kết nối DB: {conn_err}")
+                
+                # 3. Tiến hành khôi phục tệp tin cơ sở dữ liệu
                 self.backup_manager.restore_backup(backup_path)
+                
+                # 4. Khởi tạo lại kết nối DB và gán lại cho các quản lý
+                self.db = DB(DB_PATH)
+                self.backup_manager = BackupManager(DB_PATH, BACKUP_DIR)
+                self.report_manager = ReportManager(DB_PATH)
+                self.medicine_catalog = MedicineCatalogManager(DB_PATH)
+                
+                # 5. Khởi động lại máy chủ di động nếu trước đó nó đang chạy
+                if server_was_running:
+                    from server import MobileInventoryServer
+                    self.mobile_server = MobileInventoryServer(self, host="0.0.0.0", port=5000)
+                    self.mobile_server.start()
+                
                 self.toast('Đã khôi phục backup thành công')
-                # Refresh tất cả dữ liệu
-                self.refresh_products()
-                self.refresh_stock()
-                self.refresh_alerts()
-                self.refresh_report()
+                
+                # 6. Làm mới lại toàn bộ giao diện
+                self.refresh_all_data()
                 self.refresh_backup_list()
+                self.update_mobile_server_ui()
+                
             except Exception as e:
+                # Trong trường hợp có lỗi xảy ra, đảm bảo DB được khởi tạo lại để ứng dụng không bị treo
+                try:
+                    self.db = DB(DB_PATH)
+                    self.backup_manager = BackupManager(DB_PATH, BACKUP_DIR)
+                    self.report_manager = ReportManager(DB_PATH)
+                    self.medicine_catalog = MedicineCatalogManager(DB_PATH)
+                except:
+                    pass
                 messagebox.showerror('Lỗi', str(e))
 
     def delete_selected_backup(self):
@@ -3108,6 +3152,16 @@ Hiện tại bạn vẫn có thể:
                     # Bắt đầu transaction
                     self.db.conn.execute("BEGIN TRANSACTION")
                     
+                    # Kiểm tra xem có stock_movements liên kết hay không (Tránh xóa phiếu cũ)
+                    has_ref = self.db.conn.execute(
+                        "SELECT COUNT(*) FROM stock_movements WHERE referenceType='PURCHASE' AND referenceId=?",
+                        (purchase_id,)
+                    ).fetchone()[0]
+                    if has_ref == 0:
+                        self.db.conn.rollback()
+                        messagebox.showerror("Từ chối xóa", "Đây là phiếu nhập cũ (không có liên kết chi tiết). Để đảm bảo an toàn dữ liệu lịch sử, hệ thống từ chối xóa phiếu này.")
+                        return
+                    
                     # Lỗi 6: Xóa stock_movements theo referenceId (không dùng createdAt nữa)
                     self.db.conn.execute(
                         "DELETE FROM stock_movements WHERE referenceType='PURCHASE' AND referenceId=?",
@@ -3282,6 +3336,16 @@ Hiện tại bạn vẫn có thể:
                 try:
                     # Bắt đầu transaction
                     self.db.conn.execute("BEGIN TRANSACTION")
+                    
+                    # Kiểm tra xem có stock_movements liên kết hay không (Tránh xóa phiếu cũ)
+                    has_ref = self.db.conn.execute(
+                        "SELECT COUNT(*) FROM stock_movements WHERE referenceType='DISPATCH' AND referenceId=?",
+                        (dispatch_id,)
+                    ).fetchone()[0]
+                    if has_ref == 0:
+                        self.db.conn.rollback()
+                        messagebox.showerror("Từ chối xóa", "Đây là phiếu xuất cũ (không có liên kết chi tiết). Để đảm bảo an toàn dữ liệu lịch sử, hệ thống từ chối xóa phiếu này.")
+                        return
                     
                     # Lỗi 6: Xóa stock_movements theo referenceId (không dùng createdAt nữa)
                     self.db.conn.execute(
@@ -4954,23 +5018,7 @@ Hiện tại bạn vẫn có thể:
 
             self.db.conn.execute("BEGIN TRANSACTION")
             
-            purchase_id = None
-            note_number = f"PN-INIT-{dt.datetime.now().strftime('%y%m%d%H%M%S')}"
-            created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            has_stock_data = False
-            for idx, row in df.iterrows():
-                lot_no = str(row.get('Số lô', '')).strip()
-                if lot_no and lot_no.lower() not in ('nan', 'none', ''):
-                    has_stock_data = True
-                    break
-            
-            if has_stock_data:
-                cur = self.db.conn.execute(
-                    "INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt) VALUES(?,?,?,?,?)",
-                    (note_number, "Nhập kho ban đầu", "Nhập kho ban đầu", "Nhập hàng loạt từ Excel", created_at)
-                )
-                purchase_id = cur.lastrowid
+            items_to_record = []
             
             for idx, row in df.iterrows():
                 row_num = idx + 2
@@ -5100,39 +5148,40 @@ Hiện tại bạn vẫn có thể:
                             cost = 0.0
                     except ValueError:
                         cost = 0.0
+                        
+                    fund_source = str(row.get('Nguồn kinh phí', '')).strip()
+                    if fund_source.lower() in ('nan', 'none', ''):
+                        fund_source = ''
                     
-                    batch_id = None
-                    b_row = self.db.q("SELECT id FROM batches WHERE productId=? AND lotNo=?", (product_id_db, lot_no))
-                    if b_row:
-                        batch_id = b_row[0]['id']
-                    else:
-                        cur_b = self.db.conn.execute(
-                            "INSERT INTO batches(productId, lotNo, expiryDate) VALUES(?,?,?)",
-                            (product_id_db, lot_no, expiry_date)
-                        )
-                        batch_id = cur_b.lastrowid
-                    
-                    self.db.conn.execute(
-                        "INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, cost, receivingUnit, reason, createdAt) VALUES(?,?,?,?,'PURCHASE',?,'Nhập kho ban đầu','Nhập kho ban đầu',?)",
-                        (product_id_db, batch_id, default_unit, qty, cost, created_at)
-                    )
-                    
-                    if purchase_id:
-                        self.db.conn.execute(
-                            "INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost) VALUES(?,?,?,?,?,?,?,?)",
-                            (purchase_id, product_id_db, batch_id, default_unit, qty, lot_no, expiry_date, cost)
-                        )
-                    
-                    p_unit_row = self.db.q("SELECT price FROM product_units WHERE productId=? AND unitCode=?", (product_id_db, default_unit))
-                    if p_unit_row and (p_unit_row[0]['price'] is None or float(p_unit_row[0]['price']) == 0.0):
-                        self.db.conn.execute(
-                            "UPDATE product_units SET price=? WHERE productId=? AND unitCode=?",
-                            (cost, product_id_db, default_unit)
-                        )
-                    
-                    imported_stock += 1
+                    # Gọi ensure_batch để validate ngay tại đây để bắt lỗi trùng lô khác HSD
+                    try:
+                        self.db.ensure_batch(product_id_db, lot_no, expiry_date)
+                        items_to_record.append({
+                            'productId': product_id_db,
+                            'lotNo': lot_no,
+                            'expiryDate': expiry_date,
+                            'unitCode': default_unit,
+                            'qty': qty,
+                            'cost': cost,
+                            'fundSource': fund_source
+                        })
+                        imported_stock += 1
+                    except Exception as ex_batch:
+                        errors.append(f"Dòng {row_num}: Lỗi lô hàng: {str(ex_batch)}")
+                        continue
             
+            # Commit phần cập nhật sản phẩm & đơn vị quy đổi
             self.db.conn.commit()
+            
+            # Nhập kho tồn ban đầu sử dụng hàm chuẩn record_purchase
+            note_number = ""
+            if items_to_record:
+                _, note_number, _ = self.db.record_purchase(
+                    items=items_to_record,
+                    supplier="Nhập kho ban đầu",
+                    reason="Nhập kho ban đầu",
+                    note="Nhập hàng loạt từ Excel"
+                )
             
             self.refresh_products()
             self.refresh_stock()

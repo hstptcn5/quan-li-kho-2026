@@ -16,6 +16,8 @@ import datetime as dt_module
 from config import DB_PATH
 from database import DB
 
+HTML5_QRCODE_B64 = ""
+
 QR_CODE_AVAILABLE = False
 try:
     import qrcode
@@ -94,7 +96,12 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(MOBILE_HTML.encode("utf-8"))
             
         elif path == "/static/html5-qrcode.min.js":
-            js_file_path = os.path.join(os.path.dirname(__file__), "static", "html5-qrcode.min.js")
+            import sys
+            if getattr(sys, 'frozen', False):
+                base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+            else:
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+            js_file_path = os.path.join(base_dir, "static", "html5-qrcode.min.js")
             if os.path.exists(js_file_path):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/javascript; charset=utf-8")
@@ -401,7 +408,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     "items": res_items
                 })
             except Exception as e:
-                self.send_json({"success": False, "message": f"Database error: {str(e)}"}, 500)
+                print(f"Error in api/note-details: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi truy vấn chi tiết phiếu"}, 500)
 
         elif path == "/api/recent-activities":
             try:
@@ -441,7 +449,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 
                 self.send_json({"success": True, "activities": combined[:8]})
             except Exception as e:
-                self.send_json({"success": False, "message": str(e)}, 500)
+                print(f"Error in api/recent-activities: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi tải hoạt động gần đây"}, 500)
 
         elif path == "/api/partners":
             try:
@@ -456,7 +465,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     "fundSources": fund_sources
                 })
             except Exception as e:
-                self.send_json({"success": False, "message": str(e)}, 500)
+                print(f"Error in api/partners: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi tải danh sách đối tác"}, 500)
 
         elif path == "/api/temperature-locations":
             try:
@@ -467,7 +477,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     "locations": locations
                 })
             except Exception as e:
-                self.send_json({"success": False, "message": str(e)}, 500)
+                print(f"Error in api/temperature-locations: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi tải vị trí nhiệt độ"}, 500)
 
         elif path == "/api/temperature-logs":
             month = query.get("month", [None])[0]
@@ -480,7 +491,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     "logs": logs
                 })
             except Exception as e:
-                self.send_json({"success": False, "message": str(e)}, 500)
+                print(f"Error in api/temperature-logs: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi tải nhật ký nhiệt độ"}, 500)
 
         elif path == "/api/xnt-report":
             month = query.get("month", [None])[0]
@@ -501,7 +513,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     "report": report
                 })
             except Exception as e:
-                self.send_json({"success": False, "message": str(e)}, 500)
+                print(f"Error in api/xnt-report: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi tải báo cáo XNT"}, 500)
 
         else:
             self.send_response(404)
@@ -1323,6 +1336,16 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     if FAILED_ATTEMPTS[client_ip]["count"] >= 5:
                         FAILED_ATTEMPTS[client_ip]["blocked_until"] = now + 5 * 60
                         
+                # Ghi nhận đăng nhập thất bại
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("INSERT INTO audit_logs (ip, action, details) VALUES (?, ?, ?)", 
+                                 (client_ip, "LOGIN_FAILED", f"Đăng nhập thất bại (Mã PIN sai)"))
+                    conn.commit()
+                    conn.close()
+                except:
+                    pass
+                    
                 attempts_left = 5 - FAILED_ATTEMPTS[client_ip]["count"] if FAILED_ATTEMPTS[client_ip]["count"] < 5 else 0
                 self.send_json({"success": False, "message": f"Mã PIN sai. Còn {attempts_left} lần thử"}, 401)
                 
@@ -1339,6 +1362,15 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 return
             
             success, msg = self.print_to_pc_printer(note_type, note_id)
+            if success:
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("INSERT INTO audit_logs (ip, action, noteId, details) VALUES (?, ?, ?, ?)", 
+                                 (self.client_address[0], "IN_PHIEU", int(note_id), f"In phiếu {note_type} từ di động"))
+                    conn.commit()
+                    conn.close()
+                except Exception as ex:
+                    print(f"Lỗi ghi log in phieu: {ex}")
             self.send_json({"success": success, "message": msg})
             
         elif path == "/api/create-product":
@@ -1374,6 +1406,11 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         "INSERT OR IGNORE INTO product_units (productId, unitCode, toBaseQty, price) VALUES (?, ?, 1, 0)",
                         (product_id, default_unit)
                     )
+                    try:
+                        conn.execute("INSERT INTO audit_logs (ip, action, details) VALUES (?, ?, ?)",
+                                     (self.client_address[0], "TAO_SAN_PHAM", f"Tạo sản phẩm di động: {name} (#{product_id}), ĐVCS: {default_unit}, loại: {product_type}"))
+                    except Exception as log_err:
+                        print(f"Lỗi ghi log tao san pham: {log_err}")
                 
                 conn.close()
                 
@@ -1576,6 +1613,11 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     
                 with conn:
                     conn.execute("UPDATE products SET barcode=? WHERE id=?", (barcode, product_id))
+                    try:
+                        conn.execute("INSERT INTO audit_logs (ip, action, details) VALUES (?, ?, ?)",
+                                     (self.client_address[0], "DOI_MA_VACH", f"Cập nhật mã vạch sản phẩm #{product_id} thành: {barcode}"))
+                    except Exception as log_err:
+                        print(f"Lỗi ghi log cap nhat ma vach: {log_err}")
                     
                 conn.close()
                 
@@ -1609,6 +1651,14 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             try:
                 db = DB(DB_PATH)
                 db.add_temperature_log(log_date, session, location, temp_val, humidity_val, recorded_by)
+                try:
+                    db.add_audit_log(
+                        action="GHI_NHIET_DO",
+                        details=f"Ghi nhận nhiệt độ {temp_val}°C, độ ẩm {humidity_val}% tại '{location}' bởi {recorded_by}",
+                        ip=self.client_address[0]
+                    )
+                except Exception as log_err:
+                    print(f"Lỗi ghi log nhiet do: {log_err}")
 
                 if hasattr(self.server, 'app_instance') and self.server.app_instance:
                     self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
@@ -1641,31 +1691,54 @@ class MobileInventoryServer(threading.Thread):
         
     def run(self):
         # Tạo mã PIN 6 số ngẫu nhiên cho server (Lỗi 3)
-        global SERVER_PIN
+        global SERVER_PIN, ACTIVE_TOKENS, FAILED_ATTEMPTS
         import random
         SERVER_PIN = "".join(random.choices("0123456789", k=6))
+        ACTIVE_TOKENS.clear()
+        FAILED_ATTEMPTS.clear()
 
         # Đảm bảo thư mục static và tệp tin html5-qrcode.min.js tồn tại ngoại tuyến (Lỗi 7)
-        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        import sys
+        if getattr(sys, 'frozen', False):
+            base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            
+        static_dir = os.path.join(base_dir, "static")
         os.makedirs(static_dir, exist_ok=True)
         js_path = os.path.join(static_dir, "html5-qrcode.min.js")
+        
         if not os.path.exists(js_path):
-            src_path = r"C:\Users\Admin\.gemini\antigravity-ide\brain\a237df22-b1fc-440b-b086-36b6290e8f80\.system_generated\steps\128\content.md"
-            if os.path.exists(src_path):
+            decoded_success = False
+            if len(HTML5_QRCODE_B64) > 100:
                 try:
-                    with open(src_path, "r", encoding="utf-8") as sf:
-                        lines = sf.readlines()
-                    start_idx = 0
-                    for idx, line in enumerate(lines):
-                        if line.strip().startswith("var __Html5QrcodeLibrary__;"):
-                            start_idx = idx
-                            break
-                    js_content = "".join(lines[start_idx:])
+                    import gzip
+                    import base64
+                    js_content = gzip.decompress(base64.b64decode(HTML5_QRCODE_B64.encode("utf-8"))).decode("utf-8")
                     with open(js_path, "w", encoding="utf-8") as df:
                         df.write(js_content)
-                    print(f"Đã giải nén thư viện QR offline tại: {js_path}")
+                    print(f"Đã giải nén thư viện QR offline từ base64 tại: {js_path}")
+                    decoded_success = True
                 except Exception as e:
-                    print(f"Không thể sao chép tệp tin static: {e}")
+                    print(f"Không thể giải nén base64 JS: {e}")
+                    
+            if not decoded_success:
+                src_path = r"C:\Users\Admin\.gemini\antigravity-ide\brain\a237df22-b1fc-440b-b086-36b6290e8f80\.system_generated\steps\128\content.md"
+                if os.path.exists(src_path):
+                    try:
+                        with open(src_path, "r", encoding="utf-8") as sf:
+                            lines = sf.readlines()
+                        start_idx = 0
+                        for idx, line in enumerate(lines):
+                            if line.strip().startswith("var __Html5QrcodeLibrary__;"):
+                                start_idx = idx
+                                break
+                        js_content = "".join(lines[start_idx:])
+                        with open(js_path, "w", encoding="utf-8") as df:
+                            df.write(js_content)
+                        print(f"Đã giải nén thư viện QR offline từ developer path tại: {js_path}")
+                    except Exception as e:
+                        print(f"Không thể sao chép tệp tin static: {e}")
 
         attempts = 0
         while attempts < 10:
@@ -1676,6 +1749,13 @@ class MobileInventoryServer(threading.Thread):
                 self.is_running = True
                 print(f"Mobile inventory server started on http://{self.host}:{self.port}")
                 print(f"Xác thực PIN di động: {SERVER_PIN}")
+                try:
+                    self.db_instance.add_audit_log(
+                        action="BAT_SERVER",
+                        details=f"Máy chủ di động khởi chạy tại cổng {self.port}"
+                    )
+                except Exception as log_err:
+                    print(f"Lỗi ghi log start server: {log_err}")
                 self.server.serve_forever()
                 break
             except Exception as e:
@@ -1684,7 +1764,17 @@ class MobileInventoryServer(threading.Thread):
                 attempts += 1
                 
     def stop(self):
+        global ACTIVE_TOKENS, FAILED_ATTEMPTS
+        ACTIVE_TOKENS.clear()
+        FAILED_ATTEMPTS.clear()
         if self.server:
+            try:
+                self.db_instance.add_audit_log(
+                    action="TAT_SERVER",
+                    details="Máy chủ di động dừng hoạt động"
+                )
+            except Exception as log_err:
+                print(f"Lỗi ghi log stop server: {log_err}")
             self.server.shutdown()
             self.server.server_close()
             self.is_running = False
@@ -2858,7 +2948,15 @@ MOBILE_HTML = """<!DOCTYPE html>
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
             toast.className = `toast toast-${type}`;
-            toast.innerHTML = (type === 'success' ? '✅' : '❌') + ` <span>${message}</span>`;
+            
+            const iconSpan = document.createElement('span');
+            iconSpan.textContent = type === 'success' ? '✅ ' : '❌ ';
+            
+            const msgSpan = document.createElement('span');
+            msgSpan.textContent = message;
+            
+            toast.appendChild(iconSpan);
+            toast.appendChild(msgSpan);
             container.appendChild(toast);
             
             setTimeout(() => {
@@ -3147,10 +3245,10 @@ MOBILE_HTML = """<!DOCTYPE html>
                     if (item.fundSource) metaText += ` | Nguồn: ${item.fundSource}`;
                     row.innerHTML = `
                         <div class="cart-item-details">
-                            <div class="cart-item-name">${item.productName}</div>
-                            <div class="cart-item-meta">${metaText}</div>
+                            <div class="cart-item-name">${escapeHtml(item.productName)}</div>
+                            <div class="cart-item-meta">${escapeHtml(metaText)}</div>
                         </div>
-                        <button class="btn-cart-remove" onclick="removeFromCart('${type}', ${index})">❌</button>
+                        <button class="btn-cart-remove" onclick="removeFromCart('${escapeHtml(type)}', ${index})">❌</button>
                     `;
                     container.appendChild(row);
                 });
