@@ -788,6 +788,7 @@ class DB:
             self.conn.execute("BEGIN")
             created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             imported_products = 0
+            updated_products = 0
             imported_units = 0
             purchase_items = []
             
@@ -797,6 +798,9 @@ class DB:
                 p_info = rec['product_info']
                 name = p_info['name']
                 default_unit = p_info['defaultUnit']
+                barcode_val = p_info.get('barcode')
+                reg_num_val = p_info.get('registrationNumber')
+                prod_type_val = p_info.get('productType', 'thuoc')
                 
                 if name not in product_id_map:
                     existing = self.conn.execute(
@@ -806,13 +810,35 @@ class DB:
                     
                     if existing:
                         p_id = existing['id']
-                    else:
-                        cur = self.conn.execute(
-                            "INSERT INTO products (name, defaultUnit, barcode, productType, registrationNumber) VALUES (?, ?, ?, ?, ?)",
-                            (name, default_unit, p_info.get('barcode', ''), p_info.get('productType', 'Thuốc'), p_info.get('registrationNumber', ''))
+                        self.conn.execute(
+                            "UPDATE products SET barcode=COALESCE(?, barcode), productType=?, registrationNumber=COALESCE(?, registrationNumber) WHERE id=?",
+                            (barcode_val, prod_type_val, reg_num_val, p_id)
                         )
-                        p_id = cur.lastrowid
-                        imported_products += 1
+                        updated_products += 1
+                    else:
+                        if barcode_val:
+                            existing_bar = self.conn.execute("SELECT id FROM products WHERE barcode=?", (barcode_val,)).fetchone()
+                            if existing_bar:
+                                p_id = existing_bar['id']
+                                self.conn.execute(
+                                    "UPDATE products SET name=?, productType=?, registrationNumber=COALESCE(?, registrationNumber) WHERE id=?",
+                                    (name, prod_type_val, reg_num_val, p_id)
+                                )
+                                updated_products += 1
+                            else:
+                                cur = self.conn.execute(
+                                    "INSERT INTO products (name, defaultUnit, barcode, productType, registrationNumber) VALUES (?, ?, ?, ?, ?)",
+                                    (name, default_unit, barcode_val, prod_type_val, reg_num_val)
+                                )
+                                p_id = cur.lastrowid
+                                imported_products += 1
+                        else:
+                            cur = self.conn.execute(
+                                "INSERT INTO products (name, defaultUnit, barcode, productType, registrationNumber) VALUES (?, ?, ?, ?, ?)",
+                                (name, default_unit, barcode_val, prod_type_val, reg_num_val)
+                            )
+                            p_id = cur.lastrowid
+                            imported_products += 1
                     product_id_map[name] = p_id
                 else:
                     p_id = product_id_map[name]
@@ -893,7 +919,7 @@ class DB:
                 except Exception:
                     pass
 
-            return imported_products, imported_units, len(purchase_items), note_number
+            return imported_products, updated_products, imported_units, len(purchase_items), note_number
         except Exception:
             self.conn.rollback()
             raise

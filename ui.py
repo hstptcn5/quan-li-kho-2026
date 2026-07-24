@@ -5016,8 +5016,6 @@ Hiện tại bạn vẫn có thể:
                     pass
                 return val_str
 
-            self.db.conn.execute("BEGIN TRANSACTION")
-            
             import_records = []
             
             for idx, row in df.iterrows():
@@ -5121,9 +5119,9 @@ Hiện tại bạn vẫn có thể:
                     'stock_info': stock_info
                 })
 
-            imported_products, imported_units, imported_stock, note_number = 0, 0, 0, ""
+            imported_products, updated_products, imported_units, imported_stock, note_number = 0, 0, 0, 0, ""
             if import_records:
-                imported_products, imported_units, imported_stock, note_number = self.db.bulk_import_products_and_stock(
+                imported_products, updated_products, imported_units, imported_stock, note_number = self.db.bulk_import_products_and_stock(
                     import_records=import_records,
                     supplier="Nhập kho ban đầu",
                     reason="Nhập kho ban đầu",

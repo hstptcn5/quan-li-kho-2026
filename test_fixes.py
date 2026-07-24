@@ -492,14 +492,35 @@ class TestMedicalWarehouseFixes(unittest.TestCase):
                 }
             }
         ]
-        p_count, u_count, s_count, note_num = self.db.bulk_import_products_and_stock(valid_records)
+        p_count, u_count, unit_count, s_count, note_num = self.db.bulk_import_products_and_stock(valid_records)
         self.assertEqual(p_count, 1)
+        self.assertEqual(u_count, 0)
         self.assertEqual(s_count, 1)
         self.assertTrue(note_num.startswith('PN-'))
 
-        # Kiểm tra sản phẩm và tồn kho đã được ghi nhận nguyên tử
-        p_row = self.db.q("SELECT id FROM products WHERE name='Thuốc Atomic Hợp Lệ'")
-        self.assertEqual(len(p_row), 1)
+        # Gọi lại lần 2 để kiểm tra cập nhật sản phẩm đã tồn tại (updated_products)
+        update_records = [
+            {
+                'product_info': {
+                    'name': 'Thuốc Atomic Hợp Lệ',
+                    'defaultUnit': 'Hộp',
+                    'barcode': '33333_UPDATED',
+                    'productType': 'vaccine',
+                    'registrationNumber': 'VD-333-NEW',
+                    'units': []
+                },
+                'stock_info': None
+            }
+        ]
+        p_count2, u_count2, unit_count2, s_count2, note_num2 = self.db.bulk_import_products_and_stock(update_records)
+        self.assertEqual(p_count2, 0, "Không tạo sản phẩm trùng tên")
+        self.assertEqual(u_count2, 1, "Tăng số lượng sản phẩm được cập nhật")
+
+        # Kiểm tra sản phẩm đã được cập nhật thông tin thành công
+        p_row = self.db.q("SELECT barcode, productType, registrationNumber FROM products WHERE name='Thuốc Atomic Hợp Lệ'")
+        self.assertEqual(p_row[0]['barcode'], '33333_UPDATED')
+        self.assertEqual(p_row[0]['productType'], 'vaccine')
+        self.assertEqual(p_row[0]['registrationNumber'], 'VD-333-NEW')
 
 if __name__ == '__main__':
     unittest.main()
