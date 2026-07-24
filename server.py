@@ -25,6 +25,22 @@ def open_db():
     conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
+
+def write_audit_log(action, details=None, note_id=None, ip="Local"):
+    conn = None
+    try:
+        conn = open_db()
+        conn.execute(
+            "INSERT INTO audit_logs (ip, action, noteId, details) VALUES (?, ?, ?, ?)",
+            (ip, action, note_id, details)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"Lỗi ghi audit log mobile: {e}")
+    finally:
+        if conn:
+            conn.close()
+
 # Module-level variables for authentication (Lỗi 3)
 SERVER_PIN = ""
 ACTIVE_TOKENS = {}      # token -> {"ip": ip, "expiry": float}
@@ -514,7 +530,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
 
         elif path == "/api/xnt-report":
             month = query.get("month", [None])[0]
-            fund_source = query.get("fundSource", [None])[0]
+            fund_source = query.get("fundSource", query.get("fund", [None]))[0]
             if not month or "-" not in month:
                 month = datetime.now().strftime("%Y-%m")
             try:
@@ -1282,13 +1298,10 @@ class MobileInventoryServer(threading.Thread):
                 self.is_running = True
                 print(f"Mobile inventory server started on http://{self.host}:{self.port}")
                 print(f"Xác thực PIN di động: {SERVER_PIN}")
-                try:
-                    self.db_instance.add_audit_log(
-                        action="BAT_SERVER",
-                        details=f"Máy chủ di động khởi chạy tại cổng {self.port}"
-                    )
-                except Exception as log_err:
-                    print(f"Lỗi ghi log start server: {log_err}")
+                write_audit_log(
+                    action="BAT_SERVER",
+                    details=f"Mobile server started on port {self.port}"
+                )
                 self.server.serve_forever()
                 break
             except Exception as e:
@@ -1301,13 +1314,10 @@ class MobileInventoryServer(threading.Thread):
         ACTIVE_TOKENS.clear()
         FAILED_ATTEMPTS.clear()
         if self.server:
-            try:
-                self.db_instance.add_audit_log(
-                    action="TAT_SERVER",
-                    details="Máy chủ di động dừng hoạt động"
-                )
-            except Exception as log_err:
-                print(f"Lỗi ghi log stop server: {log_err}")
+            write_audit_log(
+                action="TAT_SERVER",
+                details="Mobile server stopped"
+            )
             self.server.shutdown()
             self.server.server_close()
             self.is_running = False

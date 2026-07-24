@@ -604,12 +604,14 @@ MOBILE_HTML = """<!DOCTYPE html>
             border-collapse: collapse;
             font-size: 0.78rem;
             text-align: left;
-            min-width: 500px;
+            table-layout: fixed;
         }
         .report-table th, .report-table td {
-            padding: 8px 10px;
+            padding: 7px 6px;
             border-bottom: 1px solid rgba(0,0,0,0.06);
-            white-space: nowrap;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            vertical-align: top;
         }
         .report-table th {
             background: rgba(2, 132, 199, 0.06);
@@ -947,6 +949,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                     </table>
                 </div>
             </div>
+        </div>
 
         <div id="tab-catalog" class="tab-content">
             <div class="card">
@@ -2294,6 +2297,7 @@ MOBILE_HTML = """<!DOCTYPE html>
 
         function escapeHtml(str) {
             if (!str) return '';
+            str = String(str);
             return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
         }
 
@@ -2464,7 +2468,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             
             let url = `/api/xnt-report?month=${filterMonth}`;
             if (filterFund) {
-                url += `&fund=${encodeURIComponent(filterFund)}`;
+                url += `&fundSource=${encodeURIComponent(filterFund)}`;
             }
             
             fetch(url)
@@ -2479,15 +2483,19 @@ MOBILE_HTML = """<!DOCTYPE html>
                     data.report.forEach(row => {
                         const lotText = row.lotNo || '-';
                         const fundText = row.fundSource || '-';
+                        const openingQty = Number(row.opening || 0);
+                        const importedQty = Number(row.inbound || 0);
+                        const exportedQty = Number(row.outbound || 0);
+                        const closingQty = Number(row.closing || 0);
                         
                         html += `
                             <tr>
                                 <td style="font-weight: 600;">${escapeHtml(row.productName)}</td>
                                 <td>Lô: ${escapeHtml(lotText)}<br><small style="color: var(--text-muted);">${escapeHtml(fundText)}</small></td>
-                                <td style="text-align: right; font-weight: 500;">${row.openingQty} ${escapeHtml(row.unit)}</td>
-                                <td style="text-align: right; color: #0d9488; font-weight: 500;">+${row.importedQty}</td>
-                                <td style="text-align: right; color: #e11d48; font-weight: 500;">-${row.exportedQty}</td>
-                                <td style="text-align: right; font-weight: 700; color: var(--primary);">${row.closingQty} ${escapeHtml(row.unit)}</td>
+                                <td style="text-align: right; font-weight: 500;">${openingQty.toLocaleString('vi-VN')} ${escapeHtml(row.unit)}</td>
+                                <td style="text-align: right; color: #0d9488; font-weight: 500;">+${importedQty.toLocaleString('vi-VN')}</td>
+                                <td style="text-align: right; color: #e11d48; font-weight: 500;">-${exportedQty.toLocaleString('vi-VN')}</td>
+                                <td style="text-align: right; font-weight: 700; color: var(--primary);">${closingQty.toLocaleString('vi-VN')} ${escapeHtml(row.unit)}</td>
                             </tr>
                         `;
                     });
