@@ -5,11 +5,12 @@ import tkinter as tk
 from tkinter import messagebox, filedialog, simpledialog
 import datetime as dt
 import datetime
-import os, webbrowser, tempfile
+import os, sys, webbrowser, tempfile
 import shutil
 import json
 import threading
 import time
+from pathlib import Path
 from collections import defaultdict
 
 import ttkbootstrap as tb
@@ -183,6 +184,7 @@ class App(BackupMixin, DispatchMixin, MobileMixin, OperationsMixin, PurchaseMixi
     def make_ui(self):
         menubar = tk.Menu(self); self.config(menu=menubar)
         helpm = tk.Menu(menubar, tearoff=0); helpm.add_command(label='Phím tắt', command=self.show_shortcuts)
+        helpm.add_command(label='Hướng dẫn sử dụng', command=self.open_user_guide)
         helpm.add_separator()
         helpm.add_command(label='Mở thư mục dữ liệu', command=self.open_data_folder)
         helpm.add_command(label='Giới thiệu (About)…', command=self.show_about)
@@ -361,6 +363,31 @@ class App(BackupMixin, DispatchMixin, MobileMixin, OperationsMixin, PurchaseMixi
                 subprocess.call(['xdg-open', path])
         except Exception as e:
             messagebox.showerror('Lỗi', str(e))
+
+    def open_user_guide(self):
+        """Open the bundled offline HTML guide."""
+        candidates = []
+        exe_dir = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
+        source_dir = Path(__file__).resolve().parent
+        bundle_dir = Path(getattr(sys, '_MEIPASS', source_dir))
+
+        for base in (exe_dir, bundle_dir, source_dir):
+            candidates.append(base / 'docs' / 'index.html')
+            candidates.append(base / 'dist' / 'docs' / 'index.html')
+
+        for guide_path in candidates:
+            if guide_path.exists():
+                try:
+                    webbrowser.open(guide_path.resolve().as_uri())
+                    return
+                except Exception as e:
+                    messagebox.showerror('Lỗi', f'Không thể mở hướng dẫn: {e}')
+                    return
+
+        messagebox.showwarning(
+            'Không tìm thấy hướng dẫn',
+            'Không tìm thấy file docs/index.html. Vui lòng kiểm tra lại thư mục cài đặt hoặc bản đóng gói.'
+        )
 
     def show_about(self):
         info = (

@@ -79,6 +79,7 @@ if not exist "_pyzbar_dlls\libiconv.dll" (
     --name="QuanLyKho" ^
     --add-data="thuoc.csv;." ^
     --add-data="static;static" ^
+    --add-data="docs;docs" ^
     --add-data="%PYZBAR_DIR%;pyzbar" ^
     --add-binary="_pyzbar_dlls\libzbar-64.dll;." ^
     --add-binary="_pyzbar_dlls\libiconv.dll;." ^
@@ -110,6 +111,7 @@ if errorlevel 1 (
 echo.
 echo Creating documentation folder...
 if not exist "dist\docs" mkdir "dist\docs"
+if exist "docs" xcopy /E /I /Y "docs" "dist\docs" >nul
 copy "HUONG_DAN_SU_DUNG.md" "dist\docs\"
 copy "BARCODE_SETUP.md" "dist\docs\"
 copy "EXPORT_REPORTS.md" "dist\docs\"
