@@ -6,7 +6,7 @@ def render_print_purchase_html(note, items):
     created_str = note['createdAt']
     try:
         dt_val = datetime.strptime(created_str, '%Y-%m-%d %H:%M:%S')
-        date_formatted = dt_val.strftime('%d/%m/%Y %H:%M:%S')
+        date_formatted = dt_val.strftime('%d-%m-%Y %H:%M:%S')
     except Exception:
         date_formatted = created_str
 
@@ -26,7 +26,7 @@ def render_print_purchase_html(note, items):
         expiry_str = it['expiryDate']
         try:
             exp_dt = datetime.strptime(expiry_str, '%Y-%m-%d')
-            expiry_formatted = exp_dt.strftime('%d/%m/%Y')
+            expiry_formatted = exp_dt.strftime('%d-%m-%Y')
         except Exception:
             expiry_formatted = expiry_str
             
@@ -250,7 +250,7 @@ def render_print_dispatch_html(note, items):
     created_str = note['createdAt']
     try:
         dt_val = datetime.strptime(created_str, '%Y-%m-%d %H:%M:%S')
-        date_formatted = dt_val.strftime('%d/%m/%Y %H:%M:%S')
+        date_formatted = dt_val.strftime('%d-%m-%Y %H:%M:%S')
     except Exception:
         date_formatted = created_str
 
@@ -263,7 +263,7 @@ def render_print_dispatch_html(note, items):
         expiry_str = it['expiryDate']
         try:
             exp_dt = datetime.strptime(expiry_str, '%Y-%m-%d')
-            expiry_formatted = exp_dt.strftime('%d/%m/%Y')
+            expiry_formatted = exp_dt.strftime('%d-%m-%Y')
         except Exception:
             expiry_formatted = expiry_str
             

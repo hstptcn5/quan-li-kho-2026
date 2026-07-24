@@ -700,7 +700,7 @@ class DB:
             FROM dispatch_items di
             JOIN products p ON p.id = di.productId
             WHERE di.dispatchId = ?
-            ORDER BY p.name
+            ORDER BY di.id
         ''', (dispatch_id,))
 
     def delete_dispatch_note(self, dispatch_id: int, audit_ip: str = "Local"):
@@ -1010,7 +1010,7 @@ class DB:
             FROM purchase_items pi
             JOIN products p ON p.id = pi.productId
             WHERE pi.purchaseId = ?
-            ORDER BY p.name
+            ORDER BY pi.id
         ''', (purchase_id,)) # Fix possible reference error in legacy SQL
 
     def delete_purchase_note(self, purchase_id: int, audit_ip: str = "Local"):

@@ -7,6 +7,8 @@ import ttkbootstrap as tb
 from ttkbootstrap.widgets import DateEntry
 from ttkbootstrap.constants import *
 
+from date_utils import format_date_display, parse_date_to_iso
+
 
 class TempLogMixin:
     def build_temp_log_tab(self):
@@ -34,7 +36,7 @@ class TempLogMixin:
         # --- Form nhập liệu (left_panel) ---
         # 1. Ngày ghi
         tb.Label(left_panel, text="Ngày theo dõi:").pack(anchor='w', pady=(5, 2))
-        self.temp_date = DateEntry(left_panel, dateformat='%Y-%m-%d', bootstyle='primary')
+        self.temp_date = DateEntry(left_panel, dateformat='%d-%m-%Y', bootstyle='primary')
         self.temp_date.pack(fill='x', pady=(0, 10))
 
         # 2. Buổi
@@ -227,7 +229,7 @@ class TempLogMixin:
                 
                 self.temp_tree.insert('', 'end', values=(
                     r['id'],
-                    r['logDate'],
+                    format_date_display(r['logDate']),
                     r['session'],
                     r['locationName'],
                     f"{t} °C",
@@ -240,7 +242,7 @@ class TempLogMixin:
 
     def save_temp_log(self):
         """Lưu chỉ số nhiệt độ/độ ẩm mới nhập vào DB"""
-        log_date = self.temp_date.entry.get()
+        log_date = parse_date_to_iso(self.temp_date.entry.get())
         session = self.temp_session.get()
         location = self.temp_location.get().strip()
         temp_s = self.temp_val.get().strip()
@@ -574,7 +576,7 @@ class TempLogMixin:
                 
                 table_data.append([
                     Paragraph(str(idx + 1), style_cell),
-                    Paragraph(r['logDate'], style_cell),
+                    Paragraph(format_date_display(r['logDate']), style_cell),
                     Paragraph(r['session'], style_cell),
                     Paragraph(f"<b>{t} °C</b>" if "VƯỢT" in status else f"{t} °C", style_cell),
                     Paragraph(h_str, style_cell),

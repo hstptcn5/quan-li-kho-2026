@@ -12,6 +12,7 @@ import base64
 
 
 from config import DB_PATH, SCHEMA_VERSION
+from date_utils import format_date_display, format_datetime_display, parse_date_to_iso
 from database import DB
 from managers import BackupManager
 
@@ -557,6 +558,33 @@ class TestMedicalWarehouseFixes(unittest.TestCase):
         matching = [x for x in inv if x['productId'] == pid and x['fundSource'] == 'Quỹ toàn cầu']
         self.assertEqual(len(matching), 1)
         self.assertEqual(matching[0]['stockBase'], 8.0)
+
+    def test_dd_mm_yyyy_date_helpers(self):
+        self.assertEqual(parse_date_to_iso("24-07-2026"), "2026-07-24")
+        self.assertEqual(parse_date_to_iso("24/07/2026"), "2026-07-24")
+        self.assertEqual(format_date_display("2026-07-24"), "24-07-2026")
+        self.assertEqual(format_datetime_display("2026-07-24 09:15:30"), "24-07-2026 09:15:30")
+
+    def test_note_details_keep_insert_order(self):
+        self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (201, 'Zeta', 'Vien')")
+        self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (202, 'Alpha', 'Vien')")
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (201, 'Vien', 1, 100)")
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (202, 'Vien', 1, 100)")
+        self.db.conn.commit()
+
+        purchase_id, _, _ = self.db.record_purchase([
+            {"productId": 201, "productName": "Zeta", "qty": 5, "unitCode": "Vien", "lotNo": "LZ", "expiryDate": "2028-12-31", "cost": 100, "fundSource": "N"},
+            {"productId": 202, "productName": "Alpha", "qty": 5, "unitCode": "Vien", "lotNo": "LA", "expiryDate": "2028-12-31", "cost": 100, "fundSource": "N"},
+        ], "NCC", "Nhap", "")
+        purchase_names = [row["productName"] for row in self.db.get_purchase_detail(purchase_id)]
+        self.assertEqual(purchase_names, ["Zeta", "Alpha"])
+
+        dispatch_id, _, _ = self.db.dispatch([
+            {"productId": 201, "qty": 1, "unitCode": "Vien", "lotNo": "LZ", "fundSource": "N"},
+            {"productId": 202, "qty": 1, "unitCode": "Vien", "lotNo": "LA", "fundSource": "N"},
+        ], "Don vi", "Xuat", "")
+        dispatch_names = [row["productName"] for row in self.db.get_dispatch_detail(dispatch_id)]
+        self.assertEqual(dispatch_names, ["Zeta", "Alpha"])
 
 if __name__ == '__main__':
     unittest.main()

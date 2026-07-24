@@ -310,6 +310,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     FROM purchase_items pi
                     JOIN products p ON pi.productId = p.id
                     WHERE pi.purchaseId = ?
+                    ORDER BY pi.id
                 """, (note_id,)).fetchall()
                 conn.close()
                 html = render_print_purchase_html(note, items)
@@ -345,6 +346,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     FROM dispatch_items di
                     JOIN products p ON di.productId = p.id
                     WHERE di.dispatchId = ?
+                    ORDER BY di.id
                 """, (note_id,)).fetchall()
                 conn.close()
                 html = render_print_dispatch_html(note, items)
@@ -385,6 +387,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         FROM purchase_items pi
                         JOIN products p ON pi.productId = p.id
                         WHERE pi.purchaseId = ?
+                        ORDER BY pi.id
                     """, (note_id,)).fetchall()
                 else:
                     note = conn.execute("SELECT id, noteNumber, receivingUnit as partner, createdAt, reason, note FROM dispatch_notes WHERE id=?", (note_id,)).fetchone()
@@ -397,6 +400,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         FROM dispatch_items di
                         JOIN products p ON di.productId = p.id
                         WHERE di.dispatchId = ?
+                        ORDER BY di.id
                     """, (note_id,)).fetchall()
                 
                 conn.close()
@@ -549,6 +553,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     FROM purchase_items pi
                     JOIN products p ON pi.productId = p.id
                     WHERE pi.purchaseId = ?
+                    ORDER BY pi.id
                 """, (note_id,)).fetchall()
             else:
                 note = conn.execute("SELECT * FROM dispatch_notes WHERE id=?", (note_id,)).fetchone()
@@ -560,6 +565,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     FROM dispatch_items di
                     JOIN products p ON di.productId = p.id
                     WHERE di.dispatchId = ?
+                    ORDER BY di.id
                 """, (note_id,)).fetchall()
             conn.close()
             
@@ -652,7 +658,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     f"<b>Nguồn cấp / Nhà CC:</b> {html.escape(note['supplier'])}",
                     f"<b>Lý do nhập:</b> {html.escape(note['reason'])}",
                     f"<b>Kho nhập:</b> Kho Dược CDC Cần Thơ",
-                    f"<b>Ngày nhập:</b> {created_at_dt.strftime('%d/%m/%Y')}",
+                    f"<b>Ngày nhập:</b> {created_at_dt.strftime('%d-%m-%Y')}",
                     f"<b>Ghi chú:</b> {html.escape(note['note'] or 'Không')}"
                 ]
             else:
@@ -660,7 +666,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     f"<b>Đơn vị nhận:</b> {html.escape(note['receivingUnit'])}",
                     f"<b>Lý do xuất:</b> {html.escape(note['reason'])}",
                     f"<b>Kho xuất:</b> Kho Dược CDC Cần Thơ",
-                    f"<b>Ngày xuất:</b> {created_at_dt.strftime('%d/%m/%Y')}",
+                    f"<b>Ngày xuất:</b> {created_at_dt.strftime('%d-%m-%Y')}",
                     f"<b>Ghi chú:</b> {html.escape(note['note'] or 'Không')}"
                 ]
             for line in info_lines:

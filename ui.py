@@ -59,6 +59,7 @@ from config import (
     APP_DIR, DB_PATH, LOG_PATH, BACKUP_DIR,
     BARCODE_AVAILABLE, MATPLOTLIB_AVAILABLE, PANDAS_AVAILABLE, PDF_AVAILABLE
 )
+from date_utils import format_date_display, format_datetime_display, parse_date_to_iso
 from database import DB
 from managers import BackupManager, ExportManager, ReportManager, MedicineCatalogManager
 from scanner import BarcodeScanner
@@ -129,8 +130,8 @@ class App(BackupMixin, MobileMixin, TempLogMixin, tb.Window):
     # theme & fonts
     def make_style(self):
         style = tb.Style()
-        # Ẩn header Notebook để tránh “trùng thẻ”
-        style.layout('TNotebook.Tab', [])
+        # Only hide the main navigation notebook tabs; nested report notebooks remain visible.
+        style.layout('Hidden.TNotebook.Tab', [])
         # Font to hơn
         style.configure('TLabel', font=('Segoe UI', 11))
         style.configure('TButton', font=('Segoe UI', 11))
@@ -168,7 +169,7 @@ class App(BackupMixin, MobileMixin, TempLogMixin, tb.Window):
         helpm.add_command(label='Giới thiệu (About)…', command=self.show_about)
         menubar.add_cascade(label='Trợ giúp', menu=helpm)
         
-        self.nb = tb.Notebook(self); self.nb.pack(fill=BOTH, expand=True, padx=8, pady=(0,8))
+        self.nb = tb.Notebook(self, style='Hidden.TNotebook'); self.nb.pack(fill=BOTH, expand=True, padx=8, pady=(0,8))
         
         # Tạo các tab frames
         self.tab_products = tb.Frame(self.nb)
@@ -987,7 +988,7 @@ Hiện tại bạn vẫn có thể:
         tb.Label(info_note, text='Ngày nhập:').grid(row=0, column=2, padx=6, pady=6, sticky='w')
         self.ent_purchase_date = DateEntry(
             info_note,
-            dateformat="%Y-%m-%d",
+            dateformat="%d-%m-%Y",
             firstweekday=0,
             bootstyle='info',
             width=12
@@ -1044,10 +1045,10 @@ Hiện tại bạn vẫn có thể:
         self.ent_lot.insert(0, 'LOT001')
         self.ent_lot.grid(row=1, column=5, sticky='w', padx=6, pady=6)
 
-        tb.Label(box, text='HSD (YYYY-MM-DD):').grid(row=1, column=6, sticky='e', padx=6, pady=6)
+        tb.Label(box, text='HSD (DD-MM-YYYY):').grid(row=1, column=6, sticky='e', padx=6, pady=6)
         self.ent_exp = DateEntry(
             box,
-            dateformat="%Y-%m-%d",
+            dateformat="%d-%m-%Y",
             firstweekday=0,     # Monday
             bootstyle='info'
         )
@@ -1101,6 +1102,15 @@ Hiện tại bạn vẫn có thể:
             self.tree_purchase_cart.column(c, width=w, anchor=anchor)
         self.tree_purchase_cart.tag_configure('odd', background='#f6f8fa')
         self.tree_purchase_cart.pack(fill='both', expand=True, padx=8, pady=8)
+        summary_frame = tb.Frame(frm)
+        summary_frame.pack(fill='x', padx=8, pady=(0, 8))
+        self.lbl_purchase_cart_total = tb.Label(
+            summary_frame,
+            text='Tổng tiền tạm tính: 0 VNĐ',
+            font=('Segoe UI', 12, 'bold'),
+            bootstyle='success'
+        )
+        self.lbl_purchase_cart_total.pack(side='right')
 
     def update_purchase_unit_and_price(self):
         sel = self.cmb_prod.get()
@@ -1141,11 +1151,11 @@ Hiện tại bạn vẫn có thể:
         if not lot:
             messagebox.showerror('Lỗi', 'Vui lòng nhập số lô'); return
             
-        exp = (self.ent_exp.entry.get() or '').strip()
+        exp = parse_date_to_iso(self.ent_exp.entry.get())
         try:
             dt.datetime.strptime(exp, '%Y-%m-%d')
         except:
-            messagebox.showerror('Lỗi', 'Hạn sử dụng không hợp lệ (YYYY-MM-DD)'); return
+            messagebox.showerror('Lỗi', 'Hạn sử dụng không hợp lệ (DD-MM-YYYY)'); return
             
         try:
             cost = float((self.ent_cost.get() or '0').replace(',', ''))
@@ -1207,12 +1217,15 @@ Hiện tại bạn vẫn có thể:
                     it['unitCode'], 
                     f"{it['qty']:g}", 
                     it['lotNo'], 
-                    it['expiryDate'], 
+                    format_date_display(it['expiryDate']),
                     f"{it['cost']:,.0f}", 
                     it.get('fundSource', ''),
                     f"{total_val:,.0f}"
                 ),
                 tags=('odd',) if idx % 2 else ())
+        total_sum = sum(float(it.get('qty') or 0) * float(it.get('cost') or 0) for it in self.cart_purchase)
+        if hasattr(self, 'lbl_purchase_cart_total'):
+            self.lbl_purchase_cart_total.config(text=f'Tổng tiền tạm tính: {total_sum:,.0f} VNĐ')
 
     def confirm_purchase(self):
         if not self.cart_purchase:
@@ -1382,7 +1395,7 @@ Hiện tại bạn vẫn có thể:
                 f"<b>Nguồn cấp / Nhà CC:</b> {info['supplier']}",
                 f"<b>Lý do nhập:</b> {info['reason']}",
                 f"<b>Kho nhập:</b> Kho Dược CDC Cần Thơ",
-                f"<b>Ngày nhập:</b> {created_at_dt.strftime('%d/%m/%Y')}",
+                f"<b>Ngày nhập:</b> {created_at_dt.strftime('%d-%m-%Y')}",
                 f"<b>Ghi chú:</b> {info['note'] or 'Không'}"
             ]
             for line in info_lines:
@@ -1420,7 +1433,7 @@ Hiện tại bạn vẫn có thể:
                     Paragraph(f"{cost:,.0f}", style_cell_right),
                     Paragraph(f"{sub_total:,.0f}", style_cell_right),
                     Paragraph(it['lotNo'] or '', style_cell_center),
-                    Paragraph(it['expiryDate'] or '', style_cell_center)
+                    Paragraph(format_date_display(it['expiryDate']), style_cell_center)
                 ])
             
             # Thêm dòng tổng cộng
@@ -1523,7 +1536,7 @@ Hiện tại bạn vẫn có thể:
         tb.Label(info_note, text='Ngày xuất:').grid(row=0, column=2, padx=6, pady=6, sticky='w')
         self.ent_dispatch_date = DateEntry(
             info_note,
-            dateformat="%Y-%m-%d",
+            dateformat="%d-%m-%Y",
             firstweekday=0,
             bootstyle='info',
             width=12
@@ -1661,18 +1674,16 @@ Hiện tại bạn vẫn có thể:
             print(f"Lỗi refresh đơn vị nhận: {e}")
 
     def _parse_date_entry(self, date_entry):
-        """Lấy ngày từ DateEntry, trả về chuỗi YYYY-MM-DD.
-        Hỗ trợ nhiều format vì DateEntry có thể trả về format khác tùy locale."""
-        raw = (date_entry.entry.get() or '').strip()
-        if raw:
-            # Thử format chuẩn trước
-            for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%Y/%m/%d'):
-                try:
-                    parsed = dt.datetime.strptime(raw, fmt)
-                    return parsed.strftime('%Y-%m-%d')
-                except ValueError:
-                    continue
-        return dt.datetime.now().strftime('%Y-%m-%d')
+        """Return YYYY-MM-DD for SQLite queries while accepting DD-MM-YYYY UI input."""
+        return parse_date_to_iso(date_entry.entry.get(), default_today=True)
+
+    def _date_range_from_entries(self, from_entry, to_entry):
+        start_date = parse_date_to_iso(from_entry.entry.get())
+        end_date = parse_date_to_iso(to_entry.entry.get())
+        return start_date, end_date
+
+    def _date_range_label(self, start_date, end_date):
+        return f"{format_date_display(start_date)} -> {format_date_display(end_date)}"
 
     def update_dispatch_unit_label(self):
         sel = self.cmb_prod_pos.get()
@@ -1699,7 +1710,7 @@ Hiện tại bạn vẫn có thể:
         
         lot_info_strs = []
         for lot in lots[:3]:
-            lot_info_strs.append(f"{lot['lotNo']} (HSD: {lot['expiryDate']}) - Còn: {lot['qtyBase']:g}")
+            lot_info_strs.append(f"{lot['lotNo']} (HSD: {format_date_display(lot['expiryDate'])}) - Còn: {lot['qtyBase']:g}")
         if len(lots) > 3:
             lot_info_strs.append("...")
             
@@ -1713,7 +1724,7 @@ Hiện tại bạn vẫn có thể:
         # Cập nhật danh sách chọn lô thủ công
         lot_options = ["[Tự động - FEFO]"]
         for lot in lots:
-            lot_options.append(f"{lot['lotNo']} (HSD: {lot['expiryDate']}) - Tồn: {lot['qtyBase']:g}")
+            lot_options.append(f"{lot['lotNo']} (HSD: {format_date_display(lot['expiryDate'])}) - Tồn: {lot['qtyBase']:g}")
         self.cmb_lot_pos['values'] = lot_options
         self.cmb_lot_pos.current(0)
         self.update_dispatch_funds()
@@ -1855,7 +1866,7 @@ Hiện tại bạn vẫn có thể:
                 earlier_lots = []
                 for lot in lots:
                     if lot['lotNo'] != chosen_lot and lot['expiryDate'] < chosen_expiry:
-                        earlier_lots.append(f"Lô {lot['lotNo']} (HSD: {lot['expiryDate']}) - Còn: {lot['qtyBase']:g}")
+                        earlier_lots.append(f"Lô {lot['lotNo']} (HSD: {format_date_display(lot['expiryDate'])}) - Còn: {lot['qtyBase']:g}")
                 
                 if earlier_lots:
                     warning_msg = f"Cảnh báo: Có lô hàng cận hạn dùng hơn so với lô bạn chọn:\n\n"
@@ -2056,7 +2067,7 @@ Hiện tại bạn vẫn có thể:
                         pid,
                         name,
                         alloc['lotNo'],
-                        alloc['expiryDate'],
+                        format_date_display(alloc['expiryDate']),
                         it.get('fundSource') or '[Tự động]',
                         unitCode,
                         f"{alloc['cost']:,.0f}",
@@ -2299,7 +2310,7 @@ Hiện tại bạn vẫn có thể:
                 f"<b>Đơn vị nhận:</b> {info['receivingUnit']}",
                 f"<b>Lý do xuất:</b> {info['reason']}",
                 f"<b>Kho xuất:</b> Kho Dược CDC Cần Thơ",
-                f"<b>Ngày xuất:</b> {created_at_dt.strftime('%d/%m/%Y')}",
+                f"<b>Ngày xuất:</b> {created_at_dt.strftime('%d-%m-%Y')}",
                 f"<b>Ghi chú:</b> {info['note'] or 'Không'}"
             ]
             for line in info_lines:
@@ -2338,7 +2349,7 @@ Hiện tại bạn vẫn có thể:
                     Paragraph(f"{cost:,.0f}" if cost > 0 else "0", style_cell_right),
                     Paragraph(f"{sub_total:,.0f}" if sub_total > 0 else "0", style_cell_right),
                     Paragraph(it['lotNo'] or '', style_cell_center),
-                    Paragraph(it['expiryDate'] or '', style_cell_center),
+                    Paragraph(format_date_display(it['expiryDate']), style_cell_center),
                     Paragraph(it.get('fundSource') or '', style_cell)
                 ])
                 
@@ -2474,15 +2485,15 @@ Hiện tại bạn vẫn có thể:
 
         tb.Label(top, text='Từ ngày:').pack(side='left', padx=(0,6))
         # DateEntry đã được bạn thêm trước đó; nếu chưa có, nhớ: from ttkbootstrap.widgets import DateEntry
-        self.de_from = DateEntry(top, dateformat="%Y-%m-%d", firstweekday=0, bootstyle='secondary')
+        self.de_from = DateEntry(top, dateformat="%d-%m-%Y", firstweekday=0, bootstyle='secondary')
         self.de_from.entry.delete(0, 'end')
-        self.de_from.entry.insert(0, dt.date.today().replace(day=1).strftime("%Y-%m-%d"))  # đầu tháng
+        self.de_from.entry.insert(0, dt.date.today().replace(day=1).strftime("%d-%m-%Y"))  # đầu tháng
         self.de_from.pack(side='left', padx=(0,12))
 
         tb.Label(top, text='Đến ngày:').pack(side='left', padx=(0,6))
-        self.de_to = DateEntry(top, dateformat="%Y-%m-%d", firstweekday=0, bootstyle='secondary')
+        self.de_to = DateEntry(top, dateformat="%d-%m-%Y", firstweekday=0, bootstyle='secondary')
         self.de_to.entry.delete(0, 'end')
-        self.de_to.entry.insert(0, dt.datetime.now().strftime("%Y-%m-%d"))      # hôm nay
+        self.de_to.entry.insert(0, dt.datetime.now().strftime("%d-%m-%Y"))      # hôm nay
         self.de_to.pack(side='left', padx=(0,12))
 
         tb.Label(top, text='Nguồn:').pack(side='left', padx=(0,6))
@@ -2529,15 +2540,15 @@ Hiện tại bạn vẫn có thể:
         date_frame.pack(fill='x', padx=8, pady=8)
         
         tb.Label(date_frame, text='Từ ngày:').pack(side='left', padx=(0,6))
-        self.adv_de_from = DateEntry(date_frame, dateformat="%Y-%m-%d", firstweekday=0, bootstyle='secondary')
+        self.adv_de_from = DateEntry(date_frame, dateformat="%d-%m-%Y", firstweekday=0, bootstyle='secondary')
         self.adv_de_from.entry.delete(0, 'end')
-        self.adv_de_from.entry.insert(0, dt.date.today().replace(day=1).strftime("%Y-%m-%d"))
+        self.adv_de_from.entry.insert(0, dt.date.today().replace(day=1).strftime("%d-%m-%Y"))
         self.adv_de_from.pack(side='left', padx=(0,12))
         
         tb.Label(date_frame, text='Đến ngày:').pack(side='left', padx=(0,6))
-        self.adv_de_to = DateEntry(date_frame, dateformat="%Y-%m-%d", firstweekday=0, bootstyle='secondary')
+        self.adv_de_to = DateEntry(date_frame, dateformat="%d-%m-%Y", firstweekday=0, bootstyle='secondary')
         self.adv_de_to.entry.delete(0, 'end')
-        self.adv_de_to.entry.insert(0, dt.datetime.now().strftime("%Y-%m-%d"))
+        self.adv_de_to.entry.insert(0, dt.datetime.now().strftime("%d-%m-%Y"))
         self.adv_de_to.pack(side='left', padx=(0,12))
         
         # Hàng 2: Nút báo cáo
@@ -2603,8 +2614,7 @@ Hiện tại bạn vẫn có thể:
             for widget in self.adv_summary_tab.winfo_children():
                 widget.destroy()
             
-            start_date = self.adv_de_from.entry.get().strip()
-            end_date = self.adv_de_to.entry.get().strip()
+            start_date, end_date = self._date_range_from_entries(self.adv_de_from, self.adv_de_to)
             
             if not start_date or not end_date:
                 return
@@ -2677,7 +2687,7 @@ Hiện tại bạn vẫn có thể:
                 orders = row.get('orders', 0) or 0
                 revenue = row.get('revenue', 0) or 0
                 daily_tree.insert('', 'end', values=(
-                    row.get('sale_date', ''),
+                    format_date_display(row.get('sale_date', '')),
                     f"{orders:,}",
                     f"{revenue:,.0f}"
                 ), tags=('odd',) if idx % 2 else ())
@@ -2685,11 +2695,106 @@ Hiện tại bạn vẫn có thể:
         except Exception as e:
             messagebox.showerror('Lỗi', f'Không thể load tóm tắt: {str(e)}')
 
+    def show_note_detail_popup(self, note_type, note_id):
+        """Show purchase/dispatch note detail without forcing PDF reprint."""
+        is_purchase = note_type == 'purchase'
+        note_table = 'purchase_notes' if is_purchase else 'dispatch_notes'
+        partner_key = 'supplier' if is_purchase else 'receivingUnit'
+        title = 'Chi tiết phiếu nhập kho' if is_purchase else 'Chi tiết phiếu xuất kho'
+
+        note_rows = self.db.q(f"SELECT * FROM {note_table} WHERE id=?", (note_id,))
+        if not note_rows:
+            messagebox.showerror("Lỗi", "Không tìm thấy phiếu đã chọn")
+            return
+
+        note = note_rows[0]
+        items = self.db.get_purchase_detail(note_id) if is_purchase else self.db.get_dispatch_detail(note_id)
+        if not items:
+            messagebox.showinfo("Thông báo", "Phiếu này chưa có dòng hàng chi tiết")
+            return
+
+        pop = tb.Toplevel(self)
+        pop.title(f"{title} - {note['noteNumber']}")
+        pop.geometry("980x560")
+        pop.transient(self)
+        pop.grab_set()
+
+        main = tb.Frame(pop, padding=12)
+        main.pack(fill='both', expand=True)
+
+        header = tb.Frame(main)
+        header.pack(fill='x', pady=(0, 10))
+        tb.Label(
+            header,
+            text=f"{title.upper()} - {note['noteNumber']}",
+            font=('Segoe UI', 14, 'bold'),
+            bootstyle='primary'
+        ).pack(anchor='w')
+        tb.Label(
+            header,
+            text=(
+                f"Ngày: {format_datetime_display(note['createdAt'])}  |  "
+                f"{'Nguồn cấp/Nhà CC' if is_purchase else 'Đơn vị nhận'}: {note[partner_key] or ''}  |  "
+                f"Lý do: {note['reason'] or ''}"
+            ),
+            font=('Segoe UI', 10),
+            bootstyle='secondary'
+        ).pack(anchor='w', pady=(4, 0))
+        if note['note']:
+            tb.Label(header, text=f"Ghi chú: {note['note']}", font=('Segoe UI', 10)).pack(anchor='w', pady=(2, 0))
+
+        cols = ('idx', 'product', 'unit', 'qty', 'price', 'total', 'lot', 'exp', 'fund')
+        tree = tb.Treeview(main, columns=cols, show='headings', height=16)
+        for c, w, t, anchor in [
+            ('idx', 45, 'STT', 'center'),
+            ('product', 260, 'Tên hàng', 'w'),
+            ('unit', 70, 'ĐVT', 'center'),
+            ('qty', 80, 'SL', 'e'),
+            ('price', 100, 'Đơn giá', 'e'),
+            ('total', 115, 'Thành tiền', 'e'),
+            ('lot', 95, 'Số lô', 'center'),
+            ('exp', 105, 'HSD', 'center'),
+            ('fund', 140, 'Nguồn', 'w'),
+        ]:
+            tree.heading(c, text=t)
+            tree.column(c, width=w, anchor=anchor)
+        tree.tag_configure('odd', background='#f6f8fa')
+        tree.pack(fill='both', expand=True)
+
+        total_qty = 0.0
+        total_amount = 0.0
+        for idx, it in enumerate(items, 1):
+            qty = float(it['qty'] or 0)
+            price = float((it['cost'] if 'cost' in it.keys() else 0) or 0)
+            amount = qty * price
+            total_qty += qty
+            total_amount += amount
+            tree.insert('', 'end', values=(
+                idx,
+                it['productName'],
+                it['unitCode'],
+                f"{qty:g}",
+                f"{price:,.0f}",
+                f"{amount:,.0f}",
+                it['lotNo'] or '',
+                format_date_display(it['expiryDate']),
+                it['fundSource'] if 'fundSource' in it.keys() else ''
+            ), tags=('odd',) if idx % 2 else ())
+
+        footer = tb.Frame(main)
+        footer.pack(fill='x', pady=(10, 0))
+        tb.Label(
+            footer,
+            text=f"Tổng số lượng: {total_qty:g}  |  Tổng giá trị: {total_amount:,.0f} VNĐ",
+            font=('Segoe UI', 11, 'bold'),
+            bootstyle='success'
+        ).pack(side='left')
+        tb.Button(footer, text="Đóng", bootstyle='secondary', command=pop.destroy).pack(side='right')
+
     def show_purchase_history(self):
         """Hiển thị lịch sử các phiếu nhập kho đã được tạo"""
         try:
-            start_date = self.adv_de_from.entry.get().strip()
-            end_date = self.adv_de_to.entry.get().strip()
+            start_date, end_date = self._date_range_from_entries(self.adv_de_from, self.adv_de_to)
             
             if not start_date or not end_date:
                 messagebox.showwarning('Thiếu thông tin', 'Vui lòng chọn đầy đủ ngày bắt đầu và kết thúc')
@@ -2706,7 +2811,7 @@ Hiện tại bạn vẫn có thể:
             main_frame.pack(fill='both', expand=True, padx=10, pady=10)
             
             # Title
-            tb.Label(main_frame, text=f"LỊCH SỬ PHIẾU NHẬP KHO ({start_date} -> {end_date})", 
+            tb.Label(main_frame, text=f"LỊCH SỬ PHIẾU NHẬP KHO ({self._date_range_label(start_date, end_date)})",
                      font=('Segoe UI', 14, 'bold'), bootstyle='success').pack(pady=(0, 10))
             
             # Bảng danh sách phiếu nhập
@@ -2730,7 +2835,7 @@ Hiện tại bạn vẫn có thể:
             
             # Load dữ liệu vào tree
             for idx, n in enumerate(notes):
-                created_at = n['createdAt']
+                created_at = format_datetime_display(n['createdAt'])
                 tree.insert('', 'end', values=(
                     n['id'],
                     n['noteNumber'],
@@ -2744,6 +2849,14 @@ Hiện tại bạn vẫn có thể:
             # Frame điều khiển bên dưới
             ctrl_btn_frame = tb.Frame(main_frame)
             ctrl_btn_frame.pack(fill='x', pady=5)
+
+            def on_show_detail():
+                sel = tree.selection()
+                if not sel:
+                    messagebox.showwarning("Chưa chọn dòng", "Vui lòng chọn một phiếu nhập kho trong danh sách!"); return
+                val = tree.item(sel[0])['values']
+                purchase_id = int(val[0])
+                self.show_note_detail_popup('purchase', purchase_id)
             
             def on_reprint():
                 sel = tree.selection()
@@ -2789,14 +2902,15 @@ Hiện tại bạn vẫn có thể:
                         pass
                     messagebox.showerror("Lỗi", f"Không thể xóa phiếu nhập: {str(ex)}")
 
-            tb.Button(ctrl_btn_frame, text="📄 Xem chi tiết & In lại phiếu PDF", bootstyle='info',
+            tb.Button(ctrl_btn_frame, text="📄 Xem chi tiết", bootstyle='info',
+                      command=on_show_detail).pack(side='left', padx=5)
+            tb.Button(ctrl_btn_frame, text="🖨️ In lại phiếu PDF", bootstyle='secondary',
                       command=on_reprint).pack(side='left', padx=5)
             
             tb.Button(ctrl_btn_frame, text="🗑️ Xóa phiếu nhập", bootstyle='danger-outline',
                       command=on_delete_purchase).pack(side='left', padx=5)
             
-            # Double click để in luôn
-            tree.bind("<Double-1>", lambda e: on_reprint())
+            tree.bind("<Double-1>", lambda e: on_show_detail())
             
             # Chuyển tab của notebook sang tab Chi tiết
             self.adv_report_nb.select(self.adv_detail_tab)
@@ -2829,7 +2943,8 @@ Hiện tại bạn vẫn có thể:
                     'qty': it['qty'],
                     'lotNo': it['lotNo'],
                     'expiryDate': it['expiryDate'],
-                    'cost': it['cost']
+                    'cost': it['cost'],
+                    'fundSource': it['fundSource'] if 'fundSource' in it.keys() else ''
                 })
                 
             self.last_purchase_items = purchase_items
@@ -2851,8 +2966,7 @@ Hiện tại bạn vẫn có thể:
     def show_dispatch_history(self):
         """Hiển thị lịch sử các phiếu xuất kho đã được tạo"""
         try:
-            start_date = self.adv_de_from.entry.get().strip()
-            end_date = self.adv_de_to.entry.get().strip()
+            start_date, end_date = self._date_range_from_entries(self.adv_de_from, self.adv_de_to)
             
             if not start_date or not end_date:
                 messagebox.showwarning('Thiếu thông tin', 'Vui lòng chọn đầy đủ ngày bắt đầu và kết thúc')
@@ -2869,7 +2983,7 @@ Hiện tại bạn vẫn có thể:
             main_frame.pack(fill='both', expand=True, padx=10, pady=10)
             
             # Title
-            tb.Label(main_frame, text=f"LỊCH SỬ PHIẾU XUẤT KHO ({start_date} -> {end_date})", 
+            tb.Label(main_frame, text=f"LỊCH SỬ PHIẾU XUẤT KHO ({self._date_range_label(start_date, end_date)})",
                      font=('Segoe UI', 14, 'bold'), bootstyle='primary').pack(pady=(0, 10))
             
             # Bảng danh sách phiếu xuất
@@ -2893,7 +3007,7 @@ Hiện tại bạn vẫn có thể:
             
             # Load dữ liệu vào tree
             for idx, n in enumerate(notes):
-                created_at = n['createdAt']
+                created_at = format_datetime_display(n['createdAt'])
                 tree.insert('', 'end', values=(
                     n['id'],
                     n['noteNumber'],
@@ -2907,6 +3021,14 @@ Hiện tại bạn vẫn có thể:
             # Frame điều khiển bên dưới
             ctrl_btn_frame = tb.Frame(main_frame)
             ctrl_btn_frame.pack(fill='x', pady=5)
+
+            def on_show_detail():
+                sel = tree.selection()
+                if not sel:
+                    messagebox.showwarning("Chưa chọn dòng", "Vui lòng chọn một phiếu xuất kho trong danh sách!"); return
+                val = tree.item(sel[0])['values']
+                dispatch_id = int(val[0])
+                self.show_note_detail_popup('dispatch', dispatch_id)
             
             def on_reprint():
                 sel = tree.selection()
@@ -2952,14 +3074,15 @@ Hiện tại bạn vẫn có thể:
                         pass
                     messagebox.showerror("Lỗi", f"Không thể xóa phiếu xuất: {str(ex)}")
 
-            tb.Button(ctrl_btn_frame, text="📄 Xem chi tiết & In lại phiếu PDF", bootstyle='info',
+            tb.Button(ctrl_btn_frame, text="📄 Xem chi tiết", bootstyle='info',
+                      command=on_show_detail).pack(side='left', padx=5)
+            tb.Button(ctrl_btn_frame, text="🖨️ In lại phiếu PDF", bootstyle='secondary',
                       command=on_reprint).pack(side='left', padx=5)
             
             tb.Button(ctrl_btn_frame, text="🗑️ Xóa phiếu xuất", bootstyle='danger-outline',
                       command=on_delete_dispatch).pack(side='left', padx=5)
             
-            # Double click để in luôn
-            tree.bind("<Double-1>", lambda e: on_reprint())
+            tree.bind("<Double-1>", lambda e: on_show_detail())
             
             # Chuyển tab của notebook sang tab Chi tiết
             self.adv_report_nb.select(self.adv_detail_tab)
@@ -2992,7 +3115,8 @@ Hiện tại bạn vẫn có thể:
                     'qty': it['qty'],
                     'lotNo': it['lotNo'],
                     'expiryDate': it['expiryDate'],
-                    'cost': it.get('cost') or 0.0
+                    'cost': it.get('cost') or 0.0,
+                    'fundSource': it['fundSource'] if 'fundSource' in it.keys() else ''
                 })
                 
             self.last_dispatch_items = dispatch_items
@@ -3013,8 +3137,7 @@ Hiện tại bạn vẫn có thể:
     def show_revenue_report(self):
         """Hiển thị báo cáo cấp phát"""
         try:
-            start_date = self.adv_de_from.entry.get().strip()
-            end_date = self.adv_de_to.entry.get().strip()
+            start_date, end_date = self._date_range_from_entries(self.adv_de_from, self.adv_de_to)
             
             if not start_date or not end_date:
                 messagebox.showwarning('Thiếu thông tin', 'Vui lòng chọn đầy đủ ngày bắt đầu và kết thúc')
@@ -3139,8 +3262,7 @@ Hiện tại bạn vẫn có thể:
     def show_profit_report(self):
         """Hiển thị thống kê cấp phát theo đơn vị nhận"""
         try:
-            start_date = self.adv_de_from.entry.get().strip()
-            end_date = self.adv_de_to.entry.get().strip()
+            start_date, end_date = self._date_range_from_entries(self.adv_de_from, self.adv_de_to)
             
             if not start_date or not end_date:
                 messagebox.showwarning('Thiếu thông tin', 'Vui lòng chọn đầy đủ ngày bắt đầu và kết thúc')
@@ -3237,8 +3359,7 @@ Hiện tại bạn vẫn có thể:
         if receiving_unit == 'TỔNG CỘNG' or not receiving_unit:
             return
             
-        start_date = self.adv_de_from.entry.get().strip()
-        end_date = self.adv_de_to.entry.get().strip()
+        start_date, end_date = self._date_range_from_entries(self.adv_de_from, self.adv_de_to)
         
         try:
             details = self.db.get_dispatch_detail_by_unit(receiving_unit, start_date, end_date)
@@ -3258,7 +3379,7 @@ Hiện tại bạn vẫn có thể:
             
             # Header
             tb.Label(main_frm, text=f"CHI TIẾT CẤP PHÁT CHO ĐƠN VỊ", font=('Segoe UI', 14, 'bold'), bootstyle='primary').pack(anchor='w', pady=(0, 5))
-            tb.Label(main_frm, text=f"Đơn vị: {receiving_unit} ({start_date} -> {end_date})", font=('Segoe UI', 11, 'bold')).pack(anchor='w', pady=(0, 10))
+            tb.Label(main_frm, text=f"Đơn vị: {receiving_unit} ({self._date_range_label(start_date, end_date)})", font=('Segoe UI', 11, 'bold')).pack(anchor='w', pady=(0, 10))
             
             # Treeview
             cols = ('note_no', 'date', 'reason', 'product', 'qty', 'lot', 'exp', 'fund', 'cost', 'total')
@@ -3294,9 +3415,7 @@ Hiện tại bạn vẫn có thể:
                 
                 tags = ('odd',) if idx % 2 else ()
                 # format date
-                created_date = r['createdAt']
-                if len(created_date) > 10:
-                    created_date = created_date[:10]
+                created_date = format_datetime_display(r['createdAt'])
                     
                 tree_detail.insert('', 'end', values=(
                     r['noteNumber'],
@@ -3305,7 +3424,7 @@ Hiện tại bạn vẫn có thể:
                     r['productName'],
                     f"{qty:g}",
                     r['lotNo'] or '',
-                    r['expiryDate'] or '',
+                    format_date_display(r['expiryDate']),
                     r.get('fundSource') or '',
                     f"{cost:,.0f}",
                     f"{sub_total:,.0f}"
@@ -3326,8 +3445,7 @@ Hiện tại bạn vẫn có thể:
     def show_top_products_report(self):
         """Hiển thị báo cáo top sản phẩm cấp phát"""
         try:
-            start_date = self.adv_de_from.entry.get().strip()
-            end_date = self.adv_de_to.entry.get().strip()
+            start_date, end_date = self._date_range_from_entries(self.adv_de_from, self.adv_de_to)
             
             if not start_date or not end_date:
                 messagebox.showwarning('Thiếu thông tin', 'Vui lòng chọn đầy đủ ngày bắt đầu và kết thúc')
@@ -3402,8 +3520,7 @@ Hiện tại bạn vẫn có thể:
             return
         
         try:
-            start_date = self.adv_de_from.entry.get().strip()
-            end_date = self.adv_de_to.entry.get().strip()
+            start_date, end_date = self._date_range_from_entries(self.adv_de_from, self.adv_de_to)
             
             if not start_date or not end_date:
                 messagebox.showwarning('Thiếu thông tin', 'Vui lòng chọn đầy đủ ngày bắt đầu và kết thúc')
@@ -3474,8 +3591,7 @@ Hiện tại bạn vẫn có thể:
             messagebox.showerror('Lỗi', str(e))
 
     def export_report_csv(self):
-        start_s = self.de_from.entry.get().strip() if hasattr(self, 'de_from') else ''
-        end_s   = self.de_to.entry.get().strip() if hasattr(self, 'de_to') else ''
+        start_s, end_s = self._date_range_from_entries(self.de_from, self.de_to) if hasattr(self, 'de_from') and hasattr(self, 'de_to') else ('', '')
         if not start_s or not end_s:
             messagebox.showwarning('Thiếu ngày', 'Chọn đủ Từ ngày và Đến ngày'); return
 
@@ -3516,8 +3632,7 @@ Hiện tại bạn vẫn có thể:
         self.toast('Đã lưu báo cáo X–N–T')
 
     def export_report_pdf(self):
-        start_s = self.de_from.entry.get().strip() if hasattr(self, 'de_from') else ''
-        end_s   = self.de_to.entry.get().strip() if hasattr(self, 'de_to') else ''
+        start_s, end_s = self._date_range_from_entries(self.de_from, self.de_to) if hasattr(self, 'de_from') and hasattr(self, 'de_to') else ('', '')
         if not start_s or not end_s:
             messagebox.showwarning('Thiếu ngày', 'Chọn đủ Từ ngày và Đến ngày'); return
 
@@ -3628,7 +3743,7 @@ Hiện tại bạn vẫn có thể:
             try:
                 start_dt = dt.datetime.strptime(start_s, '%Y-%m-%d')
                 end_dt = dt.datetime.strptime(end_s, '%Y-%m-%d')
-                date_range_str = f"Từ ngày {start_dt.strftime('%d/%m/%Y')} đến ngày {end_dt.strftime('%d/%m/%Y')}"
+                date_range_str = f"Từ ngày {start_dt.strftime('%d-%m-%Y')} đến ngày {end_dt.strftime('%d-%m-%Y')}"
             except Exception:
                 date_range_str = f"Từ ngày {start_s} đến ngày {end_s}"
                 
@@ -3673,7 +3788,7 @@ Hiện tại bạn vẫn có thể:
                     Paragraph(r['productName'], style_cell),
                     Paragraph(r['unit'] or '-', style_cell_center),
                     Paragraph(r['lotNo'] or '', style_cell_center),
-                    Paragraph(r['expiryDate'] or '', style_cell_center),
+                    Paragraph(format_date_display(r['expiryDate']), style_cell_center),
                     Paragraph(r.get('fundSource') or '', style_cell),
                     Paragraph(f"{o_val:g}", style_cell_right),
                     Paragraph(f"{i_val:g}", style_cell_right),
@@ -3755,7 +3870,7 @@ Hiện tại bạn vẫn có thể:
             messagebox.showerror("Lỗi in PDF", f"Không thể xuất báo cáo PDF: {str(e)}")
 
     def print_inventory_check_pdf(self):
-        end_s = self.de_to.entry.get().strip() if hasattr(self, 'de_to') else ''
+        end_s = parse_date_to_iso(self.de_to.entry.get()) if hasattr(self, 'de_to') else ''
         if not end_s:
             messagebox.showwarning('Thiếu ngày', 'Hãy chọn ngày đến (ngày kết thúc kiểm kê) ở ô Đến ngày'); return
 
@@ -3869,7 +3984,7 @@ Hiện tại bạn vẫn có thể:
             
             try:
                 check_dt = dt.datetime.strptime(end_s, '%Y-%m-%d')
-                date_str = f"Thời điểm kiểm kê: 24 giờ 00 phút ngày {check_dt.strftime('%d/%m/%Y')}"
+                date_str = f"Thời điểm kiểm kê: 24 giờ 00 phút ngày {check_dt.strftime('%d-%m-%Y')}"
             except Exception:
                 date_str = f"Thời điểm kiểm kê: ngày {end_s}"
                 
@@ -3917,7 +4032,7 @@ Hiện tại bạn vẫn có thể:
                     Paragraph(r['productName'], style_cell),
                     Paragraph(r['unit'] or '-', style_cell_center),
                     Paragraph(r['lotNo'] or '', style_cell_center),
-                    Paragraph(r['expiryDate'] or '', style_cell_center),
+                    Paragraph(format_date_display(r['expiryDate']), style_cell_center),
                     Paragraph(r.get('fundSource') or '', style_cell),
                     Paragraph(f"{c_val:g}", style_cell_right),
                     Paragraph("", style_cell_center),
@@ -4008,8 +4123,7 @@ Hiện tại bạn vẫn có thể:
                 return
             
             # Chọn file để lưu
-            start_date = self.adv_de_from.entry.get().strip()
-            end_date = self.adv_de_to.entry.get().strip()
+            start_date, end_date = self._date_range_from_entries(self.adv_de_from, self.adv_de_to)
             filename = filedialog.asksaveasfilename(
                 defaultextension='.xlsx',
                 filetypes=[('Excel files', '*.xlsx'), ('All files', '*.*')],
@@ -4039,8 +4153,7 @@ Hiện tại bạn vẫn có thể:
                 return
             
             # Chọn file để lưu
-            start_date = self.adv_de_from.entry.get().strip()
-            end_date = self.adv_de_to.entry.get().strip()
+            start_date, end_date = self._date_range_from_entries(self.adv_de_from, self.adv_de_to)
             filename = filedialog.asksaveasfilename(
                 defaultextension='.pdf',
                 filetypes=[('PDF files', '*.pdf'), ('All files', '*.*')],
@@ -4070,8 +4183,7 @@ Hiện tại bạn vẫn có thể:
                 return
             
             # Chọn file để lưu
-            start_date = self.adv_de_from.entry.get().strip()
-            end_date = self.adv_de_to.entry.get().strip()
+            start_date, end_date = self._date_range_from_entries(self.adv_de_from, self.adv_de_to)
             filename = filedialog.asksaveasfilename(
                 defaultextension='.csv',
                 filetypes=[('CSV files', '*.csv'), ('All files', '*.*')],
@@ -4117,8 +4229,7 @@ Hiện tại bạn vẫn có thể:
             current_tab = self.adv_report_nb.select()
             tab_text = self.adv_report_nb.tab(current_tab, 'text')
             
-            start_date = self.adv_de_from.entry.get().strip()
-            end_date = self.adv_de_to.entry.get().strip()
+            start_date, end_date = self._date_range_from_entries(self.adv_de_from, self.adv_de_to)
             
             if not start_date or not end_date:
                 return None
@@ -4250,8 +4361,7 @@ Hiện tại bạn vẫn có thể:
         self._fill_tree(self.tree_alerts, self.db.expiring_view(days))
 
     def refresh_report(self):
-        start_s = self.de_from.entry.get().strip() if hasattr(self, 'de_from') else ''
-        end_s   = self.de_to.entry.get().strip() if hasattr(self, 'de_to') else ''
+        start_s, end_s = self._date_range_from_entries(self.de_from, self.de_to) if hasattr(self, 'de_from') and hasattr(self, 'de_to') else ('', '')
 
         # Clear
         for i in self.tree_report.get_children():
@@ -4277,7 +4387,7 @@ Hiện tại bạn vẫn có thể:
                     r['productId'], 
                     r['productName'],
                     r['lotNo'] or '',
-                    r['expiryDate'] or '',
+                    format_date_display(r['expiryDate']),
                     r.get('fundSource', ''),
                     f"{r['opening']:g}", 
                     f"{r['inbound']:g}", 
@@ -4406,7 +4516,7 @@ Hiện tại bạn vẫn có thể:
                 'Tỷ lệ quy đổi 3',
                 'Giá bán đơn vị quy đổi 3',
                 'Số lô',
-                'Hạn sử dụng (YYYY-MM-DD)',
+                'Hạn sử dụng (DD-MM-YYYY)',
                 'Số lượng tồn (Đơn vị cơ sở)',
                 'Giá nhập (Đơn vị cơ sở)'
             ]
@@ -4428,7 +4538,7 @@ Hiện tại bạn vẫn có thể:
                     '',
                     '',
                     'LOT123',
-                    '2027-12-31',
+                    '31-12-2027',
                     500,
                     1200
                 ],
@@ -4448,7 +4558,7 @@ Hiện tại bạn vẫn có thể:
                     '',
                     '',
                     'B2209',
-                    '2026-09-30',
+                    '30-09-2026',
                     50,
                     150000
                 ]
@@ -4651,7 +4761,7 @@ Hiện tại bạn vẫn có thể:
                 stock_info = None
                 lot_no = str(row.get('Số lô', '')).strip()
                 if lot_no and lot_no.lower() not in ('nan', 'none', ''):
-                    expiry_val = row.get('Hạn sử dụng (YYYY-MM-DD)')
+                    expiry_val = row.get('Hạn sử dụng (DD-MM-YYYY)', row.get('Hạn sử dụng (YYYY-MM-DD)'))
                     expiry_date = parse_import_date(expiry_val)
                     
                     if not expiry_date:
@@ -4682,7 +4792,7 @@ Hiện tại bạn vẫn có thể:
                                         'fundSource': fund_source
                                     }
                         except ValueError:
-                            errors.append(f"Dòng {row_num}: Hạn sử dụng '{expiry_date}' của lô '{lot_no}' không đúng định dạng YYYY-MM-DD (Bỏ qua nhập lô)")
+                            errors.append(f"Dòng {row_num}: Hạn sử dụng '{format_date_display(expiry_date)}' của lô '{lot_no}' không đúng định dạng DD-MM-YYYY (Bỏ qua nhập lô)")
 
                 import_records.append({
                     'product_info': {
