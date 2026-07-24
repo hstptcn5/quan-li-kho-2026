@@ -6,9 +6,10 @@ from config import SCHEMA_SQL, SCHEMA_VERSION
 class DB:
     def __init__(self, path: str):
         self.path = path
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute('PRAGMA foreign_keys = ON')
+        self.conn.execute("PRAGMA busy_timeout = 30000")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA_SQL)
@@ -175,6 +176,20 @@ class DB:
         '''
         return self.q(sql)
 
+    def get_inventory(self):
+        sql = '''
+        SELECT p.id AS productId, p.name AS productName, sm.batchId, b.lotNo, b.expiryDate,
+               COALESCE(sm.fundSource, '') AS fundSource,
+               ROUND(SUM(COALESCE(sm.qtyBase, sm.qty)),4) AS stockBase
+        FROM stock_movements sm
+        JOIN products p ON p.id=sm.productId
+        JOIN batches b ON b.id=sm.batchId
+        GROUP BY p.id, p.name, sm.batchId, b.lotNo, b.expiryDate, COALESCE(sm.fundSource, '')
+        HAVING stockBase<>0
+        ORDER BY LOWER(p.name), DATE(b.expiryDate), COALESCE(sm.fundSource, '')
+        '''
+        return self.q(sql)
+
     def expiring_view(self, days=180):
         sql = '''
         SELECT * FROM (
@@ -316,7 +331,7 @@ class DB:
     def add_purchase(self, items):
         """Legacy purchase — cũng cần ghi qtyBase"""
         try:
-            self.conn.execute("BEGIN")
+            self.conn.execute("BEGIN IMMEDIATE")
             for it in items:
                 bid = self.ensure_batch(it['productId'], it['lotNo'], it['expiryDate'])
                 to_base, _ = self.unit_info(it['productId'], it['unitCode'])
@@ -397,7 +412,7 @@ class DB:
         paid = float(paid); change = round(paid - total, 2)
         if paid < total: raise Exception('Tiền khách đưa chưa đủ')
         try:
-            self.conn.execute("BEGIN")
+            self.conn.execute("BEGIN IMMEDIATE")
             self.sell(finalized)
             cur = self.conn.execute("INSERT INTO sales(total, paid, change, note) VALUES(?,?,?,?)", (total, paid, change, note))
             sale_id = cur.lastrowid
@@ -439,7 +454,7 @@ class DB:
         """
         dispatch_details = []
         try:
-            self.conn.execute("BEGIN")
+            self.conn.execute("BEGIN IMMEDIATE")
 
             # Thời gian tạo phiếu xuất
             if date_str:
@@ -688,6 +703,48 @@ class DB:
             ORDER BY p.name
         ''', (dispatch_id,))
 
+    def delete_dispatch_note(self, dispatch_id: int, audit_ip: str = "Local"):
+        """Delete a dispatch note and its stock movements in one validated transaction."""
+        note_number = None
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            note = self.conn.execute(
+                "SELECT noteNumber FROM dispatch_notes WHERE id=?",
+                (dispatch_id,)
+            ).fetchone()
+            if not note:
+                raise ValueError("Khong tim thay phieu xuat.")
+            note_number = note["noteNumber"]
+
+            has_ref = self.conn.execute(
+                "SELECT COUNT(*) FROM stock_movements WHERE referenceType='DISPATCH' AND referenceId=?",
+                (dispatch_id,)
+            ).fetchone()[0]
+            if has_ref == 0:
+                raise ValueError("Tu choi xoa phieu xuat cu khong co lien ket chi tiet.")
+
+            self.conn.execute(
+                "DELETE FROM stock_movements WHERE referenceType='DISPATCH' AND referenceId=?",
+                (dispatch_id,)
+            )
+            self.conn.execute("DELETE FROM dispatch_notes WHERE id=?", (dispatch_id,))
+            self._assert_no_negative_stock()
+            self.conn.commit()
+
+            try:
+                self.add_audit_log(
+                    action="XOA_PHIEU_XUAT",
+                    note_id=dispatch_id,
+                    details=f"Da xoa phieu xuat {note_number}",
+                    ip=audit_ip
+                )
+            except Exception as log_err:
+                print(f"Loi ghi log xoa phieu xuat: {log_err}")
+            return note_number
+        except Exception:
+            self.conn.rollback()
+            raise
+
     # purchase (Nhập kho)
     def record_purchase(self, items, supplier: str, reason: str = 'Nhập kho', note: str = '', date_str: str = None, audit_ip: str = 'Local'):
         """
@@ -698,7 +755,7 @@ class DB:
         """
         purchase_details = []
         try:
-            self.conn.execute("BEGIN")
+            self.conn.execute("BEGIN IMMEDIATE")
 
             # Thời gian tạo phiếu nhập
             if date_str:
@@ -787,7 +844,7 @@ class DB:
         Nếu xảy ra bất kỳ lỗi nào, toàn bộ quá trình sẽ được ROLLBACK hoàn toàn.
         """
         try:
-            self.conn.execute("BEGIN")
+            self.conn.execute("BEGIN IMMEDIATE")
             created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             imported_products = 0
             updated_products = 0
@@ -955,6 +1012,48 @@ class DB:
             WHERE pi.purchaseId = ?
             ORDER BY p.name
         ''', (purchase_id,)) # Fix possible reference error in legacy SQL
+
+    def delete_purchase_note(self, purchase_id: int, audit_ip: str = "Local"):
+        """Delete a purchase note only when stock remains valid afterward."""
+        note_number = None
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            note = self.conn.execute(
+                "SELECT noteNumber FROM purchase_notes WHERE id=?",
+                (purchase_id,)
+            ).fetchone()
+            if not note:
+                raise ValueError("Khong tim thay phieu nhap.")
+            note_number = note["noteNumber"]
+
+            has_ref = self.conn.execute(
+                "SELECT COUNT(*) FROM stock_movements WHERE referenceType='PURCHASE' AND referenceId=?",
+                (purchase_id,)
+            ).fetchone()[0]
+            if has_ref == 0:
+                raise ValueError("Tu choi xoa phieu nhap cu khong co lien ket chi tiet.")
+
+            self.conn.execute(
+                "DELETE FROM stock_movements WHERE referenceType='PURCHASE' AND referenceId=?",
+                (purchase_id,)
+            )
+            self.conn.execute("DELETE FROM purchase_notes WHERE id=?", (purchase_id,))
+            self._assert_no_negative_stock()
+            self.conn.commit()
+
+            try:
+                self.add_audit_log(
+                    action="XOA_PHIEU_NHAP",
+                    note_id=purchase_id,
+                    details=f"Da xoa phieu nhap {note_number}",
+                    ip=audit_ip
+                )
+            except Exception as log_err:
+                print(f"Loi ghi log xoa phieu nhap: {log_err}")
+            return note_number
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def get_suppliers(self):
         """Lấy danh sách nhà cung cấp đã từng nhập hàng"""

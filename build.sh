@@ -21,7 +21,7 @@ fi
 # Check if PyInstaller is installed
 if ! pip3 show pyinstaller &> /dev/null; then
     echo "Installing PyInstaller..."
-    pip3 install pyinstaller
+    pip3 install pyinstaller==6.6.0
     if [ $? -ne 0 ]; then
         echo "ERROR: Failed to install PyInstaller"
         exit 1

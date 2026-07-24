@@ -14,6 +14,12 @@ from config import (
 from database import DB
 import sqlite3
 
+
+def _connect_sqlite(path: str):
+    conn = sqlite3.connect(path, timeout=30)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    return conn
+
 # Import conditional libraries
 if PANDAS_AVAILABLE:
     import pandas as pd
@@ -46,8 +52,8 @@ class BackupManager:
             backup_path = os.path.join(self.backup_dir, backup_name)
             
             # Sử dụng sqlite3 backup API để backup an toàn
-            src = sqlite3.connect(self.db_path)
-            dst = sqlite3.connect(backup_path)
+            src = _connect_sqlite(self.db_path)
+            dst = _connect_sqlite(backup_path)
             with dst:
                 src.backup(dst)
             dst.close()
@@ -83,15 +89,15 @@ class BackupManager:
             current_backup = self.create_backup("before_restore")
             
             # Restore database bằng backup API
-            src = sqlite3.connect(backup_path)
-            dst = sqlite3.connect(self.db_path)
+            src = _connect_sqlite(backup_path)
+            dst = _connect_sqlite(self.db_path)
             with dst:
                 src.backup(dst)
             dst.close()
             src.close()
             
             # Kiểm tra tính toàn vẹn của dữ liệu sau restore
-            conn = sqlite3.connect(self.db_path)
+            conn = _connect_sqlite(self.db_path)
             try:
                 integrity = conn.execute("PRAGMA integrity_check").fetchone()
                 if not integrity or integrity[0] != 'ok':
@@ -107,8 +113,8 @@ class BackupManager:
         except Exception as e:
             if current_backup and os.path.exists(current_backup):
                 try:
-                    src = sqlite3.connect(current_backup)
-                    dst = sqlite3.connect(self.db_path)
+                    src = _connect_sqlite(current_backup)
+                    dst = _connect_sqlite(self.db_path)
                     with dst:
                         src.backup(dst)
                     dst.close()
@@ -161,6 +167,21 @@ class BackupManager:
             
             with open(import_path, 'r', encoding='utf-8') as f:
                 import_data = json.load(f)
+
+            if not isinstance(import_data, dict):
+                raise Exception("File import không đúng định dạng")
+
+            export_info = import_data.get('export_info')
+            if not isinstance(export_info, dict):
+                raise Exception("File import thiếu export_info")
+
+            import_schema = export_info.get('schema_version')
+            if not isinstance(import_schema, int):
+                raise Exception("File import thiếu schema_version hợp lệ")
+            if import_schema > SCHEMA_VERSION:
+                raise Exception(
+                    f"File import schema_version {import_schema} mới hơn ứng dụng hiện tại {SCHEMA_VERSION}"
+                )
             
             # Tạo backup trước khi import
             self.create_backup("before_import")
@@ -176,7 +197,7 @@ class BackupManager:
             }
             
             # Bắt đầu transaction
-            db.conn.execute("BEGIN TRANSACTION")
+            db.conn.execute("BEGIN IMMEDIATE")
             
             # Xóa dữ liệu cũ (thứ tự child trước, parent sau)
             db.conn.execute("DELETE FROM temperature_logs")
@@ -207,11 +228,19 @@ class BackupManager:
                 data = import_data[table]
                 if not data:
                     continue
+                if not isinstance(data, list):
+                    raise Exception(f"Dữ liệu bảng {table} không đúng định dạng")
+                for row in data:
+                    if not isinstance(row, dict):
+                        raise Exception(f"Dữ liệu bảng {table} chứa dòng không đúng định dạng")
                 
                 # Lấy thông tin các cột thực tế của bảng để whitelist cột
                 db_cols = {r[1] for r in db.conn.execute(f"PRAGMA table_info({table})")}
-                first_row_cols = list(data[0].keys())
-                valid_columns = [col for col in first_row_cols if col in db_cols]
+                valid_columns = []
+                for row in data:
+                    for col in row.keys():
+                        if col in db_cols and col not in valid_columns:
+                            valid_columns.append(col)
                 
                 if not valid_columns:
                     continue

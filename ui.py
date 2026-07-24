@@ -3202,29 +3202,7 @@ Hiện tại bạn vẫn có thể:
                     return
                 
                 try:
-                    # Bắt đầu transaction
-                    self.db.conn.execute("BEGIN TRANSACTION")
-                    
-                    # Kiểm tra xem có stock_movements liên kết hay không (Tránh xóa phiếu cũ)
-                    has_ref = self.db.conn.execute(
-                        "SELECT COUNT(*) FROM stock_movements WHERE referenceType='PURCHASE' AND referenceId=?",
-                        (purchase_id,)
-                    ).fetchone()[0]
-                    if has_ref == 0:
-                        self.db.conn.rollback()
-                        messagebox.showerror("Từ chối xóa", "Đây là phiếu nhập cũ (không có liên kết chi tiết). Để đảm bảo an toàn dữ liệu lịch sử, hệ thống từ chối xóa phiếu này.")
-                        return
-                    
-                    # Lỗi 6: Xóa stock_movements theo referenceId (không dùng createdAt nữa)
-                    self.db.conn.execute(
-                        "DELETE FROM stock_movements WHERE referenceType='PURCHASE' AND referenceId=?",
-                        (purchase_id,)
-                    )
-                    
-                    # Xóa phiếu nhập (foreign keys ON DELETE CASCADE sẽ tự động xóa purchase_items)
-                    self.db.conn.execute("DELETE FROM purchase_notes WHERE id=?", (purchase_id,))
-                    
-                    self.db.conn.commit()
+                    self.db.delete_purchase_note(purchase_id, audit_ip="Local")
                     
                     # Cập nhật lại UI
                     self.toast(f"Đã xóa phiếu nhập {note_num} thành công")
@@ -3387,29 +3365,7 @@ Hiện tại bạn vẫn có thể:
                     return
                 
                 try:
-                    # Bắt đầu transaction
-                    self.db.conn.execute("BEGIN TRANSACTION")
-                    
-                    # Kiểm tra xem có stock_movements liên kết hay không (Tránh xóa phiếu cũ)
-                    has_ref = self.db.conn.execute(
-                        "SELECT COUNT(*) FROM stock_movements WHERE referenceType='DISPATCH' AND referenceId=?",
-                        (dispatch_id,)
-                    ).fetchone()[0]
-                    if has_ref == 0:
-                        self.db.conn.rollback()
-                        messagebox.showerror("Từ chối xóa", "Đây là phiếu xuất cũ (không có liên kết chi tiết). Để đảm bảo an toàn dữ liệu lịch sử, hệ thống từ chối xóa phiếu này.")
-                        return
-                    
-                    # Lỗi 6: Xóa stock_movements theo referenceId (không dùng createdAt nữa)
-                    self.db.conn.execute(
-                        "DELETE FROM stock_movements WHERE referenceType='DISPATCH' AND referenceId=?",
-                        (dispatch_id,)
-                    )
-                    
-                    # Xóa phiếu xuất (foreign keys ON DELETE CASCADE sẽ tự động xóa dispatch_items)
-                    self.db.conn.execute("DELETE FROM dispatch_notes WHERE id=?", (dispatch_id,))
-                    
-                    self.db.conn.commit()
+                    self.db.delete_dispatch_note(dispatch_id, audit_ip="Local")
                     
                     # Cập nhật lại UI
                     self.toast(f"Đã xóa phiếu xuất {note_num} thành công")

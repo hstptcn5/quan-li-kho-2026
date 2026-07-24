@@ -17,7 +17,7 @@ REM Check if PyInstaller is installed
 python -m pip show pyinstaller >nul 2>&1
 if errorlevel 1 (
     echo Installing PyInstaller...
-    python -m pip install pyinstaller
+    python -m pip install pyinstaller==6.6.0
     if errorlevel 1 (
         echo ERROR: Failed to install PyInstaller
         pause
