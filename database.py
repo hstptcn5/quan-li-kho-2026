@@ -340,14 +340,15 @@ class DB:
             to_base, unit_price = self.unit_info(it['productId'], it['unitCode'])
             if to_base is None: raise Exception('Sản phẩm chưa có giá/đơn vị cơ sở')
             need_base = float(it['qty']) * to_base
+            ref_date = dt.datetime.now().strftime('%Y-%m-%d')
             lots = self.q('''
               SELECT v.batchId, v.qtyBase, b.expiryDate FROM (
                 SELECT sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
                 FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
               ) v JOIN batches b ON b.id=v.batchId
-              WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
+              WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE(?)
               ORDER BY DATE(b.expiryDate)
-            ''', (it['productId'],))
+            ''', (it['productId'], ref_date))
             for lot in lots:
                 if need_base <= 0: break
                 take_base = min(need_base, float(lot['qtyBase']))
@@ -463,6 +464,7 @@ class DB:
                 original_unit = it['unitCode']
 
                 # Lấy lô hàng: thủ công nếu chọn trước, hoặc FEFO nếu để tự động
+                ref_date = date_str[:10] if date_str else dt.datetime.now().strftime('%Y-%m-%d')
                 fund_source_val = it.get('fundSource')
                 if it.get('lotNo'):
                     if fund_source_val is not None:
@@ -517,9 +519,9 @@ class DB:
                             WHERE sm.productId=? AND COALESCE(sm.fundSource, '')=?
                             GROUP BY sm.batchId
                           ) v JOIN batches b ON b.id=v.batchId
-                          WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
+                          WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE(?)
                           ORDER BY DATE(b.expiryDate)
-                        ''', (it['productId'], fund_source_val))
+                        ''', (it['productId'], fund_source_val, ref_date))
                     else:
                         lots = self.q('''
                           SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
@@ -533,9 +535,9 @@ class DB:
                             SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
                             FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
                           ) v JOIN batches b ON b.id=v.batchId
-                          WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
+                          WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE(?)
                           ORDER BY DATE(b.expiryDate)
-                        ''', (it['productId'],))
+                        ''', (it['productId'], ref_date))
 
                 for lot in lots:
                     if need_base <= 0:

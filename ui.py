@@ -1227,12 +1227,7 @@ Hiện tại bạn vẫn có thể:
         if not supplier:
             messagebox.showwarning('Thiếu thông tin', 'Vui lòng nhập/chọn Nguồn cấp/Nhà cung cấp'); return
         
-        date_str = (self.ent_purchase_date.entry.get() or '').strip()
-        if date_str:
-            try:
-                dt.datetime.strptime(date_str, '%Y-%m-%d')
-            except:
-                messagebox.showerror('Lỗi', 'Ngày nhập không hợp lệ (định dạng YYYY-MM-DD)'); return
+        date_str = self._parse_date_entry(self.ent_purchase_date)
                 
         reason = self.cmb_purchase_reason.get().strip()
         note = self.ent_purchase_note.get().strip()
@@ -1670,6 +1665,20 @@ Hiện tại bạn vẫn có thể:
         except Exception as e:
             print(f"Lỗi refresh đơn vị nhận: {e}")
 
+    def _parse_date_entry(self, date_entry):
+        """Lấy ngày từ DateEntry, trả về chuỗi YYYY-MM-DD.
+        Hỗ trợ nhiều format vì DateEntry có thể trả về format khác tùy locale."""
+        raw = (date_entry.entry.get() or '').strip()
+        if raw:
+            # Thử format chuẩn trước
+            for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%Y/%m/%d'):
+                try:
+                    parsed = dt.datetime.strptime(raw, fmt)
+                    return parsed.strftime('%Y-%m-%d')
+                except ValueError:
+                    continue
+        return dt.datetime.now().strftime('%Y-%m-%d')
+
     def update_dispatch_unit_label(self):
         sel = self.cmb_prod_pos.get()
         if not sel:
@@ -1680,16 +1689,18 @@ Hiện tại bạn vẫn có thể:
         pid = int(sel.split(' — ')[0])
         du = self.db.default_unit_of(pid) or '-'
         
+        ref_date = self._parse_date_entry(self.ent_dispatch_date)
+
         # Lấy các lô hàng khả dụng theo FEFO
         lots = self.db.q('''
-          SELECT b.lotNo, b.expiryDate, SUM(sm.qty*1) AS qtyBase
+          SELECT b.lotNo, b.expiryDate, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
           FROM stock_movements sm
           JOIN batches b ON b.id = sm.batchId
           WHERE sm.productId=?
           GROUP BY sm.batchId
-          HAVING qtyBase > 0 AND DATE(b.expiryDate) >= DATE('now')
+          HAVING qtyBase > 0 AND DATE(b.expiryDate) >= DATE(?)
           ORDER BY DATE(b.expiryDate)
-        ''', (pid,))
+        ''', (pid, ref_date))
         
         lot_info_strs = []
         for lot in lots[:3]:
@@ -1720,6 +1731,8 @@ Hiện tại bạn vẫn có thể:
             return
         pid = int(sel.split(' — ')[0])
         
+        ref_date = self._parse_date_entry(self.ent_dispatch_date)
+
         # Lấy lô được chọn
         chosen_val = self.cmb_lot_pos.get()
         chosen_lot = None
@@ -1729,7 +1742,7 @@ Hiện tại bạn vẫn có thể:
         if chosen_lot:
             # Lọc nguồn theo lô cụ thể
             funds = self.db.q('''
-                SELECT sm.fundSource, SUM(sm.qty*1) AS qtyBase
+                SELECT sm.fundSource, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
                 FROM stock_movements sm
                 JOIN batches b ON b.id = sm.batchId
                 WHERE sm.productId=? AND b.lotNo=?
@@ -1737,14 +1750,15 @@ Hiện tại bạn vẫn có thể:
                 HAVING qtyBase > 0
             ''', (pid, chosen_lot))
         else:
-            # Lọc nguồn theo sản phẩm nói chung (tổng tất cả các lô)
+            # Lọc nguồn theo sản phẩm nói chung (tổng tất cả các lô chưa hết hạn tại ref_date)
             funds = self.db.q('''
-                SELECT fundSource, SUM(qty*1) AS qtyBase
-                FROM stock_movements
-                WHERE productId=?
-                GROUP BY fundSource
+                SELECT sm.fundSource, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
+                FROM stock_movements sm
+                JOIN batches b ON b.id = sm.batchId
+                WHERE sm.productId=? AND DATE(b.expiryDate) >= DATE(?)
+                GROUP BY sm.fundSource
                 HAVING qtyBase > 0
-            ''', (pid,))
+            ''', (pid, ref_date))
             
         fund_options = ["[Tự động trừ kho]"]
         for f in funds:
@@ -1824,15 +1838,17 @@ Hiện tại bạn vẫn có thể:
             
         # Kiểm tra xem có lô hàng nào cận hạn hơn lô được chọn hay không
         if chosen_lot:
+            ref_date = self._parse_date_entry(self.ent_dispatch_date)
+
             lots = self.db.q('''
-              SELECT b.lotNo, b.expiryDate, SUM(sm.qty*1) AS qtyBase
+              SELECT b.lotNo, b.expiryDate, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
               FROM stock_movements sm
               JOIN batches b ON b.id = sm.batchId
               WHERE sm.productId=?
               GROUP BY sm.batchId
-              HAVING qtyBase > 0 AND DATE(b.expiryDate) >= DATE('now')
+              HAVING qtyBase > 0 AND DATE(b.expiryDate) >= DATE(?)
               ORDER BY DATE(b.expiryDate)
-            ''', (pid,))
+            ''', (pid, ref_date))
             
             chosen_expiry = None
             for lot in lots:
@@ -1922,12 +1938,15 @@ Hiện tại bạn vẫn có thể:
         for i in self.tree_cart.get_children():
             self.tree_cart.delete(i)
         
+        ref_date = self._parse_date_entry(self.ent_dispatch_date)
+
         idx = 0
         for it in self.cart_dispatch:
             pid = it['productId']
             name = it['productName']
             unitCode = it['unitCode']
             qty = it['qty']
+            fund_source_val = it.get('fundSource')
             
             # Lấy thông tin tồn kho của các lô sắp xếp theo HSD (FEFO) hoặc theo lô được chọn
             to_base, _ = self.db.unit_info(pid, unitCode)
@@ -1936,39 +1955,77 @@ Hiện tại bạn vẫn có thể:
             need_base = qty * to_base
             
             if it.get('lotNo'):
-                lots = self.db.q('''
-                  SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
-                         COALESCE((
-                             SELECT sm2.cost FROM stock_movements sm2
-                             WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
-                               AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
-                             ORDER BY sm2.id DESC LIMIT 1
-                         ), 0) AS costBase
-                  FROM (
-                    SELECT sm.productId, sm.batchId, SUM(sm.qty*1) AS qtyBase
-                    FROM stock_movements sm 
-                    WHERE sm.productId=? AND sm.batchId=(
-                        SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
-                    )
-                    GROUP BY sm.batchId
-                  ) v JOIN batches b ON b.id=v.batchId
-                ''', (pid, pid, it['lotNo']))
+                if fund_source_val is not None:
+                    lots = self.db.q('''
+                      SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                             COALESCE((
+                                 SELECT sm2.cost FROM stock_movements sm2
+                                 WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                                   AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                                 ORDER BY sm2.id DESC LIMIT 1
+                             ), 0) AS costBase
+                      FROM (
+                        SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
+                        FROM stock_movements sm 
+                        WHERE sm.productId=? AND sm.batchId=(
+                            SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
+                        ) AND COALESCE(sm.fundSource, '')=?
+                        GROUP BY sm.batchId
+                      ) v JOIN batches b ON b.id=v.batchId
+                    ''', (pid, pid, it['lotNo'], fund_source_val))
+                else:
+                    lots = self.db.q('''
+                      SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                             COALESCE((
+                                 SELECT sm2.cost FROM stock_movements sm2
+                                 WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                                   AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                                 ORDER BY sm2.id DESC LIMIT 1
+                             ), 0) AS costBase
+                      FROM (
+                        SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
+                        FROM stock_movements sm 
+                        WHERE sm.productId=? AND sm.batchId=(
+                            SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
+                        )
+                        GROUP BY sm.batchId
+                      ) v JOIN batches b ON b.id=v.batchId
+                    ''', (pid, pid, it['lotNo']))
             else:
-                lots = self.db.q('''
-                  SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
-                         COALESCE((
-                             SELECT sm2.cost FROM stock_movements sm2
-                             WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
-                               AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
-                             ORDER BY sm2.id DESC LIMIT 1
-                         ), 0) AS costBase
-                  FROM (
-                    SELECT sm.productId, sm.batchId, SUM(sm.qty*1) AS qtyBase
-                    FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
-                  ) v JOIN batches b ON b.id=v.batchId
-                  WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
-                  ORDER BY DATE(b.expiryDate)
-                ''', (pid,))
+                if fund_source_val is not None:
+                    lots = self.db.q('''
+                      SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                             COALESCE((
+                                 SELECT sm2.cost FROM stock_movements sm2
+                                 WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                                   AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                                 ORDER BY sm2.id DESC LIMIT 1
+                             ), 0) AS costBase
+                      FROM (
+                        SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
+                        FROM stock_movements sm 
+                        WHERE sm.productId=? AND COALESCE(sm.fundSource, '')=?
+                        GROUP BY sm.batchId
+                      ) v JOIN batches b ON b.id=v.batchId
+                      WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE(?)
+                      ORDER BY DATE(b.expiryDate)
+                    ''', (pid, fund_source_val, ref_date))
+                else:
+                    lots = self.db.q('''
+                      SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                             COALESCE((
+                                 SELECT sm2.cost FROM stock_movements sm2
+                                 WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                                   AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                                 ORDER BY sm2.id DESC LIMIT 1
+                             ), 0) AS costBase
+                      FROM (
+                        SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
+                        FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
+                      ) v JOIN batches b ON b.id=v.batchId
+                      WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE(?)
+                      ORDER BY DATE(b.expiryDate)
+                    ''', (pid, ref_date))
             
             allocated = []
             for lot in lots:
@@ -2022,12 +2079,8 @@ Hiện tại bạn vẫn có thể:
         if not receiving_unit:
             messagebox.showwarning('Thiếu thông tin', 'Vui lòng nhập Đơn vị nhận'); return
         
-        date_str = (self.ent_dispatch_date.entry.get() or '').strip()
-        if date_str:
-            try:
-                dt.datetime.strptime(date_str, '%Y-%m-%d')
-            except:
-                messagebox.showerror('Lỗi', 'Ngày xuất không hợp lệ (định dạng YYYY-MM-DD)'); return
+        date_str = self._parse_date_entry(self.ent_dispatch_date)
+
                 
         reason = self.cmb_reason.get().strip()
         note = self.ent_dispatch_note.get().strip()

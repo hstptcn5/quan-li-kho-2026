@@ -1583,7 +1583,11 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         
                 conn.close()
                 
-                dispatch_id, note_num, details = db.dispatch(items, receiving_unit, reason_str, note, audit_ip=self.client_address[0])
+                date_str = data.get("dispatchDate") or data.get("createdAt") or data.get("date")
+                if date_str:
+                    date_str = str(date_str).strip()[:10]
+                    
+                dispatch_id, note_num, details = db.dispatch(items, receiving_unit, reason_str, note, date_str=date_str, audit_ip=self.client_address[0])
                 
                 if hasattr(self.server, 'app_instance') and self.server.app_instance:
                     self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)

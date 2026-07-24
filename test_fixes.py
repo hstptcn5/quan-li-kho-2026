@@ -522,5 +522,41 @@ class TestMedicalWarehouseFixes(unittest.TestCase):
         self.assertEqual(p_row[0]['productType'], 'vaccine')
         self.assertEqual(p_row[0]['registrationNumber'], 'VD-333-NEW')
 
+    def test_historical_dispatch_fefo_date(self):
+        """Kiểm thử: Nhập hàng 2026-01-01 (HSD 2026-06-01), xuất ngày 2026-01-22 phải thành công (không bị DATE('now') làm báo KHÔNG ĐỦ KHO)"""
+        # 1. Tạo sản phẩm
+        cur = self.db.conn.execute("INSERT INTO products (name, defaultUnit) VALUES ('Nevirapine Test', 'Lọ')")
+        pid = cur.lastrowid
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (?, 'Lọ', 1, 32489)", (pid,))
+
+        # 2. Nhập kho ngày 2026-01-01 với HSD 2026-06-01 (HSD đã qua so với DATE('now') hiện tại nhưng chưa qua so với Ngày xuất 2026-01-22)
+        purchase_items = [{
+            'productId': pid,
+            'lotNo': 'LOT_NEV_2026',
+            'expiryDate': '2026-06-01',
+            'unitCode': 'Lọ',
+            'qty': 10,
+            'cost': 32489,
+            'fundSource': 'Quỹ toàn cầu'
+        }]
+        self.db.record_purchase(purchase_items, supplier="NCC Test", date_str="2026-01-01")
+
+        # 3. Xuất kho ngày 2026-01-22: FEFO phải so sánh HSD với ngày xuất 2026-01-22 chứ không so với DATE('now')
+        dispatch_items = [{
+            'productId': pid,
+            'unitCode': 'Lọ',
+            'qty': 2,
+            'lotNo': None, # FEFO tự động
+            'fundSource': 'Quỹ toàn cầu'
+        }]
+        dispatch_id, note_num, _ = self.db.dispatch(dispatch_items, receiving_unit="BV Phụ sản", date_str="2026-01-22")
+        self.assertTrue(note_num.startswith('PX-'), "Xuất kho lùi ngày 2026-01-22 phải thành công không bị báo lỗi không đủ kho")
+
+        # Kiểm tra tồn kho sau khi xuất còn 8 Lọ
+        inv = self.db.get_inventory()
+        matching = [x for x in inv if x['productId'] == pid and x['fundSource'] == 'Quỹ toàn cầu']
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]['stockBase'], 8.0)
+
 if __name__ == '__main__':
     unittest.main()
