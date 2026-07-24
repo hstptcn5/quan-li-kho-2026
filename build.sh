@@ -63,7 +63,6 @@ pyinstaller \
     --hidden-import=pyzbar \
     --hidden-import=reportlab \
     --hidden-import=ttkbootstrap \
-    --hidden-import=cryptography \
     --hidden-import=schedule \
     --hidden-import=PIL \
     --hidden-import=openpyxl \

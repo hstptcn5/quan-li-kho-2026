@@ -61,7 +61,7 @@ Hệ thống được phát triển trên nền tảng **Python & SQLite**, sử
 
 
 ### 6. 💾 Cơ chế An toàn dữ liệu & Không cần License
-*   **Sao lưu tự động**: Backup cơ sở dữ liệu SQLite định kỳ hàng ngày vào lúc 23:00.
+*   **Sao lưu tự động**: Backup cơ sở dữ liệu SQLite định kỳ hàng ngày vào lúc 02:00.
 *   **Khôi phục 1-Click**: Cho phép phục hồi dữ liệu nhanh từ các tệp sao lưu ngay trên giao diện.
 *   **Bản quyền nguồn mở**: Hoàn toàn miễn phí, không khóa mã, không cần key kích hoạt.
 

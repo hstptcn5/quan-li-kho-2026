@@ -1,7 +1,7 @@
 # database.py — Lớp cơ sở dữ liệu cho phần mềm Quản lý XNT
 import sqlite3
 import datetime as dt
-from config import SCHEMA_SQL
+from config import SCHEMA_SQL, SCHEMA_VERSION
 
 class DB:
     def __init__(self, path: str):
@@ -12,6 +12,7 @@ class DB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA_SQL)
+        self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
         try: self.conn.execute("ALTER TABLE products ADD COLUMN barcode TEXT")
         except sqlite3.OperationalError: pass
@@ -22,6 +23,9 @@ class DB:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_sm_product_batch ON stock_movements(productId, batchId)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_batches_product ON batches(productId)")
         self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_units_unique ON product_units(productId, unitCode)")
+        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_notenum ON purchase_notes(noteNumber)")
+        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_notenum ON dispatch_notes(noteNumber)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_sm_reference ON stock_movements(referenceType, referenceId)")
         self.conn.commit()
 
     def _has_column(self, table, col):
@@ -38,6 +42,22 @@ class DB:
             self.conn.execute("ALTER TABLE stock_movements ADD COLUMN reason TEXT")
         if not self._has_column('stock_movements', 'fundSource'):
             self.conn.execute("ALTER TABLE stock_movements ADD COLUMN fundSource TEXT")
+
+        # === Lỗi 1: Thêm cột qtyBase, originalQty, originalUnit ===
+        if not self._has_column('stock_movements', 'qtyBase'):
+            self.conn.execute("ALTER TABLE stock_movements ADD COLUMN qtyBase REAL")
+        if not self._has_column('stock_movements', 'originalQty'):
+            self.conn.execute("ALTER TABLE stock_movements ADD COLUMN originalQty REAL")
+        if not self._has_column('stock_movements', 'originalUnit'):
+            self.conn.execute("ALTER TABLE stock_movements ADD COLUMN originalUnit TEXT")
+
+        # === Lỗi 6: Thêm cột reference liên kết chứng từ ===
+        if not self._has_column('stock_movements', 'referenceType'):
+            self.conn.execute("ALTER TABLE stock_movements ADD COLUMN referenceType TEXT")
+        if not self._has_column('stock_movements', 'referenceId'):
+            self.conn.execute("ALTER TABLE stock_movements ADD COLUMN referenceId INTEGER")
+        if not self._has_column('stock_movements', 'referenceItemId'):
+            self.conn.execute("ALTER TABLE stock_movements ADD COLUMN referenceItemId INTEGER")
 
         # Thêm cột nguồn kinh phí cho purchase_items (v2.1)
         if not self._has_column('purchase_items', 'fundSource'):
@@ -79,6 +99,55 @@ class DB:
         if not self._has_column('dispatch_items', 'cost'):
             self.conn.execute("ALTER TABLE dispatch_items ADD COLUMN cost REAL DEFAULT 0")
 
+        # === Lỗi 1: Migration dữ liệu cũ — gán qtyBase cho bản ghi hiện có ===
+        self.conn.execute('''
+            UPDATE stock_movements
+            SET originalQty = CASE WHEN originalQty IS NULL THEN ABS(qty) ELSE originalQty END,
+                originalUnit = CASE WHEN originalUnit IS NULL THEN unitCode ELSE originalUnit END,
+                qtyBase = CASE WHEN qtyBase IS NULL THEN qty * COALESCE(
+                    (SELECT pu.toBaseQty FROM product_units pu
+                     WHERE pu.productId = stock_movements.productId
+                       AND pu.unitCode = stock_movements.unitCode), 1)
+                ELSE qtyBase END
+            WHERE qtyBase IS NULL
+        ''')
+
+        # === Lỗi 6: Migration — liên kết chứng từ cho dữ liệu cũ (best-effort) ===
+        # Liên kết purchase movements
+        self.conn.execute('''
+            UPDATE stock_movements SET
+                referenceType = 'PURCHASE',
+                referenceId = (
+                    SELECT pi.purchaseId FROM purchase_items pi
+                    WHERE pi.productId = stock_movements.productId
+                      AND pi.batchId = stock_movements.batchId
+                    ORDER BY pi.id DESC LIMIT 1
+                )
+            WHERE type = 'PURCHASE' AND referenceType IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM purchase_items pi2
+                  WHERE pi2.productId = stock_movements.productId
+                    AND pi2.batchId = stock_movements.batchId
+              )
+        ''')
+        # Liên kết dispatch movements
+        self.conn.execute('''
+            UPDATE stock_movements SET
+                referenceType = 'DISPATCH',
+                referenceId = (
+                    SELECT di.dispatchId FROM dispatch_items di
+                    WHERE di.productId = stock_movements.productId
+                      AND di.batchId = stock_movements.batchId
+                    ORDER BY di.id DESC LIMIT 1
+                )
+            WHERE type = 'DISPATCH' AND referenceType IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM dispatch_items di2
+                  WHERE di2.productId = stock_movements.productId
+                    AND di2.batchId = stock_movements.batchId
+              )
+        ''')
+
         # đảm bảo có dòng đơn vị cơ sở
         for r in self.conn.execute("SELECT id, defaultUnit FROM products"):
             if not self.conn.execute("SELECT 1 FROM product_units WHERE productId=? AND unitCode=?", (r['id'], r['defaultUnit'])).fetchone():
@@ -107,7 +176,7 @@ class DB:
     def stock_view(self):
         sql = '''
         SELECT p.id AS productId, p.name AS productName, sm.batchId, b.lotNo, b.expiryDate,
-               ROUND(SUM(sm.qty*1),4) AS qtyBase,
+               ROUND(SUM(COALESCE(sm.qtyBase, sm.qty)),4) AS qtyBase,
                COALESCE(ROUND((
                     SELECT sm2.cost/1.0 FROM stock_movements sm2
                     WHERE sm2.productId=sm.productId AND sm2.batchId=sm.batchId
@@ -118,7 +187,7 @@ class DB:
                    (SELECT sm3.cost/1.0 FROM stock_movements sm3
                     WHERE sm3.productId=sm.productId AND sm3.batchId=sm.batchId
                       AND sm3.type='PURCHASE' AND sm3.cost IS NOT NULL
-                    ORDER BY sm3.id DESC LIMIT 1) * SUM(sm.qty*1)
+                    ORDER BY sm3.id DESC LIMIT 1) * SUM(COALESCE(sm.qtyBase, sm.qty))
                ),2),0) AS valueBase
         FROM stock_movements sm
         JOIN products p ON p.id=sm.productId
@@ -133,7 +202,7 @@ class DB:
         sql = '''
         SELECT * FROM (
             SELECT p.id AS productId, p.name AS productName, sm.batchId, b.lotNo, b.expiryDate,
-                   ROUND(SUM(sm.qty*1),4) AS qtyBase
+                   ROUND(SUM(COALESCE(sm.qtyBase, sm.qty)),4) AS qtyBase
             FROM stock_movements sm
             JOIN products p ON p.id=sm.productId
             JOIN batches  b ON b.id=sm.batchId
@@ -147,7 +216,7 @@ class DB:
     def stock_summary_by_product(self):
         sql = '''
         SELECT p.id AS productId, p.name AS productName, ROUND(SUM(v.qtyBase),4) AS qtyBaseTotal
-        FROM ( SELECT sm.productId, sm.batchId, SUM(sm.qty*1) AS qtyBase
+        FROM ( SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
                FROM stock_movements sm GROUP BY sm.productId, sm.batchId ) v
         JOIN products p ON p.id=v.productId
         GROUP BY p.id, p.name HAVING qtyBaseTotal<>0
@@ -160,7 +229,7 @@ class DB:
         Báo cáo Xuất–Nhập–Tồn theo sản phẩm trong khoảng ngày [start_date, end_date].
         - Nhập:  type='PURCHASE'
         - Xuất:  type IN ('SALE','DISCARD','DISPATCH')  (DISCARD và DISPATCH tính như xuất)
-        - Đơn vị cơ sở (toBaseQty = 1)
+        - Sử dụng COALESCE(qtyBase, qty) để tương thích dữ liệu cũ
         - fund_source: lọc theo nguồn kinh phí (None hoặc 'Tất cả' = không lọc)
         """
         fund_filter = ""
@@ -179,19 +248,19 @@ class DB:
           COALESCE(sm.fundSource, '') AS fundSource,
 
           COALESCE(ROUND(SUM(CASE
-            WHEN DATE(sm.createdAt) < DATE(?){fund_filter} THEN sm.qty * 1
+            WHEN DATE(sm.createdAt) < DATE(?){fund_filter} THEN COALESCE(sm.qtyBase, sm.qty)
             ELSE 0 END), 4), 0) AS opening,
 
           COALESCE(ROUND(SUM(CASE
             WHEN DATE(sm.createdAt) BETWEEN DATE(?) AND DATE(?) AND sm.type='PURCHASE'{fund_filter}
-              THEN sm.qty * 1 ELSE 0 END), 4), 0) AS inbound,
+              THEN COALESCE(sm.qtyBase, sm.qty) ELSE 0 END), 4), 0) AS inbound,
 
           COALESCE(ROUND(SUM(CASE
             WHEN DATE(sm.createdAt) BETWEEN DATE(?) AND DATE(?) AND sm.type IN ('SALE','DISCARD','DISPATCH'){fund_filter}
-              THEN -sm.qty * 1 ELSE 0 END), 4), 0) AS outbound,
+              THEN -COALESCE(sm.qtyBase, sm.qty) ELSE 0 END), 4), 0) AS outbound,
 
           COALESCE(ROUND(SUM(CASE
-            WHEN DATE(sm.createdAt) <= DATE(?){fund_filter} THEN sm.qty * 1
+            WHEN DATE(sm.createdAt) <= DATE(?){fund_filter} THEN COALESCE(sm.qtyBase, sm.qty)
             ELSE 0 END), 4), 0) AS closing
         FROM products p
         LEFT JOIN stock_movements sm ON sm.productId = p.id
@@ -219,7 +288,7 @@ class DB:
         SELECT p.id AS productId, p.name AS productName,
                ROUND(SUM(v.qtyBase), 4) AS qtyBaseTotal
         FROM (
-          SELECT sm.productId, sm.batchId, SUM(sm.qty * 1) AS qtyBase
+          SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
           FROM stock_movements sm
           WHERE DATE(sm.createdAt) BETWEEN DATE(?) AND DATE(?)
           GROUP BY sm.productId, sm.batchId
@@ -232,18 +301,32 @@ class DB:
         return self.q(sql, (start_date, end_date))
 
     def ensure_batch(self, product_id, lot_no, expiry_date):
-        r = self.q("SELECT id FROM batches WHERE productId=? AND lotNo=?", (product_id, lot_no))
-        return r[0]['id'] if r else self.ex("INSERT INTO batches(productId, lotNo, expiryDate) VALUES(?,?,?)", (product_id, lot_no, expiry_date))
+        """Lỗi 8: Validate lô hàng — cùng số lô phải cùng HSD"""
+        r = self.q("SELECT id, expiryDate FROM batches WHERE productId=? AND lotNo=?", (product_id, lot_no))
+        if r:
+            if r[0]['expiryDate'] != expiry_date:
+                raise Exception(
+                    f"Số lô '{lot_no}' đã tồn tại với HSD {r[0]['expiryDate']}, "
+                    f"không khớp HSD mới {expiry_date}. "
+                    "Vui lòng kiểm tra lại hoặc điều chỉnh số lô."
+                )
+            return r[0]['id']
+        return self.ex("INSERT INTO batches(productId, lotNo, expiryDate) VALUES(?,?,?)", (product_id, lot_no, expiry_date))
 
     # purchase
     def add_purchase(self, items):
+        """Legacy purchase — cũng cần ghi qtyBase"""
         try:
             self.conn.execute("BEGIN")
             for it in items:
                 bid = self.ensure_batch(it['productId'], it['lotNo'], it['expiryDate'])
+                to_base, _ = self.unit_info(it['productId'], it['unitCode'])
+                if to_base is None:
+                    to_base = 1.0
+                qty_base = float(it['qty']) * to_base
                 self.conn.execute(
-                    "INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, cost) VALUES(?,?,?,?, 'PURCHASE', ?)",
-                    (it['productId'], bid, it['unitCode'], it['qty'], float(it.get('cost') or 0))
+                    "INSERT INTO stock_movements(productId, batchId, unitCode, qty, qtyBase, originalQty, originalUnit, type, cost) VALUES(?,?,?,?,?,?,?, 'PURCHASE', ?)",
+                    (it['productId'], bid, it['unitCode'], float(it['qty']), qty_base, float(it['qty']), it['unitCode'], float(it.get('cost') or 0))
                 )
             self.conn.commit()
         except Exception:
@@ -251,6 +334,7 @@ class DB:
 
     # sell (FEFO)
     def sell(self, items):
+        """Lỗi 1+2: Sử dụng qtyBase, bỏ fallback nguồn rỗng"""
         total = 0.0
         for it in items:
             to_base, unit_price = self.unit_info(it['productId'], it['unitCode'])
@@ -258,7 +342,7 @@ class DB:
             need_base = float(it['qty']) * to_base
             lots = self.q('''
               SELECT v.batchId, v.qtyBase, b.expiryDate FROM (
-                SELECT sm.batchId, SUM(sm.qty*1) AS qtyBase
+                SELECT sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
                 FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
               ) v JOIN batches b ON b.id=v.batchId
               WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
@@ -270,7 +354,7 @@ class DB:
                 
                 # Tìm các nguồn kinh phí khả dụng của lô hàng này
                 funds_avail = self.q('''
-                    SELECT fundSource, SUM(qty*1) AS qb
+                    SELECT fundSource, SUM(COALESCE(qtyBase, qty)) AS qb
                     FROM stock_movements
                     WHERE productId=? AND batchId=?
                     GROUP BY fundSource
@@ -278,7 +362,7 @@ class DB:
                 ''', (it['productId'], lot['batchId']))
                 
                 if not funds_avail:
-                    funds_avail = [{'fundSource': '', 'qb': take_base}]
+                    raise Exception(f"Lô hàng #{lot['batchId']} không còn nguồn kinh phí khả dụng")
                 
                 lot_need_base = take_base
                 for fa in funds_avail:
@@ -286,17 +370,16 @@ class DB:
                         break
                     fa_qty = float(fa['qb'])
                     take_fa = min(lot_need_base, fa_qty)
-                    take_fa_in_unit = take_fa / to_base
                     fund_name = fa['fundSource'] or ''
                     
-                    self.conn.execute("INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, fundSource) VALUES(?,?,?,?, 'SALE', ?)",
-                                      (it['productId'], lot['batchId'], it['unitCode'], -take_fa_in_unit, fund_name))
+                    self.conn.execute(
+                        "INSERT INTO stock_movements(productId, batchId, unitCode, qty, qtyBase, originalQty, originalUnit, type, fundSource) VALUES(?,?,?,?,?,?,?, 'SALE', ?)",
+                        (it['productId'], lot['batchId'], it['unitCode'], -take_fa / to_base, -take_fa, float(it['qty']), it['unitCode'], fund_name)
+                    )
                     lot_need_base -= take_fa
 
-                if lot_need_base > 0.0001:
-                    take_fa_in_unit = lot_need_base / to_base
-                    self.conn.execute("INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, fundSource) VALUES(?,?,?,?, 'SALE', ?)",
-                                      (it['productId'], lot['batchId'], it['unitCode'], -take_fa_in_unit, ''))
+                if lot_need_base > 0.001:
+                    raise Exception(f"Nguồn kinh phí không đủ cho lô hàng #{lot['batchId']}, còn thiếu {lot_need_base:.4f} đơn vị cơ sở")
                 
                 need_base -= take_base
             if need_base > 0: raise Exception('Không đủ tồn kho')
@@ -326,13 +409,31 @@ class DB:
             self.conn.rollback(); raise
 
     # dispatch (Xuất kho / Cấp phát — FEFO)
+    def _next_note_number(self, prefix):
+        """Lỗi 9: Sinh số phiếu tuần tự dạng PN-2026-000001 / PX-2026-000001"""
+        year = dt.datetime.now().strftime('%Y')
+        table = 'purchase_notes' if prefix == 'PN' else 'dispatch_notes'
+        row = self.q(
+            f"SELECT noteNumber FROM {table} WHERE noteNumber LIKE ? ORDER BY noteNumber DESC LIMIT 1",
+            (f"{prefix}-{year}-%",)
+        )
+        if row:
+            try:
+                last_seq = int(row[0]['noteNumber'].split('-')[-1])
+                next_seq = last_seq + 1
+            except (ValueError, IndexError):
+                next_seq = 1
+        else:
+            next_seq = 1
+        return f"{prefix}-{year}-{next_seq:06d}"
+
     def dispatch(self, items, receiving_unit: str, reason: str = 'Cấp phát', note: str = '', date_str: str = None):
         """
         Xuất kho / cấp phát hàng theo FEFO.
-        items: list of {'productId', 'unitCode', 'qty'}
-        receiving_unit: tên đơn vị nhận (VD: TYT Phường X)
-        reason: Cấp phát / Hủy / Chuyển kho
-        date_str: Ngày xuất tùy chọn (dạng YYYY-MM-DD), nếu None thì lấy thời gian hiện tại
+        Lỗi 1: Sử dụng qtyBase cho mọi tính toán
+        Lỗi 2: Bỏ fallback nguồn rỗng, validate nguồn kinh phí
+        Lỗi 6: Ghi referenceType/Id/ItemId liên kết chứng từ
+        Lỗi 9: Số phiếu tuần tự unique
         """
         dispatch_details = []
         try:
@@ -344,8 +445,8 @@ class DB:
             else:
                 created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-            # Tạo phiếu xuất kho
-            note_number = f"PX-{dt.datetime.now().strftime('%y%m%d%H%M%S')}"
+            # Lỗi 9: Tạo số phiếu tuần tự
+            note_number = self._next_note_number('PX')
             cur = self.conn.execute(
                 "INSERT INTO dispatch_notes(noteNumber, receivingUnit, reason, note, createdAt) VALUES(?,?,?,?,?)",
                 (note_number, receiving_unit, reason, note, created_at)
@@ -357,6 +458,8 @@ class DB:
                 if to_base is None:
                     raise Exception(f"Sản phẩm #{it['productId']} chưa có đơn vị cơ sở")
                 need_base = float(it['qty']) * to_base
+                original_qty = float(it['qty'])
+                original_unit = it['unitCode']
 
                 # Lấy lô hàng: thủ công nếu chọn trước, hoặc FEFO nếu để tự động
                 if it.get('lotNo'):
@@ -369,7 +472,7 @@ class DB:
                                  ORDER BY sm2.id DESC LIMIT 1
                              ), 0) AS costBase
                       FROM (
-                        SELECT sm.productId, sm.batchId, SUM(sm.qty*1) AS qtyBase
+                        SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
                         FROM stock_movements sm 
                         WHERE sm.productId=? AND sm.batchId=(
                             SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
@@ -387,7 +490,7 @@ class DB:
                                  ORDER BY sm2.id DESC LIMIT 1
                              ), 0) AS costBase
                       FROM (
-                        SELECT sm.productId, sm.batchId, SUM(sm.qty*1) AS qtyBase
+                        SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
                         FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
                       ) v JOIN batches b ON b.id=v.batchId
                       WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE('now')
@@ -399,18 +502,23 @@ class DB:
                         break
                     take_base = min(need_base, float(lot['qtyBase']))
                     
-                    # Tìm các nguồn kinh phí khả dụng của lô hàng này
+                    # Lỗi 2: Tìm nguồn kinh phí — không fallback nguồn rỗng
                     if it.get('fundSource') is not None:
                         funds_avail = self.q('''
-                            SELECT fundSource, SUM(qty*1) AS qb
+                            SELECT fundSource, SUM(COALESCE(qtyBase, qty)) AS qb
                             FROM stock_movements
                             WHERE productId=? AND batchId=? AND COALESCE(fundSource, '')=?
                             GROUP BY fundSource
                             HAVING qb > 0
                         ''', (it['productId'], lot['batchId'], it['fundSource']))
+                        if not funds_avail:
+                            fund_label = it['fundSource'] or '(không rõ)'
+                            raise Exception(
+                                f"Nguồn '{fund_label}' không còn tồn kho cho sản phẩm #{it['productId']}, lô {lot['lotNo']}"
+                            )
                     else:
                         funds_avail = self.q('''
-                            SELECT fundSource, SUM(qty*1) AS qb
+                            SELECT fundSource, SUM(COALESCE(qtyBase, qty)) AS qb
                             FROM stock_movements
                             WHERE productId=? AND batchId=?
                             GROUP BY fundSource
@@ -418,7 +526,7 @@ class DB:
                         ''', (it['productId'], lot['batchId']))
                     
                     if not funds_avail:
-                        funds_avail = [{'fundSource': '', 'qb': take_base}]
+                        raise Exception(f"Lô {lot['lotNo']} không còn nguồn kinh phí khả dụng")
                     
                     lot_need_base = take_base
                     for fa in funds_avail:
@@ -430,14 +538,23 @@ class DB:
                         cost_fa_in_unit = float(lot['costBase']) * to_base
                         fund_name = fa['fundSource'] or ''
                         
-                        self.conn.execute(
-                            "INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, cost, receivingUnit, reason, fundSource, createdAt) VALUES(?,?,?,?, 'DISPATCH', ?,?,?,?,?)",
-                            (it['productId'], lot['batchId'], it['unitCode'], -take_fa_in_unit, cost_fa_in_unit, receiving_unit, reason, fund_name, created_at)
-                        )
-                        # Ghi chi tiết phiếu xuất
-                        self.conn.execute(
+                        # Lỗi 6: Ghi dispatch_items trước để lấy ID
+                        di_cur = self.conn.execute(
                             "INSERT INTO dispatch_items(dispatchId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost, fundSource) VALUES(?,?,?,?,?,?,?,?,?)",
                             (dispatch_id, it['productId'], lot['batchId'], it['unitCode'], take_fa_in_unit, lot['lotNo'], lot['expiryDate'], cost_fa_in_unit, fund_name)
+                        )
+                        dispatch_item_id = di_cur.lastrowid
+                        
+                        # Lỗi 1+6: Ghi stock_movements với qtyBase và referenceId
+                        self.conn.execute(
+                            """INSERT INTO stock_movements(
+                                productId, batchId, unitCode, qty, qtyBase, originalQty, originalUnit,
+                                type, cost, receivingUnit, reason, fundSource,
+                                referenceType, referenceId, referenceItemId, createdAt
+                            ) VALUES(?,?,?,?,?,?,?, 'DISPATCH', ?,?,?,?,  'DISPATCH',?,?,?)""",
+                            (it['productId'], lot['batchId'], it['unitCode'], -take_fa_in_unit, -take_fa, original_qty, original_unit,
+                             cost_fa_in_unit, receiving_unit, reason, fund_name,
+                             dispatch_id, dispatch_item_id, created_at)
                         )
                         dispatch_details.append({
                             'productId': it['productId'],
@@ -452,29 +569,11 @@ class DB:
                         })
                         lot_need_base -= take_fa
 
-                    # Phòng hờ sai số làm tròn hoặc trường hợp đặc biệt khác
-                    if lot_need_base > 0.0001:
-                        take_fa_in_unit = lot_need_base / to_base
-                        cost_fa_in_unit = float(lot['costBase']) * to_base
-                        self.conn.execute(
-                            "INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, cost, receivingUnit, reason, fundSource, createdAt) VALUES(?,?,?,?, 'DISPATCH', ?,?,?,?,?)",
-                            (it['productId'], lot['batchId'], it['unitCode'], -take_fa_in_unit, cost_fa_in_unit, receiving_unit, reason, '', created_at)
+                    if lot_need_base > 0.001:
+                        raise Exception(
+                            f"Nguồn kinh phí không đủ cho sản phẩm #{it['productId']}, lô {lot['lotNo']}. "
+                            f"Còn thiếu {lot_need_base:.4f} đơn vị cơ sở"
                         )
-                        self.conn.execute(
-                            "INSERT INTO dispatch_items(dispatchId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost, fundSource) VALUES(?,?,?,?,?,?,?,?,?)",
-                            (dispatch_id, it['productId'], lot['batchId'], it['unitCode'], take_fa_in_unit, lot['lotNo'], lot['expiryDate'], cost_fa_in_unit, '')
-                        )
-                        dispatch_details.append({
-                            'productId': it['productId'],
-                            'productName': it.get('productName', f"#{it['productId']}"),
-                            'unitCode': it['unitCode'],
-                            'qty': take_fa_in_unit,
-                            'lotNo': lot['lotNo'],
-                            'expiryDate': lot['expiryDate'],
-                            'batchId': lot['batchId'],
-                            'cost': cost_fa_in_unit,
-                            'fundSource': ''
-                        })
                         
                     need_base -= take_base
 
@@ -541,7 +640,9 @@ class DB:
     def record_purchase(self, items, supplier: str, reason: str = 'Nhập kho', note: str = '', date_str: str = None):
         """
         Nhập kho thuốc, vaccine, VTYT và lưu phiếu nhập.
-        items: list of {'productId', 'unitCode', 'qty', 'lotNo', 'expiryDate', 'cost'}
+        Lỗi 1: Ghi qtyBase, originalQty, originalUnit
+        Lỗi 6: Ghi referenceType/Id/ItemId
+        Lỗi 9: Số phiếu tuần tự unique
         """
         purchase_details = []
         try:
@@ -553,8 +654,8 @@ class DB:
             else:
                 created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-            # Tạo số phiếu nhập
-            note_number = f"PN-{dt.datetime.now().strftime('%y%m%d%H%M%S')}"
+            # Lỗi 9: Tạo số phiếu nhập tuần tự
+            note_number = self._next_note_number('PN')
             cur = self.conn.execute(
                 "INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt) VALUES(?,?,?,?,?)",
                 (note_number, supplier, reason, note, created_at)
@@ -562,20 +663,34 @@ class DB:
             purchase_id = cur.lastrowid
 
             for it in items:
-                # Bảo đảm lô hàng tồn tại
+                # Bảo đảm lô hàng tồn tại (Lỗi 8: validate HSD)
                 bid = self.ensure_batch(it['productId'], it['lotNo'], it['expiryDate'])
                 fund_src = it.get('fundSource') or ''
                 
-                # Ghi chuyển động kho
-                self.conn.execute(
-                    "INSERT INTO stock_movements(productId, batchId, unitCode, qty, type, cost, receivingUnit, reason, fundSource, createdAt) VALUES(?,?,?,?, 'PURCHASE', ?,?,?,?,?)",
-                    (it['productId'], bid, it['unitCode'], float(it['qty']), float(it.get('cost') or 0), supplier, reason, fund_src, created_at)
-                )
+                # Lỗi 1: Tính qtyBase
+                to_base, _ = self.unit_info(it['productId'], it['unitCode'])
+                if to_base is None:
+                    to_base = 1.0
+                qty_val = float(it['qty'])
+                qty_base = qty_val * to_base
                 
-                # Ghi chi tiết phiếu nhập
-                self.conn.execute(
+                # Lỗi 6: Ghi purchase_items trước để lấy ID
+                pi_cur = self.conn.execute(
                     "INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost, fundSource) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (purchase_id, it['productId'], bid, it['unitCode'], float(it['qty']), it['lotNo'], it['expiryDate'], float(it.get('cost') or 0), fund_src)
+                    (purchase_id, it['productId'], bid, it['unitCode'], qty_val, it['lotNo'], it['expiryDate'], float(it.get('cost') or 0), fund_src)
+                )
+                purchase_item_id = pi_cur.lastrowid
+                
+                # Lỗi 1+6: Ghi stock_movements với qtyBase và referenceId
+                self.conn.execute(
+                    """INSERT INTO stock_movements(
+                        productId, batchId, unitCode, qty, qtyBase, originalQty, originalUnit,
+                        type, cost, receivingUnit, reason, fundSource,
+                        referenceType, referenceId, referenceItemId, createdAt
+                    ) VALUES(?,?,?,?,?,?,?, 'PURCHASE', ?,?,?,?,  'PURCHASE',?,?,?)""",
+                    (it['productId'], bid, it['unitCode'], qty_val, qty_base, qty_val, it['unitCode'],
+                     float(it.get('cost') or 0), supplier, reason, fund_src,
+                     purchase_id, purchase_item_id, created_at)
                 )
                 
                 # Đồng bộ giá bán base = giá nhập
@@ -588,7 +703,7 @@ class DB:
                     'productId': it['productId'],
                     'productName': it.get('productName', f"#{it['productId']}"),
                     'unitCode': it['unitCode'],
-                    'qty': float(it['qty']),
+                    'qty': qty_val,
                     'lotNo': it['lotNo'],
                     'expiryDate': it['expiryDate'],
                     'cost': float(it.get('cost') or 0),

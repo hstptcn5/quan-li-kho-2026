@@ -69,13 +69,14 @@ pyinstaller ^
     --add-data="%PYZBAR_DIR%;pyzbar" ^
     --add-binary="_pyzbar_dlls\libzbar-64.dll;." ^
     --add-binary="_pyzbar_dlls\libiconv.dll;." ^
+    --add-binary="_pyzbar_dlls\libzbar-64.dll;pyzbar" ^
+    --add-binary="_pyzbar_dlls\libiconv.dll;pyzbar" ^
     --hidden-import=pandas ^
     --hidden-import=matplotlib ^
     --hidden-import=cv2 ^
     --hidden-import=pyzbar ^
     --hidden-import=reportlab ^
     --hidden-import=ttkbootstrap ^
-    --hidden-import=cryptography ^
     --hidden-import=schedule ^
     --hidden-import=PIL ^
     --hidden-import=openpyxl ^

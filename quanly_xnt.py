@@ -3,29 +3,6 @@
 import os
 import sys
 
-# Tự động sửa lỗi ui.py nếu bị lỗi do thao tác ghi tệp gián đoạn
-def fix_ui():
-    ui_path = os.path.join(os.path.dirname(__file__), "ui.py")
-    if os.path.exists(ui_path):
-        try:
-            with open(ui_path, 'rb') as f:
-                content = f.read()
-            corrupted = b"    def create_tooltip(self, widget, text):widget, text):_note)"
-            if corrupted in content:
-                idx1 = content.find(corrupted)
-                next_part = content[idx1 + len(corrupted):]
-                idx2 = next_part.find(b"    def create_tooltip(self, widget, text):")
-                if idx2 != -1:
-                    cleaned = content[:idx1] + next_part[idx2:]
-                    text = cleaned.decode('utf-8', errors='ignore')
-                    with open(ui_path, 'w', encoding='utf-8', newline='') as f:
-                        f.write(text)
-                    print("Auto-fixed ui.py corruption successfully.")
-        except Exception as e:
-            print("Error auto-fixing ui.py:", e)
-
-fix_ui()
-
 
 # =============================================================================
 # QUAN TRỌNG: Đoạn code dưới đây PHẢI chạy TRƯỚC mọi lệnh import khác

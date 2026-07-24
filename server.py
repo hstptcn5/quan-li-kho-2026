@@ -1,4 +1,3 @@
-# server.py — Máy chủ HTTP phục vụ ứng dụng Kiểm Kho Di Động
 import http.server
 import socket
 import threading
@@ -7,6 +6,10 @@ import urllib.parse
 import sqlite3
 import tempfile
 import os
+import uuid
+import time
+import random
+import html
 from datetime import datetime
 import datetime as dt_module
 
@@ -19,6 +22,12 @@ try:
     QR_CODE_AVAILABLE = True
 except ImportError:
     pass
+
+# Module-level variables for authentication (Lỗi 3)
+SERVER_PIN = ""
+ACTIVE_TOKENS = {}      # token -> {"ip": ip, "expiry": float}
+FAILED_ATTEMPTS = {}    # ip -> {"count": int, "blocked_until": float}
+
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -36,7 +45,42 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
         # Mute logging to keep console clean
         pass
         
+    def check_auth(self):
+        """Lỗi 3: Kiểm tra token hợp lệ cho LAN API"""
+        parsed_url = urllib.parse.urlparse(self.path)
+        path = parsed_url.path
+        # Không yêu cầu auth cho trang chủ, tĩnh và API đăng nhập
+        if path in ["/", "/index.html", "/api/auth"] or path.startswith("/static/"):
+            return True
+            
+        token = None
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        else:
+            query = urllib.parse.parse_qs(parsed_url.query)
+            token = query.get("token", [""])[0].strip()
+            
+        if not token:
+            self.send_json({"success": False, "message": "Yêu cầu xác thực PIN", "auth_required": True}, 401)
+            return False
+            
+        token_info = ACTIVE_TOKENS.get(token)
+        if not token_info:
+            self.send_json({"success": False, "message": "Phiên làm việc không hợp lệ hoặc đã hết hạn", "auth_required": True}, 401)
+            return False
+            
+        if time.time() > token_info["expiry"]:
+            ACTIVE_TOKENS.pop(token, None)
+            self.send_json({"success": False, "message": "Phiên làm việc đã hết hạn", "auth_required": True}, 401)
+            return False
+            
+        return True
+
     def do_GET(self):
+        if not self.check_auth():
+            return
+            
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
         query = urllib.parse.parse_qs(parsed_url.query)
@@ -44,8 +88,27 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
         if path == "/" or path == "/index.html":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            # CSP Header (Bug 7)
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'")
             self.end_headers()
             self.wfile.write(MOBILE_HTML.encode("utf-8"))
+            
+        elif path == "/static/html5-qrcode.min.js":
+            js_file_path = os.path.join(os.path.dirname(__file__), "static", "html5-qrcode.min.js")
+            if os.path.exists(js_file_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.end_headers()
+                try:
+                    with open(js_file_path, "rb") as f:
+                        self.wfile.write(f.read())
+                except Exception as e:
+                    print(f"Error serving offline QR js: {e}")
+                    self.send_response(500)
+                    self.end_headers()
+            else:
+                self.send_response(404)
+                self.end_headers()
             
         elif path == "/api/stock":
             barcode = query.get("barcode", [""])[0].strip()
@@ -74,7 +137,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 
                 # Lấy thông tin tồn kho chi tiết từng lô
                 batches_rows = conn.execute("""
-                    SELECT b.lotNo, b.expiryDate, COALESCE(SUM(sm.qty), 0) as qtyBase
+                    SELECT b.lotNo, b.expiryDate, COALESCE(SUM(sm.qtyBase), 0) as qtyBase
                      FROM batches b
                     LEFT JOIN stock_movements sm ON sm.productId = b.productId AND sm.batchId = b.id
                     WHERE b.productId = ?
@@ -110,7 +173,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 })
                 conn.close()
             except Exception as e:
-                self.send_json({"success": False, "message": f"Database error: {str(e)}"}, 500)
+                print(f"Error in api/stock: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi tải thông tin lô hàng"}, 500)
             
         elif path == "/api/products":
             q_term = query.get("q", [""])[0].strip()
@@ -126,12 +190,12 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         JOIN batches b ON p.id = b.productId
                         JOIN stock_movements sm ON sm.productId = b.productId AND sm.batchId = b.id
                         GROUP BY p.id, b.id
-                        HAVING SUM(sm.qty) > 0.001 AND DATE(b.expiryDate) <= DATE('now', '+180 days')
+                        HAVING SUM(sm.qtyBase) > 0.001 AND DATE(b.expiryDate) <= DATE('now', '+180 days')
                         ORDER BY p.name ASC
                     """).fetchall()
                 elif filter_type == 'outofstock':
                     rows = conn.execute("""
-                        SELECT p.id, p.name, p.defaultUnit, p.barcode, COALESCE(SUM(sm.qty), 0) as totalQty
+                        SELECT p.id, p.name, p.defaultUnit, p.barcode, COALESCE(SUM(sm.qtyBase), 0) as totalQty
                         FROM products p
                         LEFT JOIN stock_movements sm ON sm.productId = p.id
                         GROUP BY p.id
@@ -163,7 +227,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"success": True, "products": products_list})
                 conn.close()
             except Exception as e:
-                self.send_json({"success": False, "message": f"Database error: {str(e)}"}, 500)
+                print(f"Error in api/products: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi tải danh sách sản phẩm"}, 500)
 
         elif path == "/api/dashboard-stats":
             try:
@@ -172,7 +237,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 
                 outofstock_products = conn.execute("""
                     SELECT COUNT(*) FROM (
-                        SELECT p.id, COALESCE(SUM(sm.qty), 0) as totalQty 
+                        SELECT p.id, COALESCE(SUM(sm.qtyBase), 0) as totalQty 
                         FROM products p 
                         LEFT JOIN stock_movements sm ON sm.productId = p.id 
                         GROUP BY p.id 
@@ -187,7 +252,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         JOIN batches b ON p.id = b.productId
                         JOIN stock_movements sm ON sm.productId = b.productId AND sm.batchId = b.id
                         GROUP BY p.id, b.id
-                        HAVING SUM(sm.qty) > 0.001 AND DATE(b.expiryDate) <= DATE('now', '+180 days')
+                        HAVING SUM(sm.qtyBase) > 0.001 AND DATE(b.expiryDate) <= DATE('now', '+180 days')
                     )
                 """).fetchone()[0]
                 
@@ -199,7 +264,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     "expiringProducts": expiring_products
                 })
             except Exception as e:
-                self.send_json({"success": False, "message": f"Database error: {str(e)}"}, 500)
+                print(f"Error in api/dashboard-stats: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi tải thống kê"}, 500)
             
         elif path == "/api/print-purchase":
             note_id = query.get("id", [""])[0].strip()
@@ -231,9 +297,10 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(html.encode("utf-8"))
             except Exception as e:
+                print(f"Error printing purchase: {e}")
                 self.send_response(500)
                 self.end_headers()
-                self.wfile.write(f"Database error: {str(e)}".encode("utf-8"))
+                self.wfile.write("Lỗi hệ thống khi tải phiếu nhập".encode("utf-8"))
 
         elif path == "/api/print-dispatch":
             note_id = query.get("id", [""])[0].strip()
@@ -265,24 +332,10 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(html.encode("utf-8"))
             except Exception as e:
+                print(f"Error printing dispatch: {e}")
                 self.send_response(500)
                 self.end_headers()
-                self.wfile.write(f"Database error: {str(e)}".encode("utf-8"))
-
-        elif path == "/api/pc-print":
-            note_type = query.get("type", [""])[0].strip() # purchase or dispatch
-            note_id = query.get("id", [""])[0].strip()
-            if note_type == 'nhap':
-                note_type = 'purchase'
-            elif note_type == 'xuat':
-                note_type = 'dispatch'
-                
-            if not note_type or not note_id:
-                self.send_json({"success": False, "message": "Thiếu thông tin loại phiếu hoặc ID"}, 400)
-                return
-            
-            success, msg = self.print_to_pc_printer(note_type, note_id)
-            self.send_json({"success": success, "message": msg})
+                self.wfile.write("Lỗi hệ thống khi tải phiếu xuất".encode("utf-8"))
 
         elif path == "/api/note-details":
             note_type = query.get("type", [""])[0].strip()
@@ -485,23 +538,23 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             rows_html += f"""
             <tr>
                 <td style="text-align: center;">{idx}</td>
-                <td>{it['productName']}</td>
-                <td style="text-align: center;">{it['unitCode']}</td>
+                <td>{html.escape(it['productName'])}</td>
+                <td style="text-align: center;">{html.escape(it['unitCode'])}</td>
                 <td style="text-align: right;">{qty_str}</td>
                 <td style="text-align: right;">{cost_str}</td>
                 <td style="text-align: right;">{amount_str}</td>
-                <td style="text-align: center;">{it['lotNo']}</td>
+                <td style="text-align: center;">{html.escape(it['lotNo'] or '')}</td>
                 <td style="text-align: center;">{expiry_formatted}</td>
             </tr>
             """
             
         total_amount_str = f"{total_amount:,.1f}".replace(".0", "") if total_amount > 0 else "0"
         
-        html = f"""<!DOCTYPE html>
+        html_out = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Phieu Nhap Kho {note['noteNumber']}</title>
+    <title>Phieu Nhap Kho {html.escape(note['noteNumber'])}</title>
     <style>
         body {{
             font-family: "Times New Roman", Times, serif;
@@ -622,17 +675,17 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
     
     <div class="title-block">
         <h1 class="title">PHIEU NHAP KHO</h1>
-        <div class="subtitle">So: {note['noteNumber']}</div>
+        <div class="subtitle">So: {html.escape(note['noteNumber'])}</div>
     </div>
     
     <table class="info-table">
         <tr>
             <td style="width: 180px;"><strong>Nguon cap / Nha CC:</strong></td>
-            <td>{note['supplier']}</td>
+            <td>{html.escape(note['supplier'])}</td>
         </tr>
         <tr>
             <td><strong>Ly do nhap:</strong></td>
-            <td>{note['reason']}</td>
+            <td>{html.escape(note['reason'])}</td>
         </tr>
         <tr>
             <td><strong>Kho nhap:</strong></td>
@@ -640,11 +693,11 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
         </tr>
         <tr>
             <td><strong>Ngay nhap:</strong></td>
-            <td>{date_formatted}</td>
+            <td>{html.escape(date_formatted)}</td>
         </tr>
         <tr>
             <td><strong>Ghi chu:</strong></td>
-            <td>{note['note'] or 'Khong'}</td>
+            <td>{html.escape(note['note'] or 'Khong')}</td>
         </tr>
     </table>
     
@@ -696,7 +749,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
 </body>
 </html>
 """
-        return html
+        return html_out
 
     def render_print_dispatch_html(self, note, items):
         created_str = note['createdAt']
@@ -722,20 +775,20 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             rows_html += f"""
             <tr>
                 <td style="text-align: center;">{idx}</td>
-                <td>{it['productName']}</td>
-                <td style="text-align: center;">{it['unitCode']}</td>
+                <td>{html.escape(it['productName'])}</td>
+                <td style="text-align: center;">{html.escape(it['unitCode'])}</td>
                 <td style="text-align: right;">{qty_str}</td>
-                <td style="text-align: center;">{it['lotNo']}</td>
+                <td style="text-align: center;">{html.escape(it['lotNo'] or '')}</td>
                 <td style="text-align: center;">{expiry_formatted}</td>
                 <td></td>
             </tr>
             """
             
-        html = f"""<!DOCTYPE html>
+        html_out = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Phieu Xuat Kho {note['noteNumber']}</title>
+    <title>Phieu Xuat Kho {html.escape(note['noteNumber'])}</title>
     <style>
         body {{
             font-family: "Times New Roman", Times, serif;
@@ -856,17 +909,17 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
     
     <div class="title-block">
         <h1 class="title">PHIEU XUAT KHO</h1>
-        <div class="subtitle">So: {note['noteNumber']}</div>
+        <div class="subtitle">So: {html.escape(note['noteNumber'])}</div>
     </div>
     
     <table class="info-table">
         <tr>
             <td style="width: 180px;"><strong>Don vi nhan:</strong></td>
-            <td>{note['receivingUnit']}</td>
+            <td>{html.escape(note['receivingUnit'])}</td>
         </tr>
         <tr>
             <td><strong>Ly do xuat:</strong></td>
-            <td>{note['reason']}</td>
+            <td>{html.escape(note['reason'])}</td>
         </tr>
         <tr>
             <td><strong>Kho xuat:</strong></td>
@@ -874,11 +927,11 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
         </tr>
         <tr>
             <td><strong>Ngay xuat:</strong></td>
-            <td>{date_formatted}</td>
+            <td>{html.escape(date_formatted)}</td>
         </tr>
         <tr>
             <td><strong>Ghi chu:</strong></td>
-            <td>{note['note'] or 'Khong'}</td>
+            <td>{html.escape(note['note'] or 'Khong')}</td>
         </tr>
     </table>
     
@@ -924,7 +977,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
 </body>
 </html>
 """
-        return html
+        return html_out
 
     def print_to_pc_printer(self, note_type, note_id):
         try:
@@ -1041,19 +1094,19 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             
             if note_type == 'purchase':
                 info_lines = [
-                    f"<b>Nguồn cấp / Nhà CC:</b> {note['supplier']}",
-                    f"<b>Lý do nhập:</b> {note['reason']}",
+                    f"<b>Nguồn cấp / Nhà CC:</b> {html.escape(note['supplier'])}",
+                    f"<b>Lý do nhập:</b> {html.escape(note['reason'])}",
                     f"<b>Kho nhập:</b> Kho Dược CDC Cần Thơ",
                     f"<b>Ngày nhập:</b> {created_at_dt.strftime('%d/%m/%Y')}",
-                    f"<b>Ghi chú:</b> {note['note'] or 'Không'}"
+                    f"<b>Ghi chú:</b> {html.escape(note['note'] or 'Không')}"
                 ]
             else:
                 info_lines = [
-                    f"<b>Đơn vị nhận:</b> {note['receivingUnit']}",
-                    f"<b>Lý do xuất:</b> {note['reason']}",
+                    f"<b>Đơn vị nhận:</b> {html.escape(note['receivingUnit'])}",
+                    f"<b>Lý do xuất:</b> {html.escape(note['reason'])}",
                     f"<b>Kho xuất:</b> Kho Dược CDC Cần Thơ",
                     f"<b>Ngày xuất:</b> {created_at_dt.strftime('%d/%m/%Y')}",
-                    f"<b>Ghi chú:</b> {note['note'] or 'Không'}"
+                    f"<b>Ghi chú:</b> {html.escape(note['note'] or 'Không')}"
                 ]
             for line in info_lines:
                 story.append(Paragraph(line, style_info))
@@ -1082,13 +1135,13 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     total_sum += sub_total
                     table_data.append([
                         Paragraph(str(idx), style_cell_center),
-                        Paragraph(it['productName'], style_cell),
-                        Paragraph(it['unitCode'], style_cell_center),
+                        Paragraph(html.escape(it['productName']), style_cell),
+                        Paragraph(html.escape(it['unitCode']), style_cell_center),
                         Paragraph(f"{qty:g}", style_cell_right),
                         Paragraph(f"{cost:,.0f}", style_cell_right),
                         Paragraph(f"{sub_total:,.0f}", style_cell_right),
-                        Paragraph(it['lotNo'] or '', style_cell_center),
-                        Paragraph(it['expiryDate'] or '', style_cell_center)
+                        Paragraph(html.escape(it['lotNo'] or ''), style_cell_center),
+                        Paragraph(html.escape(it['expiryDate'] or ''), style_cell_center)
                     ])
                 table_data.append([
                     Paragraph("<b>Tổng cộng</b>", style_cell_center),
@@ -1127,11 +1180,11 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     qty = float(it['qty'])
                     table_data.append([
                         Paragraph(str(idx), style_cell_center),
-                        Paragraph(it['productName'], style_cell),
-                        Paragraph(it['unitCode'], style_cell_center),
+                        Paragraph(html.escape(it['productName']), style_cell),
+                        Paragraph(html.escape(it['unitCode']), style_cell_center),
                         Paragraph(f"{qty:g}", style_cell_right),
-                        Paragraph(it['lotNo'] or '', style_cell_center),
-                        Paragraph(it['expiryDate'] or '', style_cell_center),
+                        Paragraph(html.escape(it['lotNo'] or ''), style_cell_center),
+                        Paragraph(html.escape(it['expiryDate'] or ''), style_cell_center),
                         Paragraph('', style_cell)
                     ])
                 col_widths = [30, 200, 50, 60, 70, 70, 50]
@@ -1216,6 +1269,9 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             return False, f"Lỗi tạo phiếu in: {str(e)}"
 
     def do_POST(self):
+        if not self.check_auth():
+            return
+            
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
         
@@ -1228,7 +1284,64 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_json({"success": False, "message": "Dữ liệu JSON không hợp lệ"}, 400)
             return
             
-        if path == "/api/create-product":
+        if path == "/api/auth":
+            client_ip = self.client_address[0]
+            now = time.time()
+            block_info = FAILED_ATTEMPTS.get(client_ip)
+            if block_info and now < block_info["blocked_until"]:
+                secs_left = int(block_info["blocked_until"] - now)
+                self.send_json({"success": False, "message": f"IP bị tạm khóa. Vui lòng thử lại sau {secs_left} giây"}, 429)
+                return
+                
+            pin = data.get("pin", "").strip()
+            if not pin:
+                self.send_json({"success": False, "message": "Mã PIN không được để trống"}, 400)
+                return
+                
+            if pin == SERVER_PIN:
+                FAILED_ATTEMPTS.pop(client_ip, None)
+                token = str(uuid.uuid4())
+                ACTIVE_TOKENS[token] = {
+                    "ip": client_ip,
+                    "expiry": now + 8 * 3600  # Hạn dùng 8 giờ
+                }
+                # Thêm audit log
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("INSERT INTO audit_logs (ip, action, details) VALUES (?, ?, ?)", 
+                                 (client_ip, "LOGIN", "Đăng nhập thành công di động"))
+                    conn.commit()
+                    conn.close()
+                except:
+                    pass
+                self.send_json({"success": True, "token": token})
+            else:
+                if not block_info:
+                    FAILED_ATTEMPTS[client_ip] = {"count": 1, "blocked_until": 0}
+                else:
+                    FAILED_ATTEMPTS[client_ip]["count"] += 1
+                    if FAILED_ATTEMPTS[client_ip]["count"] >= 5:
+                        FAILED_ATTEMPTS[client_ip]["blocked_until"] = now + 5 * 60
+                        
+                attempts_left = 5 - FAILED_ATTEMPTS[client_ip]["count"] if FAILED_ATTEMPTS[client_ip]["count"] < 5 else 0
+                self.send_json({"success": False, "message": f"Mã PIN sai. Còn {attempts_left} lần thử"}, 401)
+                
+        elif path == "/api/pc-print":
+            note_type = str(data.get("type", "")).strip()
+            note_id = str(data.get("id", "")).strip()
+            if note_type == 'nhap':
+                note_type = 'purchase'
+            elif note_type == 'xuat':
+                note_type = 'dispatch'
+                
+            if not note_type or not note_id:
+                self.send_json({"success": False, "message": "Thiếu thông tin loại phiếu hoặc ID"}, 400)
+                return
+            
+            success, msg = self.print_to_pc_printer(note_type, note_id)
+            self.send_json({"success": success, "message": msg})
+            
+        elif path == "/api/create-product":
             name = data.get("name", "").strip()
             default_unit = data.get("defaultUnit", "").strip()
             barcode = data.get("barcode", "").strip() or None
@@ -1257,6 +1370,10 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         VALUES (?, ?, ?, ?, ?, ?)
                     """, (name, default_unit, barcode, product_type, reg_number, now_str))
                     product_id = cur.lastrowid
+                    conn.execute(
+                        "INSERT OR IGNORE INTO product_units (productId, unitCode, toBaseQty, price) VALUES (?, ?, 1, 0)",
+                        (product_id, default_unit)
+                    )
                 
                 conn.close()
                 
@@ -1270,7 +1387,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     "barcode": barcode or str(product_id)
                 })
             except Exception as e:
-                self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
+                print(f"Error in api/create-product: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi tạo sản phẩm"}, 500)
                 
         elif path == "/api/purchase":
             items = data.get("items")
@@ -1351,7 +1469,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     "noteNumber": note_num
                 })
             except Exception as e:
-                self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
+                print(f"Error in api/purchase: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi thực hiện nhập kho"}, 500)
                 
         elif path == "/api/dispatch":
             items = data.get("items")
@@ -1434,7 +1553,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     "noteNumber": note_num
                 })
             except Exception as e:
-                self.send_json({"success": False, "message": f"Lỗi xuất kho: {str(e)}"}, 500)
+                print(f"Error in api/dispatch: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi thực hiện xuất kho"}, 500)
                 
         elif path == "/api/update-barcode":
             product_id = data.get("productId")
@@ -1464,8 +1584,40 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     
                 self.send_json({"success": True, "message": "Đã liên kết mã vạch thành công!"})
             except Exception as e:
-                self.send_json({"success": False, "message": f"Lỗi cơ sở dữ liệu: {str(e)}"}, 500)
+                print(f"Error in api/update-barcode: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi gán mã vạch"}, 500)
                 
+        elif path == "/api/temperature-log":
+            log_date = data.get("logDate", "").strip()
+            session = data.get("session", "Sáng").strip()
+            location = data.get("location", "").strip()
+            temperature = data.get("temperature")
+            humidity = data.get("humidity")
+            recorded_by = data.get("recordedBy", "").strip()
+
+            if not log_date or not location or temperature is None:
+                self.send_json({"success": False, "message": "Vui lòng nhập đầy đủ Ngày, Vị trí và Nhiệt độ"}, 400)
+                return
+
+            try:
+                temp_val = float(temperature)
+                humidity_val = float(humidity) if humidity not in (None, "", "NaN") else None
+            except (ValueError, TypeError):
+                self.send_json({"success": False, "message": "Nhiệt độ/Độ ẩm không hợp lệ"}, 400)
+                return
+
+            try:
+                db = DB(DB_PATH)
+                db.add_temperature_log(log_date, session, location, temp_val, humidity_val, recorded_by)
+
+                if hasattr(self.server, 'app_instance') and self.server.app_instance:
+                    self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
+
+                self.send_json({"success": True, "message": f"Đã ghi nhận nhiệt độ {temp_val}°C tại {location}"})
+            except Exception as e:
+                print(f"Error in api/temperature-log: {e}")
+                self.send_json({"success": False, "message": "Lỗi hệ thống khi ghi nhận nhiệt độ"}, 500)
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -1488,6 +1640,33 @@ class MobileInventoryServer(threading.Thread):
         self.is_running = False
         
     def run(self):
+        # Tạo mã PIN 6 số ngẫu nhiên cho server (Lỗi 3)
+        global SERVER_PIN
+        import random
+        SERVER_PIN = "".join(random.choices("0123456789", k=6))
+
+        # Đảm bảo thư mục static và tệp tin html5-qrcode.min.js tồn tại ngoại tuyến (Lỗi 7)
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        os.makedirs(static_dir, exist_ok=True)
+        js_path = os.path.join(static_dir, "html5-qrcode.min.js")
+        if not os.path.exists(js_path):
+            src_path = r"C:\Users\Admin\.gemini\antigravity-ide\brain\a237df22-b1fc-440b-b086-36b6290e8f80\.system_generated\steps\128\content.md"
+            if os.path.exists(src_path):
+                try:
+                    with open(src_path, "r", encoding="utf-8") as sf:
+                        lines = sf.readlines()
+                    start_idx = 0
+                    for idx, line in enumerate(lines):
+                        if line.strip().startswith("var __Html5QrcodeLibrary__;"):
+                            start_idx = idx
+                            break
+                    js_content = "".join(lines[start_idx:])
+                    with open(js_path, "w", encoding="utf-8") as df:
+                        df.write(js_content)
+                    print(f"Đã giải nén thư viện QR offline tại: {js_path}")
+                except Exception as e:
+                    print(f"Không thể sao chép tệp tin static: {e}")
+
         attempts = 0
         while attempts < 10:
             try:
@@ -1496,6 +1675,7 @@ class MobileInventoryServer(threading.Thread):
                 self.server.app_instance = self.app_instance
                 self.is_running = True
                 print(f"Mobile inventory server started on http://{self.host}:{self.port}")
+                print(f"Xác thực PIN di động: {SERVER_PIN}")
                 self.server.serve_forever()
                 break
             except Exception as e:
@@ -2518,10 +2698,132 @@ MOBILE_HTML = """<!DOCTYPE html>
                 </div>
             </div>
         </div>
+    <!-- Màn hình xác thực PIN (Lỗi 3) -->
+    <div id="auth-modal" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.9); backdrop-filter: blur(12px); z-index: 9999; align-items: center; justify-content: center; padding: 20px;">
+        <div class="card" style="width: 100%; max-width: 360px; text-align: center; border: 1px solid var(--glass-border); background: rgba(30, 41, 59, 0.7); box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);">
+            <div style="font-size: 3rem; margin-bottom: 10px;">🔐</div>
+            <h2 style="font-size: 1.25rem; font-weight: bold; margin-bottom: 5px; color: #fff;">Xác thực thiết bị</h2>
+            <p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 20px;">Vui lòng nhập mã PIN hiển thị trên màn hình Desktop của thủ kho.</p>
+            <div style="margin-bottom: 20px;">
+                <input type="password" id="pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="Mã PIN 6 số" style="width: 100%; padding: 12px; font-size: 1.25rem; text-align: center; letter-spacing: 0.5em; border-radius: 8px; border: 1px solid var(--glass-border); background: rgba(15, 23, 42, 0.6); color: #fff; outline: none;">
+            </div>
+            <button id="auth-btn" onclick="submitPin()" style="width: 100%; padding: 12px; background: var(--primary); border: none; border-radius: 8px; color: white; font-weight: bold; font-size: 1rem; cursor: pointer; transition: all 0.2s;">Xác nhận</button>
+            <div id="auth-error" style="color: #ef4444; font-size: 0.875rem; margin-top: 10px; font-weight: bold;"></div>
+        </div>
     </div>
 
-    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script src="/static/html5-qrcode.min.js"></script>
     <script>
+        // Override fetch to include token and handle 401 (Lỗi 3)
+        const originalFetch = window.fetch;
+        window.fetch = function(url, options = {}) {
+            const token = localStorage.getItem('inventory_token') || '';
+            options.headers = options.headers || {};
+            if (token) {
+                options.headers['Authorization'] = `Bearer ${token}`;
+            }
+            if (typeof url === 'string') {
+                if (url.includes('/api/print-purchase') || url.includes('/api/print-dispatch')) {
+                    if (!url.includes('token=')) {
+                        url += (url.includes('?') ? '&' : '?') + `token=${token}`;
+                    }
+                }
+                // Tự động chuyển /api/pc-print từ GET sang POST
+                if (url.startsWith('/api/pc-print')) {
+                    try {
+                        const parsed = new URL(url, window.location.origin);
+                        const type = parsed.searchParams.get('type') || '';
+                        const id = parsed.searchParams.get('id') || '';
+                        url = '/api/pc-print';
+                        options.method = 'POST';
+                        options.headers['Content-Type'] = 'application/json';
+                        options.body = JSON.stringify({ type: type, id: id });
+                    } catch (e) {
+                        console.error('Error rewriting print URL:', e);
+                    }
+                }
+            }
+            return originalFetch(url, options).then(response => {
+                if (response.status === 401) {
+                    localStorage.removeItem('inventory_token');
+                    showAuthModal();
+                    throw new Error('Unauthorized');
+                }
+                return response;
+            });
+        };
+
+        function showAuthModal() {
+            document.getElementById('pin-input').value = '';
+            document.getElementById('auth-error').textContent = '';
+            document.getElementById('auth-modal').style.setProperty('display', 'flex', 'important');
+        }
+        
+        function hideAuthModal() {
+            document.getElementById('auth-modal').style.setProperty('display', 'none', 'important');
+        }
+
+        function submitPin() {
+            const pin = document.getElementById('pin-input').value.trim();
+            const errorDiv = document.getElementById('auth-error');
+            const authBtn = document.getElementById('auth-btn');
+            errorDiv.textContent = '';
+            
+            if (pin.length === 0) {
+                errorDiv.textContent = 'Vui lòng nhập mã PIN';
+                return;
+            }
+            
+            authBtn.disabled = true;
+            authBtn.textContent = 'Đang xác thực...';
+            
+            originalFetch('/api/auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pin: pin })
+            })
+            .then(res => res.json())
+            .then(data => {
+                authBtn.disabled = false;
+                authBtn.textContent = 'Xác nhận';
+                if (data.success) {
+                    localStorage.setItem('inventory_token', data.token);
+                    hideAuthModal();
+                    showToast('Xác thực PIN thành công', 'success');
+                    updateCartStatus();
+                    loadDashboardStats();
+                    loadPartnersAndFunds();
+                    switchTab('tab-scan');
+                } else {
+                    errorDiv.textContent = data.message || 'Mã PIN không đúng';
+                }
+            })
+            .catch(err => {
+                authBtn.disabled = false;
+                authBtn.textContent = 'Xác nhận';
+                errorDiv.textContent = 'Không thể kết nối đến máy chủ';
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const token = localStorage.getItem('inventory_token');
+            if (!token) {
+                showAuthModal();
+            } else {
+                hideAuthModal();
+            }
+            
+            // Lắng nghe sự kiện Enter cho mã PIN
+            const pinIn = document.getElementById('pin-input');
+            if (pinIn) {
+                pinIn.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        submitPin();
+                    }
+                });
+            }
+        });
+
         const barcodeInput = document.getElementById('barcode-input');
         const searchBtn = document.getElementById('search-btn');
         const resultCard = document.getElementById('result-card');
@@ -2651,8 +2953,8 @@ MOBILE_HTML = """<!DOCTYPE html>
                                     <span style="font-weight: bold; font-size: 0.8rem; padding: 2px 6px; border-radius: 4px; background: ${badgeColor}; color: #fff;">${typeLabel}</span>
                                     <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 500;">${formattedDate}</span>
                                 </div>
-                                <div style="font-weight: 600; font-size: 0.9rem; color: var(--text-light); margin: 2px 0;">Số phiếu: ${act.noteNumber}</div>
-                                <div style="font-size: 0.8rem; color: var(--text-muted);">${isPurchase ? 'Nhà cung cấp' : 'Đơn vị nhận'}: ${act.details}</div>
+                                <div style="font-weight: 600; font-size: 0.9rem; color: var(--text-light); margin: 2px 0;">Số phiếu: ${escapeHtml(act.noteNumber)}</div>
+                                <div style="font-size: 0.8rem; color: var(--text-muted);">${isPurchase ? 'Nhà cung cấp' : 'Đơn vị nhận'}: ${escapeHtml(act.details)}</div>
                                 <div style="display: flex; gap: 8px; margin-top: 6px; border-top: 1px solid var(--glass-border); padding-top: 8px;">
                                     <button onclick="showNotePreview('${act.type}', ${act.id})" style="flex: 1; padding: 8px; background: var(--primary); border: none; border-radius: 8px; color: #fff; font-weight: bold; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;">
                                         🔎 Xem trước & In phiếu
@@ -2999,20 +3301,20 @@ MOBILE_HTML = """<!DOCTYPE html>
                     title.textContent = data.type === 'nhap' ? '📥 Xem Trước Phiếu Nhập' : '📤 Xem Trước Phiếu Xuất';
                     
                     infoContainer.innerHTML = `
-                        <div style="margin-bottom: 4px;"><b>Số phiếu:</b> <span style="color: var(--primary); font-weight: bold;">${data.noteNumber}</span></div>
-                        <div style="margin-bottom: 4px;"><b>Thời gian:</b> ${data.createdAt}</div>
-                        <div style="margin-bottom: 4px;"><b>${data.type === 'nhap' ? 'Nhà cung cấp' : 'Đơn vị nhận'}:</b> ${data.partner}</div>
-                        <div style="margin-bottom: 4px;"><b>Lý do:</b> ${data.reason}</div>
-                        ${data.note ? `<div style="margin-bottom: 4px;"><b>Ghi chú:</b> ${data.note}</div>` : ''}
+                        <div style="margin-bottom: 4px;"><b>Số phiếu:</b> <span style="color: var(--primary); font-weight: bold;">${escapeHtml(data.noteNumber)}</span></div>
+                        <div style="margin-bottom: 4px;"><b>Thời gian:</b> ${escapeHtml(data.createdAt)}</div>
+                        <div style="margin-bottom: 4px;"><b>${data.type === 'nhap' ? 'Nhà cung cấp' : 'Đơn vị nhận'}:</b> ${escapeHtml(data.partner)}</div>
+                        <div style="margin-bottom: 4px;"><b>Lý do:</b> ${escapeHtml(data.reason)}</div>
+                        ${data.note ? `<div style="margin-bottom: 4px;"><b>Ghi chú:</b> ${escapeHtml(data.note)}</div>` : ''}
                     `;
                     
                     let rowsHtml = '';
                     data.items.forEach(item => {
                         rowsHtml += `
                             <tr>
-                                <td style="padding: 8px 10px;">${item.productName}</td>
-                                <td style="padding: 8px 10px; text-align: center;">${item.lotNo}</td>
-                                <td style="padding: 8px 10px; text-align: right; font-weight: 600;">${item.qty} ${item.unit}</td>
+                                <td style="padding: 8px 10px;">${escapeHtml(item.productName)}</td>
+                                <td style="padding: 8px 10px; text-align: center;">${escapeHtml(item.lotNo)}</td>
+                                <td style="padding: 8px 10px; text-align: right; font-weight: 600;">${escapeHtml(item.qty)} ${escapeHtml(item.unit)}</td>
                             </tr>
                         `;
                     });
@@ -3139,11 +3441,11 @@ MOBILE_HTML = """<!DOCTYPE html>
                     batchesHtml += `
                         <div class="batch-item">
                             <div class="batch-header">
-                                <span class="batch-lot">Lô: ${b.lotNo}</span>
-                                <span class="batch-qty">${b.qty} ${p.unit}</span>
+                                <span class="batch-lot">Lô: ${escapeHtml(b.lotNo)}</span>
+                                <span class="batch-qty">${escapeHtml(b.qty)} ${escapeHtml(p.unit)}</span>
                             </div>
                             <div class="batch-expiry">
-                                <span>Hạn dùng: ${b.expiryDate}</span>
+                                <span>Hạn dùng: ${escapeHtml(b.expiryDate)}</span>
                                 ${badgeHtml}
                             </div>
                         </div>
@@ -3155,19 +3457,19 @@ MOBILE_HTML = """<!DOCTYPE html>
                 <div class="product-info">
                     <div class="info-row">
                         <span class="info-label">Tên sản phẩm</span>
-                        <span class="info-value" style="color: #a5b4fc; text-align: right; max-width: 65%;">${p.name}</span>
+                        <span class="info-value" style="color: #a5b4fc; text-align: right; max-width: 65%;">${escapeHtml(p.name)}</span>
                     </div>
                     <div class="info-row">
                         <span class="info-label">Mã vạch</span>
-                        <span class="info-value">${p.barcode || 'Chưa gán'}</span>
+                        <span class="info-value">${escapeHtml(p.barcode || 'Chưa gán')}</span>
                     </div>
                     <div class="info-row">
                         <span class="info-label">Phân loại</span>
-                        <span class="info-value">${typeText}</span>
+                        <span class="info-value">${escapeHtml(typeText)}</span>
                     </div>
                     <div class="info-row" style="margin-top: 5px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
                         <span class="info-label" style="font-weight: bold; color: #fff;">Tổng tồn kho</span>
-                        <span class="info-value" style="color: var(--success); font-size: 1.1rem;">${data.totalQty} ${p.unit}</span>
+                        <span class="info-value" style="color: var(--success); font-size: 1.1rem;">${escapeHtml(data.totalQty)} ${escapeHtml(p.unit)}</span>
                     </div>
                 </div>
                 
@@ -3879,9 +4181,15 @@ MOBILE_HTML = """<!DOCTYPE html>
                 });
         }
 
-        updateCartStatus();
-        loadDashboardStats();
-        loadPartnersAndFunds();
+        function initializeApp() {
+            const token = localStorage.getItem('inventory_token');
+            if (token) {
+                updateCartStatus();
+                loadDashboardStats();
+                loadPartnersAndFunds();
+            }
+        }
+        initializeApp();
     </script>
 </body>
 </html>"""

@@ -9,7 +9,6 @@ import os, webbrowser, tempfile
 import shutil
 import json
 import threading
-import schedule
 import time
 from collections import defaultdict
 
@@ -88,9 +87,8 @@ class App(tb.Window):
 
         self.make_style()
         
-        # Thiết lập Server kiểm kho di động
+        # Thiết lập Server kiểm kho di động (Lỗi 3: Không tự động bật server)
         self.mobile_server = None
-        self.after(1000, self.start_mobile_server_bg)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         
         # Tạo UI sau khi window đã sẵn sàng
@@ -608,10 +606,8 @@ class App(tb.Window):
     def on_suggestion_click(self, event=None):
         """Xử lý khi click vào gợi ý từ listbox"""
         try:
-            print(f"DEBUG: Click vào listbox, event.y = {event.y}")
             # Lấy index của item được click
             index = self.suggestions_listbox.nearest(event.y)
-            print(f"DEBUG: Index được chọn = {index}")
             
             self.suggestions_listbox.selection_clear(0, tk.END)
             self.suggestions_listbox.selection_set(index)
@@ -620,10 +616,8 @@ class App(tb.Window):
             # Chọn ngay lập tức
             self.on_suggestion_selected()
             
-        except Exception as e:
-            print(f"Lỗi khi click gợi ý: {e}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
+            pass
 
     def on_suggestion_selected(self, event=None):
         """Xử lý khi chọn gợi ý từ listbox"""
@@ -635,8 +629,6 @@ class App(tb.Window):
             selected_index = selection[0]
             if hasattr(self, 'current_suggestions') and selected_index < len(self.current_suggestions):
                 medicine = self.current_suggestions[selected_index]
-                
-                print(f"DEBUG: Chọn thuốc: {medicine['name']}")
                 
                 # Điền thông tin vào form
                 self.p_name.delete(0, tk.END)
@@ -2963,9 +2955,10 @@ Hiện tại bạn vẫn có thể:
         self.mobile_url_val.config(state='readonly')
         
         if self.mobile_server and self.mobile_server.is_running:
-            self.mobile_status_val.config(text="ĐANG CHẠY", bootstyle='success')
+            import server
+            self.mobile_status_val.config(text=f"ĐANG CHẠY | PIN: {server.SERVER_PIN}", bootstyle='success')
             self.btn_toggle_server.config(text="⏹️ Dừng máy chủ di động", bootstyle='danger')
-            self.qr_help_lbl.config(text="Mở Zalo hoặc quét QR bằng điện thoại để truy cập", bootstyle='success')
+            self.qr_help_lbl.config(text=f"PIN: {server.SERVER_PIN}\nMở Zalo hoặc quét QR để truy cập", bootstyle='success')
             self.draw_qr_code(url)
         else:
             self.mobile_status_val.config(text="ĐÃ DỪNG", bootstyle='danger')
@@ -3115,21 +3108,11 @@ Hiện tại bạn vẫn có thể:
                     # Bắt đầu transaction
                     self.db.conn.execute("BEGIN TRANSACTION")
                     
-                    # Lấy thông tin phiếu nhập
-                    note_rows = self.db.q("SELECT createdAt FROM purchase_notes WHERE id=?", (purchase_id,))
-                    if not note_rows:
-                        raise Exception("Không tìm thấy phiếu nhập kho trong cơ sở dữ liệu")
-                    note_created_at = note_rows[0]['createdAt']
-                    
-                    # Lấy danh sách hàng hóa trong phiếu
-                    items = self.db.q("SELECT productId, batchId, unitCode, qty FROM purchase_items WHERE purchaseId=?", (purchase_id,))
-                    
-                    # Xóa các stock movements tương ứng
-                    for it in items:
-                        self.db.conn.execute(
-                            "DELETE FROM stock_movements WHERE productId=? AND batchId=? AND unitCode=? AND qty=? AND type='PURCHASE' AND createdAt=?",
-                            (it['productId'], it['batchId'], it['unitCode'], float(it['qty']), note_created_at)
-                        )
+                    # Lỗi 6: Xóa stock_movements theo referenceId (không dùng createdAt nữa)
+                    self.db.conn.execute(
+                        "DELETE FROM stock_movements WHERE referenceType='PURCHASE' AND referenceId=?",
+                        (purchase_id,)
+                    )
                     
                     # Xóa phiếu nhập (foreign keys ON DELETE CASCADE sẽ tự động xóa purchase_items)
                     self.db.conn.execute("DELETE FROM purchase_notes WHERE id=?", (purchase_id,))
@@ -3300,21 +3283,11 @@ Hiện tại bạn vẫn có thể:
                     # Bắt đầu transaction
                     self.db.conn.execute("BEGIN TRANSACTION")
                     
-                    # Lấy thông tin phiếu xuất
-                    note_rows = self.db.q("SELECT createdAt FROM dispatch_notes WHERE id=?", (dispatch_id,))
-                    if not note_rows:
-                        raise Exception("Không tìm thấy phiếu xuất kho trong cơ sở dữ liệu")
-                    note_created_at = note_rows[0]['createdAt']
-                    
-                    # Lấy danh sách hàng hóa trong phiếu
-                    items = self.db.q("SELECT productId, batchId, unitCode, qty FROM dispatch_items WHERE dispatchId=?", (dispatch_id,))
-                    
-                    # Xóa các stock movements tương ứng
-                    for it in items:
-                        self.db.conn.execute(
-                            "DELETE FROM stock_movements WHERE productId=? AND batchId=? AND unitCode=? AND qty=? AND type='DISPATCH' AND createdAt=?",
-                            (it['productId'], it['batchId'], it['unitCode'], -float(it['qty']), note_created_at)
-                        )
+                    # Lỗi 6: Xóa stock_movements theo referenceId (không dùng createdAt nữa)
+                    self.db.conn.execute(
+                        "DELETE FROM stock_movements WHERE referenceType='DISPATCH' AND referenceId=?",
+                        (dispatch_id,)
+                    )
                     
                     # Xóa phiếu xuất (foreign keys ON DELETE CASCADE sẽ tự động xóa dispatch_items)
                     self.db.conn.execute("DELETE FROM dispatch_notes WHERE id=?", (dispatch_id,))

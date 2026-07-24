@@ -4,6 +4,7 @@ import shutil
 
 # ==== App info ====
 APP_NAME     = "Quản lý XNT thuốc, vaccine và VTYT"
+SCHEMA_VERSION = 3  # Tăng khi thay đổi schema DB
 APP_VERSION  = "2.0.0"
 AUTHOR_NAME  = "Hồ Sỷ Thoảng"
 AUTHOR_EMAIL = "hstptcn5@gmail.com"
@@ -120,12 +121,27 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   batchId INTEGER NOT NULL REFERENCES batches(id),
   unitCode TEXT NOT NULL,
   qty REAL NOT NULL,
+  qtyBase REAL,
+  originalQty REAL,
+  originalUnit TEXT,
   type TEXT NOT NULL,
   cost REAL,
   receivingUnit TEXT,
   reason TEXT,
   fundSource TEXT,
+  referenceType TEXT,
+  referenceId INTEGER,
+  referenceItemId INTEGER,
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+  ip TEXT,
+  action TEXT NOT NULL,
+  noteId INTEGER,
+  details TEXT
 );
 
 -- Bảng đơn vị nhận (cấp phát cho ai)

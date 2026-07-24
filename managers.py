@@ -8,10 +8,11 @@ import schedule
 import time
 
 from config import (
-    APP_VERSION, APP_NAME, 
+    APP_VERSION, APP_NAME, SCHEMA_VERSION,
     PANDAS_AVAILABLE, PDF_AVAILABLE
 )
 from database import DB
+import sqlite3
 
 # Import conditional libraries
 if PANDAS_AVAILABLE:
@@ -34,7 +35,7 @@ class BackupManager:
         self.max_backups = 30  # Giữ tối đa 30 file backup
         
     def create_backup(self, custom_name: str = None) -> str:
-        """Tạo backup database"""
+        """Tạo backup database (Lỗi 4: Sử dụng Backup API an toàn)"""
         try:
             timestamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
             if custom_name:
@@ -43,14 +44,22 @@ class BackupManager:
                 backup_name = f"backup_{timestamp}.db"
             
             backup_path = os.path.join(self.backup_dir, backup_name)
-            shutil.copy2(self.db_path, backup_path)
+            
+            # Sử dụng sqlite3 backup API để backup an toàn
+            src = sqlite3.connect(self.db_path)
+            dst = sqlite3.connect(backup_path)
+            with dst:
+                src.backup(dst)
+            dst.close()
+            src.close()
             
             # Tạo file metadata
             metadata = {
                 'created_at': dt.datetime.now().isoformat(),
                 'db_size': os.path.getsize(self.db_path),
                 'backup_size': os.path.getsize(backup_path),
-                'version': APP_VERSION
+                'version': APP_VERSION,
+                'schema_version': SCHEMA_VERSION
             }
             
             metadata_path = backup_path.replace('.db', '.json')
@@ -64,7 +73,7 @@ class BackupManager:
             raise Exception(f"Lỗi tạo backup: {str(e)}")
     
     def restore_backup(self, backup_path: str) -> bool:
-        """Khôi phục từ backup"""
+        """Khôi phục từ backup (Lỗi 4: Sử dụng Backup API an toàn + Integrity check)"""
         try:
             if not os.path.exists(backup_path):
                 raise Exception("File backup không tồn tại")
@@ -72,8 +81,25 @@ class BackupManager:
             # Tạo backup hiện tại trước khi restore
             current_backup = self.create_backup("before_restore")
             
-            # Restore database
-            shutil.copy2(backup_path, self.db_path)
+            # Restore database bằng backup API
+            src = sqlite3.connect(backup_path)
+            dst = sqlite3.connect(self.db_path)
+            with dst:
+                src.backup(dst)
+            dst.close()
+            src.close()
+            
+            # Kiểm tra tính toàn vẹn của dữ liệu sau restore
+            conn = sqlite3.connect(self.db_path)
+            try:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()
+                if not integrity or integrity[0] != 'ok':
+                    raise Exception("Integrity check database thất bại sau restore")
+                fk_check = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if fk_check:
+                    raise Exception(f"Foreign key check thất bại: {fk_check}")
+            finally:
+                conn.close()
             
             return True
             
@@ -81,7 +107,7 @@ class BackupManager:
             raise Exception(f"Lỗi khôi phục backup: {str(e)}")
     
     def export_data(self, export_path: str) -> bool:
-        """Export toàn bộ dữ liệu ra file JSON"""
+        """Export toàn bộ dữ liệu ra file JSON (Lỗi 5: Thêm schemaVersion, audit_logs)"""
         try:
             db = DB(self.db_path)
             
@@ -89,14 +115,22 @@ class BackupManager:
                 'export_info': {
                     'created_at': dt.datetime.now().isoformat(),
                     'version': APP_VERSION,
-                    'app_name': APP_NAME
+                    'app_name': APP_NAME,
+                    'schema_version': SCHEMA_VERSION
                 },
                 'products': db.q("SELECT * FROM products"),
                 'product_units': db.q("SELECT * FROM product_units"),
                 'batches': db.q("SELECT * FROM batches"),
                 'stock_movements': db.q("SELECT * FROM stock_movements"),
                 'sales': db.q("SELECT * FROM sales"),
-                'sale_items': db.q("SELECT * FROM sale_items")
+                'sale_items': db.q("SELECT * FROM sale_items"),
+                'dispatch_notes': db.q("SELECT * FROM dispatch_notes"),
+                'dispatch_items': db.q("SELECT * FROM dispatch_items"),
+                'purchase_notes': db.q("SELECT * FROM purchase_notes"),
+                'purchase_items': db.q("SELECT * FROM purchase_items"),
+                'receiving_units': db.q("SELECT * FROM receiving_units"),
+                'temperature_logs': db.q("SELECT * FROM temperature_logs"),
+                'audit_logs': db.q("SELECT * FROM audit_logs")
             }
             
             with open(export_path, 'w', encoding='utf-8') as f:
@@ -108,7 +142,8 @@ class BackupManager:
             raise Exception(f"Lỗi export dữ liệu: {str(e)}")
     
     def import_data(self, import_path: str) -> bool:
-        """Import dữ liệu từ file JSON"""
+        """Import dữ liệu từ file JSON (Lỗi 5: Transaction, Whitelist, Correct Order & FK check)"""
+        db = None
         try:
             if not os.path.exists(import_path):
                 raise Exception("File import không tồn tại")
@@ -121,7 +156,25 @@ class BackupManager:
             
             db = DB(self.db_path)
             
-            # Xóa dữ liệu cũ (theo thứ tự để tránh lỗi foreign key)
+            # Tập hợp whitelist bảng hợp lệ
+            allowed_tables = {
+                'products', 'product_units', 'batches', 'stock_movements',
+                'sales', 'sale_items', 'dispatch_notes', 'dispatch_items',
+                'purchase_notes', 'purchase_items', 'receiving_units',
+                'temperature_logs', 'audit_logs'
+            }
+            
+            # Bắt đầu transaction
+            db.conn.execute("BEGIN TRANSACTION")
+            
+            # Xóa dữ liệu cũ (thứ tự child trước, parent sau)
+            db.conn.execute("DELETE FROM temperature_logs")
+            db.conn.execute("DELETE FROM audit_logs")
+            db.conn.execute("DELETE FROM dispatch_items")
+            db.conn.execute("DELETE FROM dispatch_notes")
+            db.conn.execute("DELETE FROM purchase_items")
+            db.conn.execute("DELETE FROM purchase_notes")
+            db.conn.execute("DELETE FROM receiving_units")
             db.conn.execute("DELETE FROM sale_items")
             db.conn.execute("DELETE FROM sales")
             db.conn.execute("DELETE FROM stock_movements")
@@ -129,25 +182,50 @@ class BackupManager:
             db.conn.execute("DELETE FROM product_units")
             db.conn.execute("DELETE FROM products")
             
-            # Import dữ liệu mới
-            for table, data in import_data.items():
-                if table == 'export_info':
+            # Thứ tự import an toàn (parent trước, child sau)
+            table_order = [
+                'products', 'product_units', 'batches', 'receiving_units',
+                'sales', 'sale_items', 'purchase_notes', 'purchase_items',
+                'dispatch_notes', 'dispatch_items', 'stock_movements',
+                'temperature_logs', 'audit_logs'
+            ]
+            
+            for table in table_order:
+                if table not in allowed_tables or table not in import_data:
                     continue
-                    
-                if data:
-                    columns = list(data[0].keys())
-                    placeholders = ','.join(['?' for _ in columns])
-                    sql = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})"
-                    
-                    for row in data:
-                        values = [row[col] for col in columns]
-                        db.conn.execute(sql, values)
+                data = import_data[table]
+                if not data:
+                    continue
+                
+                # Lấy thông tin các cột thực tế của bảng để whitelist cột
+                db_cols = {r[1] for r in db.conn.execute(f"PRAGMA table_info({table})")}
+                first_row_cols = list(data[0].keys())
+                valid_columns = [col for col in first_row_cols if col in db_cols]
+                
+                if not valid_columns:
+                    continue
+                
+                placeholders = ','.join(['?' for _ in valid_columns])
+                sql = f"INSERT INTO {table} ({','.join(valid_columns)}) VALUES ({placeholders})"
+                
+                for row in data:
+                    values = [row.get(col) for col in valid_columns]
+                    db.conn.execute(sql, values)
+            
+            # Foreign key check trước khi commit
+            fk_check = db.conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_check:
+                raise Exception(f"Foreign key check thất bại: {fk_check}")
             
             db.conn.commit()
             return True
-            
-        except Exception as e:
-            raise Exception(f"Lỗi import dữ liệu: {str(e)}")
+        except Exception as ex:
+            if db:
+                try:
+                    db.conn.rollback()
+                except:
+                    pass
+            raise Exception(f"Lỗi import dữ liệu: {str(ex)}")
     
     def list_backups(self) -> list:
         """Lấy danh sách các file backup"""
