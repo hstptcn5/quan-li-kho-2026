@@ -619,5 +619,40 @@ class TestMedicalWarehouseFixes(unittest.TestCase):
         row = self.db.get_purchase_detail(purchase_id)[0]
         self.assertEqual(row["totalAmount"], 125000)
 
+    def test_inventory_adjustment_and_history_lookup(self):
+        self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (204, 'Inventory Check Drug', 'Vien')")
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (204, 'Vien', 1, 0)")
+        self.db.conn.commit()
+        self.db.record_purchase([{
+            "productId": 204,
+            "productName": "Inventory Check Drug",
+            "qty": 10,
+            "unitCode": "Vien",
+            "lotNo": "IC01",
+            "expiryDate": "2028-12-31",
+            "cost": 100,
+            "fundSource": "N"
+        }], "NCC", "Nhap", "")
+        inv = self.db.get_inventory()
+        row = next(r for r in inv if r["productId"] == 204)
+
+        applied = self.db.record_inventory_adjustments([{
+            "productId": 204,
+            "batchId": row["batchId"],
+            "fundSource": "N",
+            "actualQtyBase": 7,
+            "note": "Kiem ke test"
+        }])
+        self.assertEqual(len(applied), 1)
+        self.assertEqual(applied[0]["delta"], -3)
+
+        inv_after = self.db.get_inventory()
+        row_after = next(r for r in inv_after if r["productId"] == 204)
+        self.assertEqual(row_after["stockBase"], 7)
+
+        history = self.db.product_lot_history(product_id=204, lot_no="IC01")
+        self.assertEqual(history[0]["type"], "ADJUSTMENT")
+        self.assertTrue(self.db.dashboard_summary()["product_count"] >= 1)
+
 if __name__ == '__main__':
     unittest.main()

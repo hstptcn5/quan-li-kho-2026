@@ -31,7 +31,7 @@ class PurchaseMixin:
         subtitle_label.pack(anchor='w')
 
         # --- Khung thông tin phiếu nhập
-        info_note = tb.Labelframe(frm, text='📝 Thông tin phiếu nhập kho', bootstyle='light')
+        info_note = tb.Labelframe(frm, text='📝 Thông tin phiếu nhập kho', bootstyle='secondary')
         info_note.pack(fill='x', padx=8, pady=8)
 
         # Nhà cung cấp / Nguồn cấp
@@ -64,7 +64,7 @@ class PurchaseMixin:
         info_note.columnconfigure(1, weight=1)
 
         # --- Khung nhập sản phẩm
-        box = tb.Labelframe(frm, text='➕ Thêm sản phẩm vào phiếu nhập', bootstyle='light')
+        box = tb.Labelframe(frm, text='➕ Thêm sản phẩm vào phiếu nhập', bootstyle='secondary')
         box.pack(fill='x', padx=8, pady=4)
 
         # Cho các cột có thể giãn đều khi thay đổi kích thước cửa sổ

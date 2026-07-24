@@ -147,6 +147,7 @@ backups/
 *.temp
 temp/
 tmp/
+tmp*/
 
 # IDE files
 .vscode/

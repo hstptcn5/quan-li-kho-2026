@@ -30,7 +30,7 @@ class DispatchMixin:
         subtitle_label.pack(anchor='w')
 
         # --- Khung thông tin phiếu xuất
-        info_note = tb.Labelframe(frm, text='📝 Thông tin phiếu xuất kho', bootstyle='light')
+        info_note = tb.Labelframe(frm, text='📝 Thông tin phiếu xuất kho', bootstyle='secondary')
         info_note.pack(fill='x', padx=8, pady=8)
 
         # Đơn vị nhận
@@ -63,7 +63,7 @@ class DispatchMixin:
         info_note.columnconfigure(1, weight=1)
 
         # --- Khung thao tác chọn hàng xuất
-        op_frame = tb.Labelframe(frm, text='🛒 Thao tác chọn hàng xuất', bootstyle='light')
+        op_frame = tb.Labelframe(frm, text='🛒 Thao tác chọn hàng xuất', bootstyle='secondary')
         op_frame.pack(fill='x', padx=8, pady=4)
 
         # Hàng 0: Barcode & Quét, Tìm nhanh, Chọn sản phẩm

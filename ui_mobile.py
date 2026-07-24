@@ -125,6 +125,9 @@ class MobileMixin:
             self.refresh_stock()
             self.refresh_alerts()
             self.refresh_report()
+            if hasattr(self, 'refresh_dashboard'):
+                try: self.refresh_dashboard()
+                except: pass
             # Làm mới lịch sử nếu giao diện lịch sử đang mở
             if hasattr(self, 'show_purchase_history'):
                 try: self.show_purchase_history()

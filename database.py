@@ -318,6 +318,141 @@ class DB:
         '''
         return self.q(sql, (start_date, end_date))
 
+    def dashboard_summary(self, warning_days: int = 90):
+        """Return operational counters for the desktop dashboard."""
+        stock_rows = self.get_inventory()
+        expiring_rows = self.expiring_view(warning_days)
+        negative_rows = [
+            r for r in stock_rows
+            if float(r.get('stockBase') or 0) < -0.0001
+        ]
+        low_stock_rows = [
+            r for r in stock_rows
+            if 0 < float(r.get('stockBase') or 0) <= 10
+        ]
+        last_backup = None
+        try:
+            from config import BACKUP_DIR
+            if os.path.isdir(BACKUP_DIR):
+                candidates = [
+                    os.path.join(BACKUP_DIR, f)
+                    for f in os.listdir(BACKUP_DIR)
+                    if f.lower().endswith(('.db', '.json'))
+                ]
+                if candidates:
+                    latest = max(candidates, key=os.path.getmtime)
+                    last_backup = {
+                        'file': os.path.basename(latest),
+                        'created': dt.datetime.fromtimestamp(os.path.getmtime(latest)).strftime('%Y-%m-%d %H:%M:%S')
+                    }
+        except Exception:
+            pass
+        return {
+            'product_count': self.conn.execute("SELECT COUNT(*) FROM products").fetchone()[0],
+            'batch_count': self.conn.execute("SELECT COUNT(*) FROM batches").fetchone()[0],
+            'stock_lot_count': len([r for r in stock_rows if float(r.get('stockBase') or 0) > 0]),
+            'expiring_count': len(expiring_rows),
+            'low_stock_count': len(low_stock_rows),
+            'negative_count': len(negative_rows),
+            'last_backup': last_backup,
+            'expiring_rows': expiring_rows[:20],
+            'low_stock_rows': low_stock_rows[:20],
+            'negative_rows': negative_rows[:20],
+        }
+
+    def product_lot_history(self, product_id: int = None, lot_no: str = None, limit: int = 300):
+        """Return movement history filtered by product and/or lot."""
+        where = []
+        params = []
+        if product_id:
+            where.append("sm.productId=?")
+            params.append(product_id)
+        if lot_no:
+            where.append("LOWER(b.lotNo) LIKE LOWER(?)")
+            params.append(f"%{lot_no}%")
+        where_sql = "WHERE " + " AND ".join(where) if where else ""
+        params.append(limit)
+        return self.q(f'''
+            SELECT sm.id, sm.createdAt, sm.type, sm.qty, sm.qtyBase, sm.originalQty, sm.originalUnit,
+                   sm.unitCode, sm.cost, sm.receivingUnit, sm.reason, sm.fundSource,
+                   sm.referenceType, sm.referenceId, sm.referenceItemId,
+                   p.id AS productId, p.name AS productName,
+                   b.id AS batchId, b.lotNo, b.expiryDate
+            FROM stock_movements sm
+            JOIN products p ON p.id = sm.productId
+            JOIN batches b ON b.id = sm.batchId
+            {where_sql}
+            ORDER BY datetime(sm.createdAt) DESC, sm.id DESC
+            LIMIT ?
+        ''', tuple(params))
+
+    def record_inventory_adjustments(self, adjustments, reason: str = "Kiểm kê thực tế", audit_ip: str = "Local"):
+        """Record stock adjustment rows from physical inventory counts."""
+        applied = []
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            for adj in adjustments:
+                product_id = int(adj['productId'])
+                batch_id = int(adj['batchId'])
+                actual = float(adj['actualQtyBase'])
+                fund_source = adj.get('fundSource') or ''
+                note = adj.get('note') or reason
+
+                current_row = self.conn.execute('''
+                    SELECT COALESCE(SUM(COALESCE(qtyBase, qty)), 0)
+                    FROM stock_movements
+                    WHERE productId=? AND batchId=? AND COALESCE(fundSource, '')=?
+                ''', (product_id, batch_id, fund_source)).fetchone()
+                current = float(current_row[0] or 0)
+                delta = round(actual - current, 4)
+                if abs(delta) <= 0.0001:
+                    continue
+
+                product = self.conn.execute("SELECT defaultUnit FROM products WHERE id=?", (product_id,)).fetchone()
+                if not product:
+                    raise ValueError(f"Không tìm thấy sản phẩm #{product_id}")
+                cost_row = self.conn.execute('''
+                    SELECT cost FROM stock_movements
+                    WHERE productId=? AND batchId=? AND type='PURCHASE' AND cost IS NOT NULL
+                    ORDER BY id DESC LIMIT 1
+                ''', (product_id, batch_id)).fetchone()
+                cost = float(cost_row['cost'] or 0) if cost_row else 0.0
+
+                self.conn.execute('''
+                    INSERT INTO stock_movements(
+                        productId, batchId, unitCode, qty, qtyBase, originalQty, originalUnit,
+                        type, cost, receivingUnit, reason, fundSource, referenceType, createdAt
+                    ) VALUES(?,?,?,?,?,?,?, 'ADJUSTMENT', ?, '', ?, ?, 'INVENTORY_CHECK', ?)
+                ''', (
+                    product_id, batch_id, product['defaultUnit'], delta, delta, abs(delta), product['defaultUnit'],
+                    cost, note, fund_source, created_at
+                ))
+                applied.append({
+                    'productId': product_id,
+                    'batchId': batch_id,
+                    'fundSource': fund_source,
+                    'before': current,
+                    'actual': actual,
+                    'delta': delta,
+                })
+
+            self._assert_no_negative_stock()
+            self.conn.commit()
+            if applied:
+                try:
+                    self.add_audit_log(
+                        action="DIEU_CHINH_KIEM_KE",
+                        details=f"Điều chỉnh kiểm kê {len(applied)} dòng",
+                        ip=audit_ip
+                    )
+                except Exception:
+                    pass
+            return applied
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def validate_batch(self, product_id, lot_no, expiry_date):
         """Lỗi Lô hàng (Atomic Excel) — Chỉ kiểm tra tính hợp lệ mà KHÔNG chèn bản ghi vào DB"""
         r = self.q("SELECT expiryDate FROM batches WHERE productId=? AND lotNo=?", (product_id, lot_no))

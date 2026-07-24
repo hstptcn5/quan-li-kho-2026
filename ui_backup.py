@@ -16,7 +16,7 @@ class BackupMixin:
         frm = self.tab_backup
         
         # Khung tạo backup
-        backup_frame = tb.Labelframe(frm, text='Tạo Backup', bootstyle='light')
+        backup_frame = tb.Labelframe(frm, text='Tạo Backup', bootstyle='secondary')
         backup_frame.pack(fill='x', padx=8, pady=8)
         
         btn_frame = tb.Frame(backup_frame)
@@ -30,7 +30,7 @@ class BackupMixin:
                   command=self.import_data).pack(side='left', padx=4)
         
         # Khung khôi phục backup
-        restore_frame = tb.Labelframe(frm, text='Khôi Phục Backup', bootstyle='light')
+        restore_frame = tb.Labelframe(frm, text='Khôi Phục Backup', bootstyle='secondary')
         restore_frame.pack(fill='x', padx=8, pady=8)
         
         tb.Label(restore_frame, text='Chọn backup để khôi phục:').pack(anchor='w', padx=8, pady=(8,4))
@@ -101,6 +101,8 @@ class BackupMixin:
 
     def import_data(self):
         """Import dữ liệu từ file JSON"""
+        if hasattr(self, 'require_admin_action') and not self.require_admin_action('import dữ liệu'):
+            return
         try:
             path = filedialog.askopenfilename(
                 filetypes=[('JSON files', '*.json'), ('All files', '*.*')]
@@ -124,6 +126,8 @@ class BackupMixin:
 
     def restore_selected_backup(self):
         """Khôi phục backup được chọn"""
+        if hasattr(self, 'require_admin_action') and not self.require_admin_action('khôi phục backup'):
+            return
         selection = self.tree_backups.selection()
         if not selection:
             messagebox.showwarning('Cảnh báo', 'Chọn backup để khôi phục')
@@ -189,6 +193,8 @@ class BackupMixin:
 
     def delete_selected_backup(self):
         """Xóa backup được chọn"""
+        if hasattr(self, 'require_admin_action') and not self.require_admin_action('xóa backup'):
+            return
         selection = self.tree_backups.selection()
         if not selection:
             messagebox.showwarning('Cảnh báo', 'Chọn backup để xóa')

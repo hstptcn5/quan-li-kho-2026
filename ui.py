@@ -67,10 +67,11 @@ from server import MobileInventoryServer
 from ui_backup import BackupMixin
 from ui_dispatch import DispatchMixin
 from ui_mobile import MobileMixin
+from ui_operations import OperationsMixin
 from ui_purchase import PurchaseMixin
 from ui_temp_log import TempLogMixin
 
-class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, tb.Window):
+class App(BackupMixin, DispatchMixin, MobileMixin, OperationsMixin, PurchaseMixin, TempLogMixin, tb.Window):
     def __init__(self):
         super().__init__(themename='flatly')  # Tông xanh dương nhạt thanh lịch và phẳng
         self.title(f'{APP_NAME} — v{APP_VERSION}')
@@ -82,6 +83,7 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
         self.export_manager = ExportManager()
         self.medicine_catalog = MedicineCatalogManager(DB_PATH)
         self.last_sale_items = []; self.cart = []
+        self.current_role = 'Admin'
 
         self.make_style()
         
@@ -132,8 +134,6 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
     # theme & fonts
     def make_style(self):
         style = tb.Style()
-        # Only hide the main navigation notebook tabs; nested report notebooks remain visible.
-        style.layout('Hidden.TNotebook.Tab', [])
         # Font to hơn
         style.configure('TLabel', font=('Segoe UI', 11))
         style.configure('TButton', font=('Segoe UI', 11))
@@ -141,6 +141,8 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
         style.configure('TCombobox', font=('Segoe UI', 11))
         style.configure('Treeview', rowheight=30, font=('Segoe UI', 11))
         style.configure('Treeview.Heading', font=('Segoe UI', 11, 'bold'))
+        style.configure('TLabelframe.Label', font=('Segoe UI', 10, 'bold'), foreground='#2f3b45')
+        style.configure('secondary.TLabelframe.Label', font=('Segoe UI', 10, 'bold'), foreground='#2f3b45')
 
     # helpers
     def _numberize(self, entry: tb.Entry):
@@ -162,6 +164,21 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
         y = self.winfo_y() + self.winfo_height() - w.winfo_height() - 20
         w.geometry(f'+{x}+{y}'); w.after(ms, w.destroy)
 
+    def set_current_role(self, role):
+        self.current_role = role
+        if hasattr(self, 'role_label'):
+            self.role_label.config(text=f'Vai trò: {role}')
+        self.toast(f'Vai trò hiện tại: {role}')
+
+    def require_admin_action(self, action):
+        if getattr(self, 'current_role', 'Admin') == 'Admin':
+            return True
+        messagebox.showwarning(
+            'Không đủ quyền',
+            f"Thao tác '{action}' chỉ dành cho Admin. Chuyển vai trò Admin nếu bạn cần thực hiện."
+        )
+        return False
+
     # layout
     def make_ui(self):
         menubar = tk.Menu(self); self.config(menu=menubar)
@@ -170,13 +187,19 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
         helpm.add_command(label='Mở thư mục dữ liệu', command=self.open_data_folder)
         helpm.add_command(label='Giới thiệu (About)…', command=self.show_about)
         menubar.add_cascade(label='Trợ giúp', menu=helpm)
+        rolem = tk.Menu(menubar, tearoff=0)
+        rolem.add_command(label='Admin', command=lambda: self.set_current_role('Admin'))
+        rolem.add_command(label='Thủ kho', command=lambda: self.set_current_role('Thủ kho'))
+        rolem.add_command(label='Chỉ xem', command=lambda: self.set_current_role('Chỉ xem'))
+        menubar.add_cascade(label='Vai trò', menu=rolem)
         
-        self.nb = tb.Notebook(self, style='Hidden.TNotebook'); self.nb.pack(fill=BOTH, expand=True, padx=8, pady=(0,8))
+        self.nb = tb.Notebook(self); self.nb.pack(fill=BOTH, expand=True, padx=8, pady=(0,8))
         
         # Tạo các tab frames
         self.tab_products = tb.Frame(self.nb)
         self.tab_purchase = tb.Frame(self.nb)
         self.tab_dispatch = tb.Frame(self.nb)
+        self.tab_operations = tb.Frame(self.nb)
         self.tab_stock = tb.Frame(self.nb)
         self.tab_alerts = tb.Frame(self.nb)
         self.tab_report = tb.Frame(self.nb)
@@ -190,6 +213,7 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
             (self.tab_products, "🏷️ Sản phẩm"),
             (self.tab_purchase, "📦 Nhập kho"),
             (self.tab_dispatch, "📤 Xuất kho / Cấp phát"),
+            (self.tab_operations, "🧭 Vận hành"),
             (self.tab_stock, "📊 Tồn kho"),
             (self.tab_alerts, "⏰ Hết hạn"),
             (self.tab_report, "📄 Báo cáo XNT"),
@@ -207,7 +231,7 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
         self.nb.bind("<<NotebookTabChanged>>", self.on_tab_changed)
         
         self.build_products_tab(); self.build_purchase_tab(); self.build_dispatch_tab()
-        self.build_stock_tab(); self.build_alerts_tab(); self.build_report_tab()
+        self.build_operations_tab(); self.build_stock_tab(); self.build_alerts_tab(); self.build_report_tab()
         self.build_backup_tab(); self.build_advanced_reports_tab(); self.build_mobile_tab()
         self.build_temp_log_tab()
         # Status bar với thông tin chi tiết hơn
@@ -216,7 +240,7 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
         
         # Status chính
         self.status = tb.Label(status_frame, anchor='w', font=('Segoe UI', 9),
-            text='Sẵn sàng • F1-F8, F10-F11: Chuyển tab • F9: In phiếu xuất kho • Ctrl+F: Tìm kiếm')
+            text='Sẵn sàng • F1-F8, F10-F12: Chuyển tab • F9: In phiếu xuất kho • Ctrl+F: Tìm kiếm')
         self.status.pack(side='left')
         
         # Thông tin database
@@ -228,11 +252,12 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
         self.bind('<F1>', lambda e: self.nb.select(self.tab_products))
         self.bind('<F2>', lambda e: self.nb.select(self.tab_purchase))
         self.bind('<F3>', lambda e: self.nb.select(self.tab_dispatch))
-        self.bind('<F4>', lambda e: self.nb.select(self.tab_stock))
-        self.bind('<F5>', lambda e: self.nb.select(self.tab_alerts))
-        self.bind('<F6>', lambda e: self.nb.select(self.tab_report))
-        self.bind('<F7>', lambda e: self.nb.select(self.tab_backup))
-        self.bind('<F8>', lambda e: self.nb.select(self.tab_advanced_reports))
+        self.bind('<F4>', lambda e: self.nb.select(self.tab_operations))
+        self.bind('<F5>', lambda e: self.nb.select(self.tab_stock))
+        self.bind('<F6>', lambda e: self.nb.select(self.tab_alerts))
+        self.bind('<F7>', lambda e: self.nb.select(self.tab_report))
+        self.bind('<F8>', lambda e: self.nb.select(self.tab_backup))
+        self.bind('<F12>', lambda e: self.nb.select(self.tab_advanced_reports))
         self.bind('<F10>', lambda e: self.nb.select(self.tab_mobile))
         self.bind('<F11>', lambda e: self.nb.select(self.tab_temp_log))
         self.bind('<Control-f>', lambda e: self.focus_search())
@@ -257,49 +282,31 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
             self.db_status.config(text=f"Database: Lỗi - {str(e)}")
 
     def create_toolbar(self):
-        tbbar = tb.Frame(self); tbbar.pack(fill='x', padx=8, pady=(8,8))
-        
-        # Tạo frame chứa các nút chính
-        main_buttons = tb.Frame(tbbar)
-        main_buttons.pack(side='left')
-        
-        # Các nút chính với style cải thiện
-        buttons_config = [
-            ('🏷️ Sản phẩm', self.tab_products, 'F1'),
-            ('📦 Nhập hàng', self.tab_purchase, 'F2'),
-            ('📤 Xuất kho', self.tab_dispatch, 'F3'),
-            ('📊 Tồn kho', self.tab_stock, 'F4'),
-            ('⏰ Hết hạn', self.tab_alerts, 'F5'),
-            ('📄 Báo cáo XNT', self.tab_report, 'F6'),
-            ('💾 Backup', self.tab_backup, 'F7'),
-            ('📈 Báo cáo nâng cao', self.tab_advanced_reports, 'F8'),
-            ('📱 Kiểm kho di động', self.tab_mobile, 'F10'),
-            ('🌡️ Nhật ký nhiệt độ', self.tab_temp_log, 'F11')
-        ]
-
+        tbbar = tb.Frame(self)
+        tbbar.pack(fill='x', padx=8, pady=(6, 6))
         self.toolbar_buttons = {}
-        for text, tab, shortcut in buttons_config:
-            btn = tb.Button(main_buttons, text=text, bootstyle='outline-info',
-                          command=lambda t=tab: self.nb.select(t))
-            btn.pack(side='left', padx=2)
-            self.toolbar_buttons[tab] = btn
-            # Thêm tooltip với phím tắt
-            self.create_tooltip(btn, f"{text} ({shortcut})")
-        
-        # Spacer
-        tb.Label(tbbar, text='').pack(side='left', expand=True)
-        
-        # Nút in phiếu xuất kho
-        print_btn = tb.Button(tbbar, text='🖨️ In phiếu xuất kho', bootstyle='outline-primary',
-                             command=self.print_dispatch_note)
-        print_btn.pack(side='right', padx=4)
-        self.create_tooltip(print_btn, "In phiếu xuất kho (F9)")
-        
-        # Nút backup nhanh
+
+        tb.Label(tbbar, text='Thao tác nhanh:', font=('Segoe UI', 9, 'bold'), bootstyle='secondary').pack(side='left', padx=(0, 8))
+
         backup_btn = tb.Button(tbbar, text='💾 Backup nhanh', bootstyle='outline-success',
                                command=self.create_manual_backup)
-        backup_btn.pack(side='right', padx=4)
+        backup_btn.pack(side='left', padx=(0, 6))
         self.create_tooltip(backup_btn, "Tạo backup ngay lập tức")
+
+        print_btn = tb.Button(tbbar, text='🖨️ In phiếu xuất kho', bootstyle='outline-primary',
+                             command=self.print_dispatch_note)
+        print_btn.pack(side='left', padx=(0, 6))
+        self.create_tooltip(print_btn, "In phiếu xuất kho (F9)")
+
+        refresh_btn = tb.Button(tbbar, text='↻ Làm mới dữ liệu', bootstyle='outline-secondary',
+                                command=self.refresh_all_data)
+        refresh_btn.pack(side='left')
+        self.create_tooltip(refresh_btn, "Tải lại dữ liệu các màn hình")
+
+        tb.Label(tbbar, text='').pack(side='left', expand=True)
+
+        self.role_label = tb.Label(tbbar, text=f'Vai trò: {self.current_role}', font=('Segoe UI', 9), bootstyle='secondary')
+        self.role_label.pack(side='right', padx=6)
 
     def on_tab_changed(self, event=None):
         try:
@@ -307,7 +314,7 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
             if not selected_tab:
                 return
             selected_widget = self.nametowidget(selected_tab)
-            for tab, btn in self.toolbar_buttons.items():
+            for tab, btn in getattr(self, 'toolbar_buttons', {}).items():
                 if tab == selected_widget:
                     btn.configure(bootstyle='info')
                 else:
@@ -403,7 +410,7 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
         help_label.pack(anchor='w', padx=8, pady=(0,8))
         
         # Khung thông tin sản phẩm với style cải thiện
-        f1 = tb.Labelframe(frm, text='📝 Thông tin sản phẩm', bootstyle='light')
+        f1 = tb.Labelframe(frm, text='📝 Thông tin sản phẩm', bootstyle='secondary')
         f1.pack(fill='x', padx=8, pady=8)
         
         # Hàng 0: Nguồn sản phẩm
@@ -782,7 +789,7 @@ class App(BackupMixin, DispatchMixin, MobileMixin, PurchaseMixin, TempLogMixin, 
                   command=search_medicines).pack(side='left')
         
         # Results frame
-        results_frame = tb.Labelframe(main_frame, text="Kết quả tìm kiếm", bootstyle='light')
+        results_frame = tb.Labelframe(main_frame, text="Kết quả tìm kiếm", bootstyle='secondary')
         results_frame.pack(fill='both', expand=True)
         
         # Results tree
@@ -1046,7 +1053,7 @@ Hiện tại bạn vẫn có thể:
         frm = self.tab_advanced_reports
         
         # Khung điều khiển
-        control_frame = tb.Labelframe(frm, text='Điều kiện báo cáo', bootstyle='light')
+        control_frame = tb.Labelframe(frm, text='Điều kiện báo cáo', bootstyle='secondary')
         control_frame.pack(fill='x', padx=8, pady=8)
         
         # Hàng 1: Ngày tháng
@@ -1179,7 +1186,7 @@ Hiện tại bạn vẫn có thể:
                     font=('Segoe UI', 24, 'bold'), bootstyle='danger').pack(pady=10)
             
             # Bảng cấp phát theo ngày
-            daily_frame = tb.Labelframe(main_frame, text='Cấp phát theo ngày', bootstyle='light')
+            daily_frame = tb.Labelframe(main_frame, text='Cấp phát theo ngày', bootstyle='secondary')
             daily_frame.pack(fill='both', expand=True)
             
             cols = ('date', 'orders', 'revenue')
@@ -1381,6 +1388,8 @@ Hiện tại bạn vẫn có thể:
                 self.reprint_selected_purchase(purchase_id)
                 
             def on_delete_purchase():
+                if hasattr(self, 'require_admin_action') and not self.require_admin_action('xóa phiếu nhập'):
+                    return
                 sel = tree.selection()
                 if not sel:
                     messagebox.showwarning("Chưa chọn dòng", "Vui lòng chọn một phiếu nhập kho trong danh sách để xóa!"); return
@@ -1554,6 +1563,8 @@ Hiện tại bạn vẫn có thể:
                 self.reprint_selected_dispatch(dispatch_id)
                 
             def on_delete_dispatch():
+                if hasattr(self, 'require_admin_action') and not self.require_admin_action('xóa phiếu xuất'):
+                    return
                 sel = tree.selection()
                 if not sel:
                     messagebox.showwarning("Chưa chọn dòng", "Vui lòng chọn một phiếu xuất kho trong danh sách để xóa!"); return
@@ -3145,6 +3156,8 @@ Hiện tại bạn vẫn có thể:
 
     def bulk_import_from_excel(self):
         """Nhập sản phẩm và tồn kho hàng loạt từ file Excel/CSV"""
+        if hasattr(self, 'require_admin_action') and not self.require_admin_action('nhập hàng loạt từ Excel'):
+            return
         global pd, PANDAS_AVAILABLE
         if not PANDAS_AVAILABLE:
             response = messagebox.askyesno(
