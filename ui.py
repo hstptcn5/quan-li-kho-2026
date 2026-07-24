@@ -5018,7 +5018,7 @@ Hiện tại bạn vẫn có thể:
 
             self.db.conn.execute("BEGIN TRANSACTION")
             
-            items_to_record = []
+            import_records = []
             
             for idx, row in df.iterrows():
                 row_num = idx + 2
@@ -5045,43 +5045,7 @@ Hiện tại bạn vẫn có thể:
                 if not reg_num or reg_num.lower() in ('nan', 'none', ''):
                     reg_num = None
                 
-                prod_row = self.db.q("SELECT id, defaultUnit FROM products WHERE name = ?", (name,))
-                is_new = False
-                if prod_row:
-                    product_id_db = prod_row[0]['id']
-                    self.db.conn.execute(
-                        "UPDATE products SET barcode=COALESCE(?, barcode), productType=?, registrationNumber=COALESCE(?, registrationNumber) WHERE id=?",
-                        (barcode, product_type, reg_num, product_id_db)
-                    )
-                    updated_products += 1
-                else:
-                    if barcode:
-                        prod_barcode = self.db.q("SELECT id, defaultUnit FROM products WHERE barcode = ?", (barcode,))
-                        if prod_barcode:
-                            product_id_db = prod_barcode[0]['id']
-                            self.db.conn.execute(
-                                "UPDATE products SET name=?, productType=?, registrationNumber=COALESCE(?, registrationNumber) WHERE id=?",
-                                (name, product_type, reg_num, product_id_db)
-                            )
-                            updated_products += 1
-                        else:
-                            is_new = True
-                    else:
-                        is_new = True
-                
-                if is_new:
-                    cur = self.db.conn.execute(
-                        "INSERT INTO products (name, defaultUnit, barcode, productType, registrationNumber) VALUES (?, ?, ?, ?, ?)",
-                        (name, default_unit, barcode, product_type, reg_num)
-                    )
-                    product_id_db = cur.lastrowid
-                    imported_products += 1
-                
-                self.db.conn.execute(
-                    "INSERT OR IGNORE INTO product_units(productId, unitCode, toBaseQty, price) VALUES(?,?,1,0)", 
-                    (product_id_db, default_unit)
-                )
-                
+                units = []
                 for i in range(1, 4):
                     unit_name = str(row.get(f'Đơn vị quy đổi {i}', '')).strip()
                     if not unit_name or unit_name.lower() in ('nan', 'none', ''):
@@ -5107,12 +5071,9 @@ Hiện tại bạn vẫn có thể:
                     except ValueError:
                         price = 0.0
                     
-                    self.db.conn.execute(
-                        "INSERT OR REPLACE INTO product_units (productId, unitCode, toBaseQty, price) VALUES (?, ?, ?, ?)",
-                        (product_id_db, unit_name, ratio, price)
-                    )
-                    imported_units += 1
-                
+                    units.append({'unitCode': unit_name, 'toBaseQty': ratio, 'price': price})
+
+                stock_info = None
                 lot_no = str(row.get('Số lô', '')).strip()
                 if lot_no and lot_no.lower() not in ('nan', 'none', ''):
                     expiry_val = row.get('Hạn sử dụng (YYYY-MM-DD)')
@@ -5120,64 +5081,50 @@ Hiện tại bạn vẫn có thể:
                     
                     if not expiry_date:
                         errors.append(f"Dòng {row_num}: Số lô '{lot_no}' cho '{name}' thiếu hoặc sai hạn sử dụng (Bỏ qua nhập lô)")
-                        continue
-                    
-                    try:
-                        dt.datetime.strptime(expiry_date, '%Y-%m-%d')
-                    except ValueError:
-                        errors.append(f"Dòng {row_num}: Hạn sử dụng '{expiry_date}' của lô '{lot_no}' không đúng định dạng YYYY-MM-DD (Bỏ qua nhập lô)")
-                        continue
-                    
-                    try:
-                        qty_val = row.get('Số lượng tồn (Đơn vị cơ sở)')
-                        if pd.isna(qty_val):
-                            errors.append(f"Dòng {row_num}: Thiếu số lượng tồn cho lô '{lot_no}' của '{name}' (Bỏ qua nhập lô)")
-                            continue
-                        qty = float(qty_val)
-                        if qty <= 0:
-                            errors.append(f"Dòng {row_num}: Số lượng tồn {qty} cho lô '{lot_no}' của '{name}' phải > 0 (Bỏ qua nhập lô)")
-                            continue
-                    except ValueError:
-                        errors.append(f"Dòng {row_num}: Số lượng tồn cho lô '{lot_no}' của '{name}' không hợp lệ (Bỏ qua nhập lô)")
-                        continue
-                    
-                    try:
-                        cost_val = row.get('Giá nhập (Đơn vị cơ sở)')
-                        cost = float(cost_val) if not pd.isna(cost_val) else 0.0
-                        if cost < 0:
-                            cost = 0.0
-                    except ValueError:
-                        cost = 0.0
-                        
-                    fund_source = str(row.get('Nguồn kinh phí', '')).strip()
-                    if fund_source.lower() in ('nan', 'none', ''):
-                        fund_source = ''
-                    
-                    # Gọi validate_batch để kiểm tra ngay tại đây mà không chèn bản ghi dở dang vào DB
-                    try:
-                        self.db.validate_batch(product_id_db, lot_no, expiry_date)
-                        items_to_record.append({
-                            'productId': product_id_db,
-                            'lotNo': lot_no,
-                            'expiryDate': expiry_date,
-                            'unitCode': default_unit,
-                            'qty': qty,
-                            'cost': cost,
-                            'fundSource': fund_source
-                        })
-                        imported_stock += 1
-                    except Exception as ex_batch:
-                        errors.append(f"Dòng {row_num}: Lỗi lô hàng: {str(ex_batch)}")
-                        continue
-            
-            # Commit phần cập nhật sản phẩm & đơn vị quy đổi
-            self.db.conn.commit()
-            
-            # Nhập kho tồn ban đầu sử dụng hàm chuẩn record_purchase
-            note_number = ""
-            if items_to_record:
-                _, note_number, _ = self.db.record_purchase(
-                    items=items_to_record,
+                    else:
+                        try:
+                            dt.datetime.strptime(expiry_date, '%Y-%m-%d')
+                            qty_val = row.get('Số lượng tồn (Đơn vị cơ sở)')
+                            if pd.isna(qty_val):
+                                errors.append(f"Dòng {row_num}: Thiếu số lượng tồn cho lô '{lot_no}' của '{name}' (Bỏ qua nhập lô)")
+                            else:
+                                qty = float(qty_val)
+                                if qty <= 0:
+                                    errors.append(f"Dòng {row_num}: Số lượng tồn {qty} cho lô '{lot_no}' của '{name}' phải > 0 (Bỏ qua nhập lô)")
+                                else:
+                                    cost_val = row.get('Giá nhập (Đơn vị cơ sở)')
+                                    cost = float(cost_val) if not pd.isna(cost_val) and float(cost_val) >= 0 else 0.0
+                                    fund_source = str(row.get('Nguồn kinh phí', '')).strip()
+                                    if fund_source.lower() in ('nan', 'none', ''):
+                                        fund_source = ''
+                                    
+                                    stock_info = {
+                                        'lotNo': lot_no,
+                                        'expiryDate': expiry_date,
+                                        'unitCode': default_unit,
+                                        'qty': qty,
+                                        'cost': cost,
+                                        'fundSource': fund_source
+                                    }
+                        except ValueError:
+                            errors.append(f"Dòng {row_num}: Hạn sử dụng '{expiry_date}' của lô '{lot_no}' không đúng định dạng YYYY-MM-DD (Bỏ qua nhập lô)")
+
+                import_records.append({
+                    'product_info': {
+                        'name': name,
+                        'defaultUnit': default_unit,
+                        'barcode': barcode,
+                        'productType': product_type,
+                        'registrationNumber': reg_num,
+                        'units': units
+                    },
+                    'stock_info': stock_info
+                })
+
+            imported_products, imported_units, imported_stock, note_number = 0, 0, 0, ""
+            if import_records:
+                imported_products, imported_units, imported_stock, note_number = self.db.bulk_import_products_and_stock(
+                    import_records=import_records,
                     supplier="Nhập kho ban đầu",
                     reason="Nhập kho ban đầu",
                     note="Nhập hàng loạt từ Excel"

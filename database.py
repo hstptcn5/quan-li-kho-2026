@@ -778,6 +778,126 @@ class DB:
             self.conn.rollback()
             raise
 
+    def bulk_import_products_and_stock(self, import_records, supplier: str = "Nhập kho ban đầu", reason: str = "Nhập kho ban đầu", note: str = "Nhập hàng loạt từ Excel", audit_ip: str = "Local"):
+        """
+        Thực hiện nhập sản phẩm, đơn vị quy đổi, lô hàng và tạo phiếu nhập kho ban đầu
+        TRONG CÙNG MỘT TRANSACTION DUY NHẤT (Atomic Import).
+        Nếu xảy ra bất kỳ lỗi nào, toàn bộ quá trình sẽ được ROLLBACK hoàn toàn.
+        """
+        try:
+            self.conn.execute("BEGIN")
+            created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            imported_products = 0
+            imported_units = 0
+            purchase_items = []
+            
+            product_id_map = {}
+
+            for rec in import_records:
+                p_info = rec['product_info']
+                name = p_info['name']
+                default_unit = p_info['defaultUnit']
+                
+                if name not in product_id_map:
+                    existing = self.conn.execute(
+                        "SELECT id, defaultUnit FROM products WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))",
+                        (name,)
+                    ).fetchone()
+                    
+                    if existing:
+                        p_id = existing['id']
+                    else:
+                        cur = self.conn.execute(
+                            "INSERT INTO products (name, defaultUnit, barcode, productType, registrationNumber) VALUES (?, ?, ?, ?, ?)",
+                            (name, default_unit, p_info.get('barcode', ''), p_info.get('productType', 'Thuốc'), p_info.get('registrationNumber', ''))
+                        )
+                        p_id = cur.lastrowid
+                        imported_products += 1
+                    product_id_map[name] = p_id
+                else:
+                    p_id = product_id_map[name]
+
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO product_units(productId, unitCode, toBaseQty, price) VALUES(?,?,1,0)", 
+                    (p_id, default_unit)
+                )
+
+                for u in p_info.get('units', []):
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO product_units (productId, unitCode, toBaseQty, price) VALUES (?, ?, ?, ?)",
+                        (p_id, u['unitCode'], u['toBaseQty'], u['price'])
+                    )
+                    imported_units += 1
+
+                s_info = rec.get('stock_info')
+                if s_info:
+                    self.validate_batch(p_id, s_info['lotNo'], s_info['expiryDate'])
+                    purchase_items.append({
+                        'productId': p_id,
+                        'productName': name,
+                        'lotNo': s_info['lotNo'],
+                        'expiryDate': s_info['expiryDate'],
+                        'unitCode': s_info.get('unitCode') or default_unit,
+                        'qty': float(s_info['qty']),
+                        'cost': float(s_info.get('cost') or 0.0),
+                        'fundSource': s_info.get('fundSource', '')
+                    })
+
+            note_number = ""
+            purchase_id = None
+            if purchase_items:
+                note_number = self._next_note_number('PN')
+                cur = self.conn.execute(
+                    "INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt) VALUES(?,?,?,?,?)",
+                    (note_number, supplier, reason, note, created_at)
+                )
+                purchase_id = cur.lastrowid
+
+                for it in purchase_items:
+                    bid = self.ensure_batch(it['productId'], it['lotNo'], it['expiryDate'])
+                    to_base, _ = self.unit_info(it['productId'], it['unitCode'])
+                    if to_base is None:
+                        to_base = 1.0
+                    qty_val = float(it['qty'])
+                    qty_base = qty_val * to_base
+                    fund_src = it.get('fundSource') or ''
+
+                    pi_cur = self.conn.execute(
+                        "INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost, fundSource) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (purchase_id, it['productId'], bid, it['unitCode'], qty_val, it['lotNo'], it['expiryDate'], float(it['cost']), fund_src)
+                    )
+                    purchase_item_id = pi_cur.lastrowid
+
+                    self.conn.execute(
+                        """INSERT INTO stock_movements(
+                            productId, batchId, unitCode, qty, qtyBase, originalQty, originalUnit,
+                            type, cost, receivingUnit, reason, fundSource,
+                            referenceType, referenceId, referenceItemId, createdAt
+                        ) VALUES(?,?,?,?,?,?,?, 'PURCHASE', ?,?,?,?,  'PURCHASE',?,?,?)""",
+                        (it['productId'], bid, it['unitCode'], qty_val, qty_base, qty_val, it['unitCode'],
+                         float(it['cost']), supplier, reason, fund_src,
+                         purchase_id, purchase_item_id, created_at)
+                    )
+
+            self._assert_no_negative_stock()
+            self.conn.commit()
+
+            if purchase_id and note_number:
+                try:
+                    self.add_audit_log(
+                        action="NHAP_KHO",
+                        note_id=purchase_id,
+                        details=f"Nhập kho Excel thành công, số phiếu: {note_number}, nhà cung cấp: {supplier}, số mặt hàng: {len(purchase_items)}",
+                        ip=audit_ip
+                    )
+                except Exception:
+                    pass
+
+            return imported_products, imported_units, len(purchase_items), note_number
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def get_purchase_notes(self, start_date: str = None, end_date: str = None):
         """Lấy danh sách phiếu nhập kho"""
         if start_date and end_date:

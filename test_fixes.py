@@ -424,5 +424,82 @@ class TestMedicalWarehouseFixes(unittest.TestCase):
 
         self.assertNotIn(token, active_tokens, "Token phải bị xóa khi IP không trùng khớp")
 
+    def test_bulk_import_products_and_stock_atomic(self):
+        """Kiểm thử Lỗi 1 mới: Nhập Excel Atomic — khi xảy ra lỗi ở bất kỳ bước nào, toàn bộ sản phẩm & đơn vị được rollback sạch"""
+        records_with_error = [
+            {
+                'product_info': {
+                    'name': 'Thuốc Atomic 1',
+                    'defaultUnit': 'Hộp',
+                    'barcode': '11111',
+                    'productType': 'thuoc',
+                    'registrationNumber': 'VD-111',
+                    'units': [{'unitCode': 'Vỉ', 'toBaseQty': 10.0, 'price': 5000.0}]
+                },
+                'stock_info': {
+                    'lotNo': 'LOT_ATOMIC_1',
+                    'expiryDate': '2030-01-01',
+                    'qty': 100.0,
+                    'cost': 2000.0,
+                    'fundSource': 'Nguồn A'
+                }
+            },
+            {
+                'product_info': {
+                    'name': 'Thuốc Atomic 2 (Lỗi)',
+                    'defaultUnit': 'Chai',
+                    'barcode': '22222',
+                    'productType': 'thuoc',
+                    'registrationNumber': 'VD-222',
+                    'units': []
+                },
+                # Cố tình gây lỗi tồn kho âm để phát sinh exception ở _assert_no_negative_stock / validate
+                'stock_info': {
+                    'lotNo': 'LOT_ATOMIC_2',
+                    'expiryDate': 'INVALID_DATE_FORMAT_EX',
+                    'qty': -50.0,
+                    'cost': 1000.0,
+                    'fundSource': ''
+                }
+            }
+        ]
+
+        # Thao tác bulk_import_products_and_stock bị ném ra ngoại lệ
+        with self.assertRaises(Exception):
+            self.db.bulk_import_products_and_stock(records_with_error)
+
+        # Kiểm tra CSDL: Không một sản phẩm hay đơn vị nào được phép tồn tại (Rollback 100%)
+        count1 = self.db.q("SELECT COUNT(*) as c FROM products WHERE name IN ('Thuốc Atomic 1', 'Thuốc Atomic 2 (Lỗi)')")[0]['c']
+        self.assertEqual(count1, 0, "Bắt buộc rollback 100% sản phẩm khi bulk_import bị lỗi")
+
+        # Thử lại với dữ liệu hoàn toàn hợp lệ
+        valid_records = [
+            {
+                'product_info': {
+                    'name': 'Thuốc Atomic Hợp Lệ',
+                    'defaultUnit': 'Hộp',
+                    'barcode': '33333',
+                    'productType': 'thuoc',
+                    'registrationNumber': 'VD-333',
+                    'units': [{'unitCode': 'Vỉ', 'toBaseQty': 10.0, 'price': 5000.0}]
+                },
+                'stock_info': {
+                    'lotNo': 'LOT_OK_1',
+                    'expiryDate': '2030-12-31',
+                    'qty': 50.0,
+                    'cost': 15000.0,
+                    'fundSource': 'Nguồn OK'
+                }
+            }
+        ]
+        p_count, u_count, s_count, note_num = self.db.bulk_import_products_and_stock(valid_records)
+        self.assertEqual(p_count, 1)
+        self.assertEqual(s_count, 1)
+        self.assertTrue(note_num.startswith('PN-'))
+
+        # Kiểm tra sản phẩm và tồn kho đã được ghi nhận nguyên tử
+        p_row = self.db.q("SELECT id FROM products WHERE name='Thuốc Atomic Hợp Lệ'")
+        self.assertEqual(len(p_row), 1)
+
 if __name__ == '__main__':
     unittest.main()

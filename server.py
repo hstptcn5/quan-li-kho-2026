@@ -2972,16 +2972,17 @@ MOBILE_HTML = """<!DOCTYPE html>
                     });
             };
             
+            const token = localStorage.getItem('inventory_token') || '';
             if (type === 'purchase') {
                 document.getElementById('print-modal-title').textContent = 'Nhập Kho Thành Công';
                 btnPhone.onclick = function() {
-                    window.open(`/api/print-purchase?id=${noteId}`, '_blank');
+                    window.open(`/api/print-purchase?id=${encodeURIComponent(noteId)}&token=${encodeURIComponent(token)}`, '_blank');
                     closePrintModal();
                 };
             } else {
                 document.getElementById('print-modal-title').textContent = 'Xuất Kho Thành Công';
                 btnPhone.onclick = function() {
-                    window.open(`/api/print-dispatch?id=${noteId}`, '_blank');
+                    window.open(`/api/print-dispatch?id=${encodeURIComponent(noteId)}&token=${encodeURIComponent(token)}`, '_blank');
                     closePrintModal();
                 };
             }
@@ -3066,7 +3067,8 @@ MOBILE_HTML = """<!DOCTYPE html>
         }
         
         function printActivityPhone(type, noteId) {
-            const url = type === 'nhap' ? `/api/print-purchase?id=${noteId}` : `/api/print-dispatch?id=${noteId}`;
+            const token = localStorage.getItem('inventory_token') || '';
+            const url = (type === 'nhap' ? `/api/print-purchase?id=${encodeURIComponent(noteId)}` : `/api/print-dispatch?id=${encodeURIComponent(noteId)}`) + `&token=${encodeURIComponent(token)}`;
             window.open(url, '_blank');
         }
 
@@ -3335,7 +3337,8 @@ MOBILE_HTML = """<!DOCTYPE html>
                             })
                             .catch(err => showToast("Lỗi gửi lệnh in PC", "error"));
                     } else {
-                        const printUrl = type === 'purchase' ? `/api/print-purchase?id=${noteId}` : `/api/print-dispatch?id=${noteId}`;
+                        const token = localStorage.getItem('inventory_token') || '';
+                        const printUrl = (type === 'purchase' ? `/api/print-purchase?id=${encodeURIComponent(noteId)}` : `/api/print-dispatch?id=${encodeURIComponent(noteId)}`) + `&token=${encodeURIComponent(token)}`;
                         window.open(printUrl, '_blank');
                     }
                 } else {
@@ -3416,7 +3419,8 @@ MOBILE_HTML = """<!DOCTYPE html>
                     };
                     
                     document.getElementById('btn-preview-submit-phone').onclick = () => {
-                        const url = data.type === 'nhap' ? `/api/print-purchase?id=${noteId}` : `/api/print-dispatch?id=${noteId}`;
+                        const token = localStorage.getItem('inventory_token') || '';
+                        const url = (data.type === 'nhap' ? `/api/print-purchase?id=${encodeURIComponent(noteId)}` : `/api/print-dispatch?id=${encodeURIComponent(noteId)}`) + `&token=${encodeURIComponent(token)}`;
                         window.open(url, '_blank');
                         modal.style.display = 'none';
                     };
