@@ -5,19 +5,25 @@ echo ========================================
 echo.
 
 REM Check if Python is installed
-python --version >nul 2>&1
+set PYTHON_EXE=.venv\Scripts\python.exe
+if not exist "%PYTHON_EXE%" (
+    echo Creating Python 3.10 virtual environment...
+    py -3.10 -m venv .venv
+)
+
+"%PYTHON_EXE%" --version >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: Python is not installed or not in PATH
-    echo Please install Python 3.8+ from https://www.python.org/downloads/
+    echo ERROR: Python 3.10 virtual environment is not available
+    echo Please install Python 3.10+ from https://www.python.org/downloads/
     pause
     exit /b 1
 )
 
 REM Check if PyInstaller is installed
-python -m pip show pyinstaller >nul 2>&1
+"%PYTHON_EXE%" -m pip show pyinstaller >nul 2>&1
 if errorlevel 1 (
     echo Installing PyInstaller...
-    python -m pip install pyinstaller==6.6.0
+    "%PYTHON_EXE%" -m pip install pyinstaller==6.6.0
     if errorlevel 1 (
         echo ERROR: Failed to install PyInstaller
         pause
@@ -33,7 +39,7 @@ if exist "*.spec" del "*.spec"
 
 echo.
 echo Installing dependencies...
-python -m pip install -r requirements.txt
+"%PYTHON_EXE%" -m pip install -r requirements.txt
 if errorlevel 1 (
     echo ERROR: Failed to install dependencies
     pause
@@ -43,7 +49,7 @@ if errorlevel 1 (
 echo.
 echo Locating pyzbar package...
 set PYZBAR_DIR=
-for /f "delims=" %%i in ('python -c "import os, pyzbar; print(os.path.dirname(pyzbar.__file__))" 2^>nul') do set PYZBAR_DIR=%%i
+for /f "delims=" %%i in ('%PYTHON_EXE% -c "import os, pyzbar; print(os.path.dirname(pyzbar.__file__))" 2^>nul') do set PYZBAR_DIR=%%i
 
 if "%PYZBAR_DIR%"=="" (
     echo ERROR: Could not locate pyzbar package directory.
@@ -60,8 +66,14 @@ echo Copying pyzbar DLLs to temp directory...
 if not exist "_pyzbar_dlls" mkdir "_pyzbar_dlls"
 copy "%PYZBAR_DIR%\libzbar-64.dll" "_pyzbar_dlls\" >nul 2>&1
 copy "%PYZBAR_DIR%\libiconv.dll" "_pyzbar_dlls\" >nul 2>&1
+if not exist "_pyzbar_dlls\libzbar-64.dll" (
+    echo WARNING: libzbar-64.dll was not found. App will still run, but camera barcode scanning may be disabled.
+)
+if not exist "_pyzbar_dlls\libiconv.dll" (
+    echo WARNING: libiconv.dll was not found. App will still run, but camera barcode scanning may be disabled.
+)
 
-pyinstaller ^
+"%PYTHON_EXE%" -m PyInstaller ^
     --onefile ^
     --windowed ^
     --name="QuanLyKho" ^

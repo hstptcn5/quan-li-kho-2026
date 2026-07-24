@@ -56,7 +56,7 @@ try:
     from pyzbar import pyzbar
     from PIL import Image, ImageTk
     BARCODE_AVAILABLE = True
-except ImportError:
+except Exception:
     BARCODE_AVAILABLE = False
 
 try:

@@ -149,20 +149,28 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             
         elif path == "/api/stock":
             barcode = query.get("barcode", [""])[0].strip()
-            if not barcode:
-                self.send_json({"success": False, "message": "Mã vạch trống"}, 400)
+            product_id = query.get("id", [""])[0].strip()
+            if not barcode and not product_id:
+                self.send_json({"success": False, "message": "Ma vach hoac ID san pham trong"}, 400)
                 return
                 
             try:
                 conn = open_db()
                 conn.row_factory = sqlite3.Row
                 
-                # Tìm kiếm sản phẩm theo barcode hoặc tên gần đúng
-                product_rows = conn.execute("""
-                    SELECT id, name, defaultUnit, barcode, productType, registrationNumber 
-                    FROM products 
-                    WHERE barcode=? OR name LIKE ? LIMIT 1
-                """, (barcode, f"%{barcode}%")).fetchall()
+                if product_id:
+                    product_rows = conn.execute("""
+                        SELECT id, name, defaultUnit, barcode, productType, registrationNumber
+                        FROM products
+                        WHERE id=? LIMIT 1
+                    """, (product_id,)).fetchall()
+                else:
+                    # Tim san pham theo barcode hoac ten gan dung
+                    product_rows = conn.execute("""
+                        SELECT id, name, defaultUnit, barcode, productType, registrationNumber
+                        FROM products
+                        WHERE barcode=? OR name LIKE ? LIMIT 1
+                    """, (barcode, f"%{barcode}%")).fetchall()
                 
                 if not product_rows:
                     self.send_json({"success": False, "message": "Không tìm thấy sản phẩm"}, 404)

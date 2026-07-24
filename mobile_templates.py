@@ -6,16 +6,20 @@ MOBILE_HTML = """<!DOCTYPE html>
     <title>Kiểm Kho Di Động</title>
     <style>
         :root {
-            --primary: #0284c7;
-            --primary-hover: #0369a1;
-            --bg-grad: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
-            --glass-bg: rgba(255, 255, 255, 0.65);
-            --glass-border: rgba(2, 132, 199, 0.12);
+            --primary: #0479b8;
+            --primary-hover: #036494;
+            --bg-grad: linear-gradient(180deg, #eef8fc 0%, #dff1f8 100%);
+            --glass-bg: rgba(255, 255, 255, 0.88);
+            --glass-border: rgba(15, 23, 42, 0.08);
             --text-light: #0f172a;
             --text-muted: #475569;
             --success: #0d9488;
             --warning: #ea580c;
             --danger: #e11d48;
+            --surface: #ffffff;
+            --surface-soft: #f8fafc;
+            --shadow-sm: 0 8px 24px rgba(15, 23, 42, 0.07);
+            --shadow-focus: 0 10px 22px rgba(4, 121, 184, 0.18);
         }
         * {
             box-sizing: border-box;
@@ -28,7 +32,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             background: var(--bg-grad);
             color: var(--text-light);
             min-height: 100vh;
-            padding: 15px;
+            padding: 14px 12px 18px;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -38,71 +42,86 @@ MOBILE_HTML = """<!DOCTYPE html>
             max-width: 500px;
             display: flex;
             flex-direction: column;
-            gap: 12px;
+            gap: 14px;
         }
         header {
-            text-align: center;
-            padding: 5px 0;
+            text-align: left;
+            padding: 4px 4px 0;
             display: flex;
-            flex-direction: column;
             align-items: center;
-            gap: 4px;
+            gap: 10px;
         }
         header h1 {
-            font-size: 1.4rem;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-            color: #0369a1;
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            font-size: 1.25rem;
+            font-weight: 800;
+            color: #075985;
+            line-height: 1.15;
         }
         header p {
             font-size: 0.8rem;
             color: var(--text-muted);
         }
+        .app-mark {
+            width: 38px;
+            height: 38px;
+            border-radius: 10px;
+            background: #075985;
+            color: #fff;
+            display: grid;
+            place-items: center;
+            font-size: 0.75rem;
+            font-weight: 800;
+            letter-spacing: 0.3px;
+            box-shadow: var(--shadow-focus);
+            flex: 0 0 auto;
+        }
         .nav-tabs {
-            display: flex;
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
             width: 100%;
-            background: rgba(2, 132, 199, 0.04);
+            background: rgba(255, 255, 255, 0.72);
             border: 1px solid var(--glass-border);
-            border-radius: 12px;
-            padding: 4px;
+            border-radius: 14px;
+            padding: 5px;
+            box-shadow: var(--shadow-sm);
         }
         .tab-btn {
-            flex: 1;
             background: transparent;
             border: none;
             color: var(--text-muted);
-            padding: 8px 4px;
-            font-size: 0.82rem;
-            font-weight: 600;
+            padding: 9px 5px;
+            font-size: 0.76rem;
+            font-weight: 700;
             cursor: pointer;
-            border-radius: 8px;
-            transition: all 0.3s;
+            border-radius: 10px;
+            transition: all 0.18s;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
-            gap: 4px;
+            gap: 3px;
+            min-height: 48px;
         }
         .tab-btn span {
             display: inline;
         }
+        .tab-icon {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: currentColor;
+            opacity: 0.55;
+        }
         @media (max-width: 480px) {
             .tab-btn {
-                padding: 6px 2px;
-                font-size: 0.72rem;
-                flex-direction: column;
-                gap: 2px;
-            }
-            .tab-btn span {
-                font-size: 0.62rem;
+                padding: 8px 3px;
+                font-size: 0.68rem;
             }
         }
         .tab-btn.active {
             background: var(--primary);
             color: #fff;
-            box-shadow: 0 4px 12px rgba(2, 130, 199, 0.3);
+            box-shadow: var(--shadow-focus);
         }
         .tab-content {
             display: none;
@@ -115,12 +134,76 @@ MOBILE_HTML = """<!DOCTYPE html>
         .card {
             background: var(--glass-bg);
             border: 1px solid var(--glass-border);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border-radius: 16px;
+            border-radius: 14px;
             padding: 15px;
-            box-shadow: 0 8px 32px 0 rgba(2, 132, 199, 0.08);
+            box-shadow: var(--shadow-sm);
         }
+        .section-title {
+            font-size: 0.98rem;
+            font-weight: 800;
+            color: var(--text-light);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            border-bottom: 1px solid var(--glass-border);
+            padding-bottom: 10px;
+            margin-bottom: 12px;
+        }
+        .dashboard-card {
+            padding: 14px;
+        }
+        .dashboard-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        .dashboard-title {
+            font-weight: 800;
+            color: #075985;
+            font-size: 0.94rem;
+        }
+        .refresh-link {
+            border: 1px solid var(--glass-border);
+            background: var(--surface-soft);
+            color: var(--text-muted);
+            border-radius: 8px;
+            padding: 6px 8px;
+            cursor: pointer;
+            font-size: 0.75rem;
+            font-weight: 700;
+        }
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            text-align: left;
+        }
+        .stat-tile {
+            background: var(--surface-soft);
+            border: 1px solid var(--glass-border);
+            padding: 10px;
+            border-radius: 10px;
+        }
+        .stat-tile.clickable {
+            cursor: pointer;
+        }
+        .stat-label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            font-weight: 700;
+            line-height: 1.2;
+        }
+        .stat-value {
+            font-size: 1.18rem;
+            font-weight: 850;
+            color: var(--text-light);
+            margin-top: 6px;
+            line-height: 1;
+        }
+        .stat-danger { color: var(--danger); }
+        .stat-warning { color: #d97706; }
         .scanner-card {
             overflow: hidden;
             display: flex;
@@ -366,25 +449,26 @@ MOBILE_HTML = """<!DOCTYPE html>
         .product-list {
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 10px;
             max-height: 50vh;
             overflow-y: auto;
             margin-top: 8px;
             padding-right: 2px;
         }
         .product-item {
-            background: rgba(255, 255, 255, 0.55);
-            border: 1px solid rgba(2, 132, 199, 0.08);
-            border-radius: 10px;
-            padding: 10px 12px;
+            background: var(--surface);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 12px;
             cursor: pointer;
-            transition: background 0.2s;
+            transition: border-color 0.2s, box-shadow 0.2s;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
         .product-item:hover {
-            background: rgba(255, 255, 255, 0.85);
+            border-color: rgba(4, 121, 184, 0.22);
+            box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
         }
         .product-item-details {
             display: flex;
@@ -403,6 +487,62 @@ MOBILE_HTML = """<!DOCTYPE html>
         .product-item-arrow {
             color: var(--text-muted);
             font-size: 1.1rem;
+        }
+        .activity-item {
+            cursor: default;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 10px;
+        }
+        .activity-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+        }
+        .status-pill {
+            font-size: 0.7rem;
+            line-height: 1;
+            font-weight: 800;
+            padding: 6px 8px;
+            border-radius: 999px;
+            letter-spacing: 0.2px;
+        }
+        .status-pill.purchase {
+            background: rgba(13, 148, 136, 0.1);
+            color: #0f766e;
+            border: 1px solid rgba(13, 148, 136, 0.2);
+        }
+        .status-pill.dispatch {
+            background: rgba(225, 29, 72, 0.1);
+            color: #be123c;
+            border: 1px solid rgba(225, 29, 72, 0.18);
+        }
+        .activity-time {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-weight: 700;
+        }
+        .activity-note {
+            font-weight: 800;
+            font-size: 0.94rem;
+            color: var(--text-light);
+        }
+        .activity-partner {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            line-height: 1.35;
+        }
+        .activity-action {
+            width: 100%;
+            padding: 9px 10px;
+            background: var(--primary);
+            border: none;
+            border-radius: 9px;
+            color: #fff;
+            font-weight: 800;
+            font-size: 0.8rem;
+            cursor: pointer;
         }
         
         .modal-overlay {
@@ -725,37 +865,40 @@ MOBILE_HTML = """<!DOCTYPE html>
 
     <div class="container">
         <header>
-            <h1>🏥 Quản Lý Kho Di Động</h1>
-            <p>Kiểm kho, Nhập/Xuất & Liên kết mã vạch nhanh chóng</p>
+            <div class="app-mark">XNT</div>
+            <div>
+                <h1>Quản lý kho di động</h1>
+                <p>Kiểm kho, nhập xuất và liên kết mã vạch</p>
+            </div>
         </header>
 
-        <div class="card dashboard-card" style="margin-bottom: 15px; padding: 14px; background: linear-gradient(135deg, rgba(2, 132, 199, 0.06) 0%, rgba(13, 148, 136, 0.06) 100%); border: 1px solid rgba(2, 132, 199, 0.15);">
-            <div style="font-weight: 700; font-size: 0.95rem; color: var(--primary); display: flex; align-items: center; gap: 6px; margin-bottom: 12px;">
-                📊 Tổng Quan Kho Hàng
-                <span id="dashboard-refresh" onclick="loadDashboardStats()" style="cursor: pointer; font-size: 0.85rem; font-weight: normal; color: var(--text-muted); margin-left: auto;">🔄 Cập nhật</span>
+        <div class="card dashboard-card">
+            <div class="dashboard-head">
+                <div class="dashboard-title">Tổng quan kho hàng</div>
+                <button id="dashboard-refresh" class="refresh-link" onclick="loadDashboardStats()">Cập nhật</button>
             </div>
-            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center;">
-                <div style="background: rgba(255,255,255,0.75); border: 1px solid var(--glass-border); padding: 8px; border-radius: 10px;">
-                    <div style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600;">Tổng Thuốc</div>
-                    <div id="dash-total-products" style="font-size: 1.1rem; font-weight: 800; color: var(--text-light); margin-top: 4px;">0</div>
+            <div class="stat-grid">
+                <div class="stat-tile">
+                    <div class="stat-label">Tổng sản phẩm</div>
+                    <div id="dash-total-products" class="stat-value">0</div>
                 </div>
-                <div onclick="filterCatalog('outofstock')" style="background: rgba(255,255,255,0.75); border: 1px solid var(--glass-border); padding: 8px; border-radius: 10px; cursor: pointer; transition: transform 0.2s;">
-                    <div style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600;">❌ Hết Hàng</div>
-                    <div id="dash-outofstock-products" style="font-size: 1.1rem; font-weight: 800; color: #ef4444; margin-top: 4px;">0</div>
+                <div class="stat-tile clickable" onclick="filterCatalog('outofstock')">
+                    <div class="stat-label">Hết hàng</div>
+                    <div id="dash-outofstock-products" class="stat-value stat-danger">0</div>
                 </div>
-                <div onclick="filterCatalog('expiring')" style="background: rgba(255,255,255,0.75); border: 1px solid var(--glass-border); padding: 8px; border-radius: 10px; cursor: pointer; transition: transform 0.2s;">
-                    <div style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600;">⚠️ Cận Hạn</div>
-                    <div id="dash-expiring-products" style="font-size: 1.1rem; font-weight: 800; color: #f59e0b; margin-top: 4px;">0</div>
+                <div class="stat-tile clickable" onclick="filterCatalog('expiring')">
+                    <div class="stat-label">Cận hạn</div>
+                    <div id="dash-expiring-products" class="stat-value stat-warning">0</div>
                 </div>
             </div>
         </div>
 
         <div class="nav-tabs">
-            <button class="tab-btn active" onclick="switchTab('tab-checker')">🔍 <span>Kiểm Kho</span></button>
-            <button class="tab-btn" onclick="switchTab('tab-temp')">🌡️ <span>Nhiệt Độ</span></button>
-            <button class="tab-btn" onclick="switchTab('tab-xnt')">📊 <span>Báo cáo XNT</span></button>
-            <button class="tab-btn" onclick="switchTab('tab-catalog')">📋 <span>Danh Sách</span></button>
-            <button class="tab-btn" onclick="switchTab('tab-history')">📜 <span>Lịch Sử</span></button>
+            <button class="tab-btn active" onclick="switchTab('tab-checker')"><i class="tab-icon"></i><span>Kiểm kho</span></button>
+            <button class="tab-btn" onclick="switchTab('tab-temp')"><i class="tab-icon"></i><span>Nhiệt độ</span></button>
+            <button class="tab-btn" onclick="switchTab('tab-xnt')"><i class="tab-icon"></i><span>XNT</span></button>
+            <button class="tab-btn" onclick="switchTab('tab-catalog')"><i class="tab-icon"></i><span>Danh sách</span></button>
+            <button class="tab-btn" onclick="switchTab('tab-history')"><i class="tab-icon"></i><span>Lịch sử</span></button>
         </div>
 
         <div id="cart-status-bar" style="display: none; gap: 8px; width: 100%; margin-top: 5px; margin-bottom: 10px;">
@@ -780,7 +923,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             </div>
 
             <div class="card" id="result-card" style="display: none;">
-                <div class="result-title">📦 Kết quả truy vấn</div>
+                <div class="section-title">Kết quả truy vấn</div>
                 <div id="result-content"></div>
                 
                 <div id="action-forms">
@@ -866,7 +1009,7 @@ MOBILE_HTML = """<!DOCTYPE html>
 
         <div id="tab-temp" class="tab-content">
             <div class="card">
-                <div class="form-title">🌡️ Nhật ký nhiệt độ & độ ẩm</div>
+                <div class="section-title">Nhật ký nhiệt độ và độ ẩm</div>
                 <div class="form-group">
                     <label>Ngày ghi nhận</label>
                     <input type="date" id="temp-date" class="form-control" required />
@@ -901,9 +1044,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             </div>
 
             <div class="card">
-                <div style="font-weight: 700; font-size: 0.95rem; color: var(--primary); display: flex; align-items: center; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--glass-border); padding-bottom: 6px;">
-                    📋 Nhật ký đo gần đây
-                </div>
+                <div class="section-title">Nhật ký đo gần đây</div>
                 <div style="display: flex; gap: 8px; margin-bottom: 10px;">
                     <input type="month" id="temp-filter-month" class="form-control" style="flex: 1;" onchange="loadTemperatureLogs()" />
                     <select id="temp-filter-location" class="form-control" style="flex: 1;" onchange="loadTemperatureLogs()"></select>
@@ -916,7 +1057,7 @@ MOBILE_HTML = """<!DOCTYPE html>
 
         <div id="tab-xnt" class="tab-content">
             <div class="card">
-                <div class="form-title">📊 Tra cứu Xuất Nhập Tồn</div>
+                <div class="section-title">Tra cứu xuất nhập tồn</div>
                 <div class="form-group">
                     <label>Chọn tháng tra cứu</label>
                     <input type="month" id="xnt-filter-month" class="form-control" required />
@@ -929,9 +1070,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             </div>
 
             <div class="card" id="xnt-report-card" style="display: none;">
-                <div style="font-weight: 700; font-size: 0.95rem; color: var(--primary); display: flex; align-items: center; gap: 6px; margin-bottom: 12px;">
-                    📋 Bảng số liệu XNT
-                </div>
+                <div class="section-title">Bảng số liệu XNT</div>
                 <div class="report-table-wrapper">
                     <table class="report-table">
                         <thead>
@@ -953,7 +1092,7 @@ MOBILE_HTML = """<!DOCTYPE html>
 
         <div id="tab-catalog" class="tab-content">
             <div class="card">
-                <button class="action-btn" style="margin-bottom: 12px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; background: var(--primary); font-size: 0.9rem;" onclick="openCreateProductForm()">➕ Thêm Sản Phẩm Mới</button>
+                <button class="action-btn" style="margin-bottom: 12px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; background: var(--primary); font-size: 0.9rem;" onclick="openCreateProductForm()">Thêm sản phẩm mới</button>
                 
                 <div id="form-create-product" class="form-container" style="margin-bottom: 15px; border-style: solid; border-color: var(--primary);">
                     <div class="form-title">➕ Thêm sản phẩm mới</div>
@@ -1003,7 +1142,7 @@ MOBILE_HTML = """<!DOCTYPE html>
         
         <div id="tab-history" class="tab-content">
             <div class="card">
-                <div class="result-title">📜 Lịch sử hoạt động gần đây</div>
+                <div class="section-title">Lịch sử hoạt động gần đây</div>
                 <div id="history-list" class="product-list">
                     <div style="text-align: center; color: var(--text-muted); padding: 20px;">Đang tải...</div>
                 </div>
@@ -1252,28 +1391,20 @@ MOBILE_HTML = """<!DOCTYPE html>
                             } catch(e) {}
                             
                             const item = document.createElement('div');
-                            item.className = 'product-item';
-                            item.style.cursor = 'default';
-                            item.style.flexDirection = 'column';
-                            item.style.alignItems = 'stretch';
-                            item.style.gap = '8px';
+                            item.className = 'product-item activity-item';
                             
                             const isPurchase = act.type === 'nhap';
-                            const badgeColor = isPurchase ? 'var(--success)' : 'var(--danger)';
-                            const typeLabel = isPurchase ? 'NHẬP KHO' : 'XUẤT KHO';
+                            const typeClass = isPurchase ? 'purchase' : 'dispatch';
+                            const typeLabel = isPurchase ? 'Nhập kho' : 'Xuất kho';
                             
                             item.innerHTML = `
-                                <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <span style="font-weight: bold; font-size: 0.8rem; padding: 2px 6px; border-radius: 4px; background: ${badgeColor}; color: #fff;">${typeLabel}</span>
-                                    <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 500;">${formattedDate}</span>
+                                <div class="activity-top">
+                                    <span class="status-pill ${typeClass}">${typeLabel}</span>
+                                    <span class="activity-time">${formattedDate}</span>
                                 </div>
-                                <div style="font-weight: 600; font-size: 0.9rem; color: var(--text-light); margin: 2px 0;">Số phiếu: ${escapeHtml(act.noteNumber)}</div>
-                                <div style="font-size: 0.8rem; color: var(--text-muted);">${isPurchase ? 'Nhà cung cấp' : 'Đơn vị nhận'}: ${escapeHtml(act.details)}</div>
-                                <div style="display: flex; gap: 8px; margin-top: 6px; border-top: 1px solid var(--glass-border); padding-top: 8px;">
-                                    <button onclick="showNotePreview('${act.type}', ${act.id})" style="flex: 1; padding: 8px; background: var(--primary); border: none; border-radius: 8px; color: #fff; font-weight: bold; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;">
-                                        🔎 Xem trước & In phiếu
-                                    </button>
-                                </div>
+                                <div class="activity-note">Số phiếu: ${escapeHtml(act.noteNumber)}</div>
+                                <div class="activity-partner">${isPurchase ? 'Nhà cung cấp' : 'Đơn vị nhận'}: ${escapeHtml(act.details)}</div>
+                                <button class="activity-action" onclick="showNotePreview('${act.type}', ${act.id})">Xem trước và in phiếu</button>
                             `;
                             historyList.appendChild(item);
                         });
@@ -1677,7 +1808,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             document.getElementById('preview-modal').style.display = 'none';
         }
 
-        function checkStock(barcode) {
+        function checkStock(barcode, byId = false) {
             if (!barcode) return;
             
             resultCard.style.display = 'block';
@@ -1689,7 +1820,10 @@ MOBILE_HTML = """<!DOCTYPE html>
                 </div>
             `;
 
-            fetch(`/api/stock?barcode=${encodeURIComponent(barcode)}`)
+            const url = byId
+                ? `/api/stock?id=${encodeURIComponent(barcode)}`
+                : `/api/stock?barcode=${encodeURIComponent(barcode)}`;
+            fetch(url)
                 .then(res => {
                     if (!res.ok) {
                         return res.json().then(err => { throw new Error(err.message || 'Không tìm thấy sản phẩm') });
@@ -2018,7 +2152,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                     let html = '';
                     data.products.forEach(p => {
                         html += `
-                            <div class="product-item" onclick="selectProductFromCatalog('${p.barcode || p.id}')">
+                            <div class="product-item" onclick="selectProductFromCatalog(${p.id})">
                                 <div class="product-item-details">
                                     <span class="product-item-name">${p.name}</span>
                                     <span class="product-item-sub">ĐVT: ${p.unit} ${p.barcode ? ' | Mã vạch: ' + p.barcode : ''}</span>
@@ -2047,7 +2181,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             fetch('/api/dashboard-stats')
                 .then(res => res.json())
                 .then(data => {
-                    if (refreshBtn) refreshBtn.innerHTML = '🔄 Cập nhật';
+                    if (refreshBtn) refreshBtn.textContent = 'Cập nhật';
                     if (data.success) {
                         document.getElementById('dash-total-products').textContent = data.totalProducts;
                         document.getElementById('dash-outofstock-products').textContent = data.outofstockProducts;
@@ -2055,15 +2189,15 @@ MOBILE_HTML = """<!DOCTYPE html>
                     }
                 })
                 .catch(err => {
-                    if (refreshBtn) refreshBtn.innerHTML = '🔄 Cập nhật';
+                    if (refreshBtn) refreshBtn.textContent = 'Cập nhật';
                     console.error("Lỗi tải dashboard stats:", err);
                 });
         }
 
-        function selectProductFromCatalog(identifier) {
-            barcodeInput.value = identifier;
+        function selectProductFromCatalog(productId) {
+            barcodeInput.value = `ID:${productId}`;
             switchTab('tab-checker');
-            checkStock(identifier);
+            checkStock(productId, true);
         }
 
         function openCreateProductForm() {
@@ -2111,10 +2245,10 @@ MOBILE_HTML = """<!DOCTYPE html>
                     closeCreateProductForm();
                     loadDashboardStats();
                     
-                    const identifier = data.barcode || barcode || data.productId;
+                    const identifier = data.productId;
                     barcodeInput.value = identifier;
                     switchTab('tab-checker');
-                    checkStock(identifier);
+                    checkStock(identifier, true);
                     
                     setTimeout(() => {
                         openForm('purchase');
