@@ -1054,14 +1054,19 @@ Hiện tại bạn vẫn có thể:
         )
         self.ent_exp.grid(row=1, column=7, sticky='w', padx=6, pady=6)
 
-        # ── Hàng 2: Đơn giá nhập
+        # ── Hàng 2: Đơn giá nhập hoặc tổng tiền dòng
         tb.Label(box, text='Đơn giá nhập:').grid(row=2, column=0, sticky='w', padx=6, pady=(6,8))
         self.ent_cost = tb.Entry(box, width=12)
         self.ent_cost.insert(0, '0')
         self.ent_cost.grid(row=2, column=1, sticky='w', padx=6, pady=(6,8))
         self._numberize(self.ent_cost)
 
-        tb.Label(box, text='Nguồn kinh phí:').grid(row=2, column=2, sticky='e', padx=6, pady=(6,8))
+        tb.Label(box, text='Tổng tiền dòng:').grid(row=2, column=2, sticky='e', padx=6, pady=(6,8))
+        self.ent_line_total = tb.Entry(box, width=14)
+        self.ent_line_total.grid(row=2, column=3, sticky='w', padx=6, pady=(6,8))
+        self._numberize(self.ent_line_total)
+
+        tb.Label(box, text='Nguồn kinh phí:').grid(row=2, column=4, sticky='e', padx=6, pady=(6,8))
         self.cmb_item_fund = tb.Combobox(
             box,
             values=[
@@ -1074,7 +1079,7 @@ Hiện tại bạn vẫn có thể:
             width=25
         )
         self.cmb_item_fund.set('TCMR (Tiêm chủng mở rộng)')
-        self.cmb_item_fund.grid(row=2, column=3, columnspan=3, sticky='w', padx=6, pady=(6,8))
+        self.cmb_item_fund.grid(row=2, column=5, columnspan=3, sticky='w', padx=6, pady=(6,8))
 
         # --- Nút tác vụ
         btns = tb.Frame(frm)
@@ -1164,6 +1169,18 @@ Hiện tại bạn vẫn có thể:
         if cost < 0:
             messagebox.showerror('Lỗi', 'Đơn giá nhập không được âm'); return
 
+        total_raw = (self.ent_line_total.get() or '').strip().replace(',', '')
+        if total_raw:
+            try:
+                line_total = float(total_raw)
+            except:
+                messagebox.showerror('Lỗi', 'Tổng tiền dòng không hợp lệ'); return
+            if line_total < 0:
+                messagebox.showerror('Lỗi', 'Tổng tiền dòng không được âm'); return
+            cost = line_total / qty if qty else 0.0
+        else:
+            line_total = qty * cost
+
         name = self.name_by_id(pid)
         fund_source = self.cmb_item_fund.get().strip()
         
@@ -1171,7 +1188,8 @@ Hiện tại bạn vẫn có thể:
         for it in self.cart_purchase:
             if it['productId'] == pid and it['lotNo'] == lot and it.get('fundSource') == fund_source:
                 it['qty'] = round(it['qty'] + qty, 4)
-                it['cost'] = cost
+                it['totalAmount'] = float(it.get('totalAmount') or 0) + line_total
+                it['cost'] = it['totalAmount'] / it['qty'] if it['qty'] else 0.0
                 merged = True
                 break
         if not merged:
@@ -1183,12 +1201,14 @@ Hiện tại bạn vẫn có thể:
                 'lotNo': lot,
                 'expiryDate': exp,
                 'cost': cost,
+                'totalAmount': line_total,
                 'fundSource': fund_source
             })
 
         self.refresh_purchase_cart_view()
         self.ent_qty.delete(0, tk.END)
         self.ent_qty.insert(0, '1')
+        self.ent_line_total.delete(0, tk.END)
         self.search_purchase.focus_set()
 
     def remove_selected_purchase_item(self):
@@ -1209,7 +1229,7 @@ Hiện tại bạn vẫn có thể:
         for i in self.tree_purchase_cart.get_children():
             self.tree_purchase_cart.delete(i)
         for idx, it in enumerate(self.cart_purchase):
-            total_val = it['qty'] * it['cost']
+            total_val = float(it.get('totalAmount') if it.get('totalAmount') is not None else it['qty'] * it['cost'])
             self.tree_purchase_cart.insert('', 'end',
                 values=(
                     it['productId'], 
@@ -1223,7 +1243,7 @@ Hiện tại bạn vẫn có thể:
                     f"{total_val:,.0f}"
                 ),
                 tags=('odd',) if idx % 2 else ())
-        total_sum = sum(float(it.get('qty') or 0) * float(it.get('cost') or 0) for it in self.cart_purchase)
+        total_sum = sum(float(it.get('totalAmount') if it.get('totalAmount') is not None else float(it.get('qty') or 0) * float(it.get('cost') or 0)) for it in self.cart_purchase)
         if hasattr(self, 'lbl_purchase_cart_total'):
             self.lbl_purchase_cart_total.config(text=f'Tổng tiền tạm tính: {total_sum:,.0f} VNĐ')
 
@@ -1422,7 +1442,7 @@ Hiện tại bạn vẫn có thể:
             for idx, it in enumerate(self.last_purchase_items, 1):
                 qty = it['qty']
                 cost = it['cost']
-                sub_total = qty * cost
+                sub_total = float(it.get('totalAmount') if it.get('totalAmount') is not None else qty * cost)
                 total_sum += sub_total
                 
                 table_data.append([
@@ -2338,7 +2358,7 @@ Hiện tại bạn vẫn có thể:
             for idx, it in enumerate(self.last_dispatch_items, 1):
                 qty = it['qty']
                 cost = it.get('cost') or 0.0
-                sub_total = qty * cost
+                sub_total = float(it.get('totalAmount') if it.get('totalAmount') is not None else qty * cost)
                 total_sum += sub_total
                 
                 table_data.append([
@@ -2766,7 +2786,7 @@ Hiện tại bạn vẫn có thể:
         for idx, it in enumerate(items, 1):
             qty = float(it['qty'] or 0)
             price = float((it['cost'] if 'cost' in it.keys() else 0) or 0)
-            amount = qty * price
+            amount = float((it['totalAmount'] if 'totalAmount' in it.keys() else None) or (qty * price))
             total_qty += qty
             total_amount += amount
             tree.insert('', 'end', values=(
@@ -2944,6 +2964,7 @@ Hiện tại bạn vẫn có thể:
                     'lotNo': it['lotNo'],
                     'expiryDate': it['expiryDate'],
                     'cost': it['cost'],
+                    'totalAmount': it['totalAmount'] if 'totalAmount' in it.keys() else None,
                     'fundSource': it['fundSource'] if 'fundSource' in it.keys() else ''
                 })
                 
@@ -3116,6 +3137,7 @@ Hiện tại bạn vẫn có thể:
                     'lotNo': it['lotNo'],
                     'expiryDate': it['expiryDate'],
                     'cost': it.get('cost') or 0.0,
+                    'totalAmount': it['totalAmount'] if 'totalAmount' in it.keys() else None,
                     'fundSource': it['fundSource'] if 'fundSource' in it.keys() else ''
                 })
                 
@@ -3409,7 +3431,7 @@ Hiện tại bạn vẫn có thể:
             for idx, r in enumerate(details):
                 qty = float(r['qty'])
                 cost = float(r['cost'] or 0)
-                sub_total = qty * cost
+                sub_total = float(r.get('totalAmount') if r.get('totalAmount') is not None else qty * cost)
                 tot_qty += qty
                 tot_val += sub_total
                 
@@ -4518,7 +4540,8 @@ Hiện tại bạn vẫn có thể:
                 'Số lô',
                 'Hạn sử dụng (DD-MM-YYYY)',
                 'Số lượng tồn (Đơn vị cơ sở)',
-                'Giá nhập (Đơn vị cơ sở)'
+                'Giá nhập (Đơn vị cơ sở)',
+                'Tổng tiền dòng'
             ]
 
             sample_data = [
@@ -4540,7 +4563,8 @@ Hiện tại bạn vẫn có thể:
                     'LOT123',
                     '31-12-2027',
                     500,
-                    1200
+                    1200,
+                    600000
                 ],
                 [
                     'Vaccine Quinvaxem',
@@ -4560,7 +4584,8 @@ Hiện tại bạn vẫn có thể:
                     'B2209',
                     '30-09-2026',
                     50,
-                    150000
+                    150000,
+                    7500000
                 ]
             ]
 
@@ -4612,7 +4637,7 @@ Hiện tại bạn vẫn có thể:
                             cell = worksheet.cell(row=row, column=col)
                             cell.font = data_font
                             cell.border = thin_border
-                            if col in [7, 8, 10, 11, 13, 14, 17, 18]:
+                            if col in [7, 8, 10, 11, 13, 14, 17, 18, 19]:
                                 cell.alignment = Alignment(horizontal='right')
                             elif col in [2, 4, 15, 16]:
                                 cell.alignment = Alignment(horizontal='center')
@@ -4779,6 +4804,12 @@ Hiện tại bạn vẫn có thể:
                                 else:
                                     cost_val = row.get('Giá nhập (Đơn vị cơ sở)')
                                     cost = float(cost_val) if not pd.isna(cost_val) and float(cost_val) >= 0 else 0.0
+                                    total_val = row.get('Tổng tiền dòng')
+                                    total_amount = None
+                                    if total_val is not None and not pd.isna(total_val) and str(total_val).strip():
+                                        total_amount = float(total_val)
+                                        if total_amount < 0:
+                                            total_amount = None
                                     fund_source = str(row.get('Nguồn kinh phí', '')).strip()
                                     if fund_source.lower() in ('nan', 'none', ''):
                                         fund_source = ''
@@ -4789,6 +4820,7 @@ Hiện tại bạn vẫn có thể:
                                         'unitCode': default_unit,
                                         'qty': qty,
                                         'cost': cost,
+                                        'totalAmount': total_amount,
                                         'fundSource': fund_source
                                     }
                         except ValueError:

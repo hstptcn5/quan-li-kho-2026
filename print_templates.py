@@ -16,7 +16,7 @@ def render_print_purchase_html(note, items):
     for idx, it in enumerate(items, 1):
         qty = float(it['qty'])
         cost = float(it['cost'])
-        amount = qty * cost
+        amount = float(it['totalAmount']) if 'totalAmount' in it.keys() and it['totalAmount'] is not None else qty * cost
         total_amount += amount
         
         cost_str = f"{cost:,.1f}".replace(".0", "") if cost > 0 else "0"

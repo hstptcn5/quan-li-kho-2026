@@ -47,6 +47,14 @@ class TestMedicalWarehouseFixes(unittest.TestCase):
         self.assertIn("referenceType", columns)
         self.assertIn("referenceId", columns)
         self.assertIn("referenceItemId", columns)
+
+        cursor.execute("PRAGMA table_info(purchase_items)")
+        purchase_cols = {row[1] for row in cursor.fetchall()}
+        self.assertIn("totalAmount", purchase_cols)
+
+        cursor.execute("PRAGMA table_info(dispatch_items)")
+        dispatch_cols = {row[1] for row in cursor.fetchall()}
+        self.assertIn("totalAmount", dispatch_cols)
         
         # Kiểm tra SCHEMA_VERSION mới nhất
         cursor.execute("PRAGMA user_version")
@@ -194,6 +202,8 @@ class TestMedicalWarehouseFixes(unittest.TestCase):
         self.assertNotEqual(note_num1, note_num2)
         self.assertTrue(note_num1.startswith("PN"))
         self.assertTrue(note_num2.startswith("PN"))
+        self.assertRegex(note_num1, r"^PN-\d{6}-\d{3}$")
+        self.assertRegex(note_num2, r"^PN-\d{6}-\d{3}$")
         
         # Kiểm tra số thứ hai lớn hơn số thứ nhất
         num1 = int(note_num1.split("-")[-1])
@@ -585,6 +595,29 @@ class TestMedicalWarehouseFixes(unittest.TestCase):
         ], "Don vi", "Xuat", "")
         dispatch_names = [row["productName"] for row in self.db.get_dispatch_detail(dispatch_id)]
         self.assertEqual(dispatch_names, ["Zeta", "Alpha"])
+
+    def test_purchase_total_amount_is_preserved_for_fractional_unit_cost(self):
+        self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (203, 'Fractional Cost Drug', 'Vien')")
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (203, 'Vien', 1, 0)")
+        self.db.conn.commit()
+
+        purchase_id, note_num, details = self.db.record_purchase([{
+            "productId": 203,
+            "productName": "Fractional Cost Drug",
+            "qty": 60,
+            "unitCode": "Vien",
+            "lotNo": "LF",
+            "expiryDate": "2028-12-31",
+            "cost": 0,
+            "totalAmount": 125000,
+            "fundSource": "N"
+        }], "NCC", "Nhap", "", date_str="2026-07-24")
+
+        self.assertEqual(note_num, "PN-240726-001")
+        self.assertAlmostEqual(details[0]["cost"], 125000 / 60)
+        self.assertEqual(details[0]["totalAmount"], 125000)
+        row = self.db.get_purchase_detail(purchase_id)[0]
+        self.assertEqual(row["totalAmount"], 125000)
 
 if __name__ == '__main__':
     unittest.main()

@@ -63,10 +63,14 @@ class DB:
         # Thêm cột nguồn kinh phí cho purchase_items (v2.1)
         if not self._has_column('purchase_items', 'fundSource'):
             self.conn.execute("ALTER TABLE purchase_items ADD COLUMN fundSource TEXT")
+        if not self._has_column('purchase_items', 'totalAmount'):
+            self.conn.execute("ALTER TABLE purchase_items ADD COLUMN totalAmount REAL")
 
         # Thêm cột nguồn kinh phí cho dispatch_items (v2.2)
         if not self._has_column('dispatch_items', 'fundSource'):
             self.conn.execute("ALTER TABLE dispatch_items ADD COLUMN fundSource TEXT")
+        if not self._has_column('dispatch_items', 'totalAmount'):
+            self.conn.execute("ALTER TABLE dispatch_items ADD COLUMN totalAmount REAL")
 
         # Thêm các trường mới cho products
         if not self._has_column('products', 'productType'):
@@ -99,6 +103,9 @@ class DB:
 
         if not self._has_column('dispatch_items', 'cost'):
             self.conn.execute("ALTER TABLE dispatch_items ADD COLUMN cost REAL DEFAULT 0")
+
+        self.conn.execute("UPDATE purchase_items SET totalAmount = qty * COALESCE(cost, 0) WHERE totalAmount IS NULL")
+        self.conn.execute("UPDATE dispatch_items SET totalAmount = qty * COALESCE(cost, 0) WHERE totalAmount IS NULL")
 
         # === Lỗi 1: Migration dữ liệu cũ — gán qtyBase cho bản ghi hiện có ===
         self.conn.execute('''
@@ -426,13 +433,17 @@ class DB:
             self.conn.rollback(); raise
 
     # dispatch (Xuất kho / Cấp phát — FEFO)
-    def _next_note_number(self, prefix):
-        """Lỗi 9: Sinh số phiếu tuần tự dạng PN-2026-000001 / PX-2026-000001"""
-        year = dt.datetime.now().strftime('%Y')
+    def _next_note_number(self, prefix, date_str=None):
+        """Sinh số phiếu theo ngày: PN-DDMMYY-001 / PX-DDMMYY-001."""
+        try:
+            note_date = dt.datetime.strptime((date_str or '').split()[0], '%Y-%m-%d')
+        except Exception:
+            note_date = dt.datetime.now()
+        date_key = note_date.strftime('%d%m%y')
         table = 'purchase_notes' if prefix == 'PN' else 'dispatch_notes'
         row = self.q(
             f"SELECT noteNumber FROM {table} WHERE noteNumber LIKE ? ORDER BY noteNumber DESC LIMIT 1",
-            (f"{prefix}-{year}-%",)
+            (f"{prefix}-{date_key}-%",)
         )
         if row:
             try:
@@ -442,7 +453,7 @@ class DB:
                 next_seq = 1
         else:
             next_seq = 1
-        return f"{prefix}-{year}-{next_seq:06d}"
+        return f"{prefix}-{date_key}-{next_seq:03d}"
 
     def dispatch(self, items, receiving_unit: str, reason: str = 'Cấp phát', note: str = '', date_str: str = None, audit_ip: str = 'Local'):
         """
@@ -463,7 +474,7 @@ class DB:
                 created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
             # Lỗi 9: Tạo số phiếu tuần tự
-            note_number = self._next_note_number('PX')
+            note_number = self._next_note_number('PX', date_str)
             cur = self.conn.execute(
                 "INSERT INTO dispatch_notes(noteNumber, receivingUnit, reason, note, createdAt) VALUES(?,?,?,?,?)",
                 (note_number, receiving_unit, reason, note, created_at)
@@ -593,12 +604,13 @@ class DB:
                         take_fa = min(lot_need_base, fa_qty)
                         take_fa_in_unit = take_fa / to_base
                         cost_fa_in_unit = float(lot['costBase']) * to_base
+                        line_total = take_fa_in_unit * cost_fa_in_unit
                         fund_name = fa['fundSource'] or ''
                         
                         # Lỗi 6: Ghi dispatch_items trước để lấy ID
                         di_cur = self.conn.execute(
-                            "INSERT INTO dispatch_items(dispatchId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost, fundSource) VALUES(?,?,?,?,?,?,?,?,?)",
-                            (dispatch_id, it['productId'], lot['batchId'], it['unitCode'], take_fa_in_unit, lot['lotNo'], lot['expiryDate'], cost_fa_in_unit, fund_name)
+                            "INSERT INTO dispatch_items(dispatchId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost, fundSource, totalAmount) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                            (dispatch_id, it['productId'], lot['batchId'], it['unitCode'], take_fa_in_unit, lot['lotNo'], lot['expiryDate'], cost_fa_in_unit, fund_name, line_total)
                         )
                         dispatch_item_id = di_cur.lastrowid
                         
@@ -622,7 +634,8 @@ class DB:
                             'expiryDate': lot['expiryDate'],
                             'batchId': lot['batchId'],
                             'cost': cost_fa_in_unit,
-                            'fundSource': fund_name
+                            'fundSource': fund_name,
+                            'totalAmount': line_total
                         })
                         lot_need_base -= take_fa
 
@@ -764,7 +777,7 @@ class DB:
                 created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
             # Lỗi 9: Tạo số phiếu nhập tuần tự
-            note_number = self._next_note_number('PN')
+            note_number = self._next_note_number('PN', date_str)
             cur = self.conn.execute(
                 "INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt) VALUES(?,?,?,?,?)",
                 (note_number, supplier, reason, note, created_at)
@@ -784,9 +797,11 @@ class DB:
                 qty_base = qty_val * to_base
                 
                 # Lỗi 6: Ghi purchase_items trước để lấy ID
+                total_amount = float(it.get('totalAmount') if it.get('totalAmount') is not None else qty_val * float(it.get('cost') or 0))
+                unit_cost = total_amount / qty_val if qty_val else 0.0
                 pi_cur = self.conn.execute(
-                    "INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost, fundSource) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (purchase_id, it['productId'], bid, it['unitCode'], qty_val, it['lotNo'], it['expiryDate'], float(it.get('cost') or 0), fund_src)
+                    "INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost, fundSource, totalAmount) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (purchase_id, it['productId'], bid, it['unitCode'], qty_val, it['lotNo'], it['expiryDate'], unit_cost, fund_src, total_amount)
                 )
                 purchase_item_id = pi_cur.lastrowid
                 
@@ -798,14 +813,14 @@ class DB:
                         referenceType, referenceId, referenceItemId, createdAt
                     ) VALUES(?,?,?,?,?,?,?, 'PURCHASE', ?,?,?,?,  'PURCHASE',?,?,?)""",
                     (it['productId'], bid, it['unitCode'], qty_val, qty_base, qty_val, it['unitCode'],
-                     float(it.get('cost') or 0), supplier, reason, fund_src,
+                     unit_cost, supplier, reason, fund_src,
                      purchase_id, purchase_item_id, created_at)
                 )
                 
                 # Đồng bộ giá bán base = giá nhập
                 self.conn.execute(
                     "UPDATE product_units SET price=? WHERE productId=? AND unitCode=?",
-                    (float(it.get('cost') or 0), it['productId'], it['unitCode'])
+                    (unit_cost, it['productId'], it['unitCode'])
                 )
                 
                 purchase_details.append({
@@ -815,7 +830,8 @@ class DB:
                     'qty': qty_val,
                     'lotNo': it['lotNo'],
                     'expiryDate': it['expiryDate'],
-                    'cost': float(it.get('cost') or 0),
+                    'cost': unit_cost,
+                    'totalAmount': total_amount,
                     'fundSource': fund_src,
                     'batchId': bid
                 })
@@ -931,7 +947,7 @@ class DB:
             note_number = ""
             purchase_id = None
             if purchase_items:
-                note_number = self._next_note_number('PN')
+                note_number = self._next_note_number('PN', created_at)
                 cur = self.conn.execute(
                     "INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt) VALUES(?,?,?,?,?)",
                     (note_number, supplier, reason, note, created_at)
@@ -947,9 +963,11 @@ class DB:
                     qty_base = qty_val * to_base
                     fund_src = it.get('fundSource') or ''
 
+                    total_amount = float(it.get('totalAmount') if it.get('totalAmount') is not None else qty_val * float(it['cost']))
+                    unit_cost = total_amount / qty_val if qty_val else 0.0
                     pi_cur = self.conn.execute(
-                        "INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost, fundSource) VALUES(?,?,?,?,?,?,?,?,?)",
-                        (purchase_id, it['productId'], bid, it['unitCode'], qty_val, it['lotNo'], it['expiryDate'], float(it['cost']), fund_src)
+                        "INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost, fundSource, totalAmount) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (purchase_id, it['productId'], bid, it['unitCode'], qty_val, it['lotNo'], it['expiryDate'], unit_cost, fund_src, total_amount)
                     )
                     purchase_item_id = pi_cur.lastrowid
 
@@ -960,7 +978,7 @@ class DB:
                             referenceType, referenceId, referenceItemId, createdAt
                         ) VALUES(?,?,?,?,?,?,?, 'PURCHASE', ?,?,?,?,  'PURCHASE',?,?,?)""",
                         (it['productId'], bid, it['unitCode'], qty_val, qty_base, qty_val, it['unitCode'],
-                         float(it['cost']), supplier, reason, fund_src,
+                         unit_cost, supplier, reason, fund_src,
                          purchase_id, purchase_item_id, created_at)
                     )
 
@@ -1071,7 +1089,7 @@ class DB:
             SELECT dn.receivingUnit,
                    COUNT(DISTINCT dn.id) AS noteCount,
                    COALESCE(SUM(di.qty), 0) AS totalQty,
-                   COALESCE(SUM(di.qty * di.cost), 0) AS totalValue
+                   COALESCE(SUM(COALESCE(di.totalAmount, di.qty * di.cost)), 0) AS totalValue
             FROM dispatch_notes dn
             JOIN dispatch_items di ON di.dispatchId = dn.id
             WHERE DATE(dn.createdAt) BETWEEN DATE(?) AND DATE(?)
@@ -1085,7 +1103,7 @@ class DB:
         """Lấy chi tiết các phiếu xuất cho một đơn vị nhận cụ thể"""
         sql = '''
             SELECT dn.noteNumber, dn.createdAt, dn.reason,
-                   p.name AS productName, di.qty, di.cost, di.lotNo, di.expiryDate, di.fundSource
+                   p.name AS productName, di.qty, di.cost, di.totalAmount, di.lotNo, di.expiryDate, di.fundSource
             FROM dispatch_notes dn
             JOIN dispatch_items di ON di.dispatchId = dn.id
             JOIN products p ON p.id = di.productId

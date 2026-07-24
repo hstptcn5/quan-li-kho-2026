@@ -692,7 +692,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 for idx, it in enumerate(items, 1):
                     qty = float(it['qty'])
                     cost = float(it['cost'])
-                    sub_total = qty * cost
+                    sub_total = float(it["totalAmount"]) if "totalAmount" in it.keys() and it["totalAmount"] is not None else qty * cost
                     total_sum += sub_total
                     table_data.append([
                         Paragraph(str(idx), style_cell_center),
@@ -992,6 +992,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 expiry_date = str(data.get("expiryDate", "")).strip()
                 fund_source = str(data.get("fundSource", "")).strip()
                 cost = float(data.get("cost", 0.0))
+                total_amount = data.get("totalAmount")
                 
                 if not product_id or qty is None or not lot_no or not expiry_date:
                     self.send_json({"success": False, "message": "Vui lòng nhập đầy đủ thông tin"}, 400)
@@ -1002,7 +1003,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     "lotNo": lot_no,
                     "expiryDate": expiry_date,
                     "fundSource": fund_source,
-                    "cost": cost
+                    "cost": cost,
+                    "totalAmount": total_amount
                 }]
 
             if not isinstance(items, list) or len(items) == 0:
@@ -1041,6 +1043,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         
                     if "cost" not in item:
                         item["cost"] = 0.0
+                    if item.get("totalAmount") not in (None, ""):
+                        item["totalAmount"] = float(item["totalAmount"])
                     if "fundSource" not in item:
                         item["fundSource"] = ""
                         
