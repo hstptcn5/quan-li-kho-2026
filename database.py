@@ -1,7 +1,9 @@
 # database.py — Lớp cơ sở dữ liệu cho phần mềm Quản lý XNT
 import sqlite3
 import datetime as dt
-from config import SCHEMA_SQL, SCHEMA_VERSION
+import os
+import shutil
+from config import BACKUP_DIR, SCHEMA_SQL, SCHEMA_VERSION
 
 class DB:
     def __init__(self, path: str):
@@ -18,6 +20,7 @@ class DB:
         try: self.conn.execute("ALTER TABLE products ADD COLUMN barcode TEXT")
         except sqlite3.OperationalError: pass
 
+        self._backup_before_schema_migration()
         self.migrate_schema()
 
         self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode) WHERE barcode IS NOT NULL")
@@ -31,6 +34,22 @@ class DB:
 
     def _has_column(self, table, col):
         return any(r[1] == col for r in self.conn.execute(f"PRAGMA table_info({table})"))
+
+    def _backup_before_schema_migration(self):
+        """Create one DB file backup before applying additive schema migrations."""
+        try:
+            if not self.path or not os.path.exists(self.path) or os.path.getsize(self.path) == 0:
+                return
+            os.makedirs(BACKUP_DIR, exist_ok=True)
+            stamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
+            base_name = os.path.splitext(os.path.basename(self.path))[0]
+            target = os.path.join(BACKUP_DIR, f"{base_name}_pre_migration_{stamp}.db")
+            if os.path.exists(target):
+                return
+            self.conn.commit()
+            shutil.copy2(self.path, target)
+        except Exception as e:
+            print(f"Khong the tao backup truoc migration: {e}")
 
     def migrate_schema(self):
         if not self._has_column('stock_movements', 'cost'):
