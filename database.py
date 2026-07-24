@@ -112,49 +112,6 @@ class DB:
             WHERE qtyBase IS NULL
         ''')
 
-        # === Lỗi 6: Migration — liên kết chứng từ cho dữ liệu cũ (an toàn) ===
-        # Lấy các stock_movements cũ chưa có referenceId
-        cursor = self.conn.cursor()
-        moves = cursor.execute("""
-            SELECT id, productId, batchId, qty, type, createdAt, unitCode
-            FROM stock_movements 
-            WHERE referenceId IS NULL AND type IN ('PURCHASE', 'DISPATCH')
-        """).fetchall()
-        
-        for move in moves:
-            m_id, p_id, b_id, qty, m_type, m_created, unit_code = move
-            # Thử tìm bản ghi trùng khớp trong items tương ứng
-            if m_type == 'PURCHASE':
-                # Tìm trong purchase_items
-                matches = cursor.execute("""
-                    SELECT pi.id, pi.purchaseId 
-                    FROM purchase_items pi
-                    JOIN purchase_notes pn ON pi.purchaseId = pn.id
-                    WHERE pi.productId = ? AND pi.batchId = ? AND ABS(pi.qty - ?) < 0.0001
-                      AND pi.unitCode = ?
-                """, (p_id, b_id, abs(qty), unit_code)).fetchall()
-            else:
-                # Tìm trong dispatch_items
-                matches = cursor.execute("""
-                    SELECT di.id, di.dispatchId 
-                    FROM dispatch_items di
-                    JOIN dispatch_notes dn ON di.dispatchId = dn.id
-                    WHERE di.productId = ? AND di.batchId = ? AND ABS(di.qty - ?) < 0.0001
-                      AND di.unitCode = ?
-                """, (p_id, b_id, abs(qty), unit_code)).fetchall()
-                
-            if len(matches) == 1:
-                # Khớp duy nhất! Gán reference
-                item_id, note_id = matches[0]
-                cursor.execute("""
-                    UPDATE stock_movements 
-                    SET referenceType = ?, referenceId = ?, referenceItemId = ?
-                    WHERE id = ?
-                """, (m_type, note_id, item_id, m_id))
-            else:
-                # Nếu không khớp hoặc khớp nhiều dòng, giữ nguyên NULL để tránh nguy cơ xóa nhầm dữ liệu lịch sử
-                pass
-
         # đảm bảo có dòng đơn vị cơ sở
         for r in self.conn.execute("SELECT id, defaultUnit FROM products"):
             if not self.conn.execute("SELECT 1 FROM product_units WHERE productId=? AND unitCode=?", (r['id'], r['defaultUnit'])).fetchone():
@@ -320,18 +277,40 @@ class DB:
         '''
         return self.q(sql, (start_date, end_date))
 
+    def validate_batch(self, product_id, lot_no, expiry_date):
+        """Lỗi Lô hàng (Atomic Excel) — Chỉ kiểm tra tính hợp lệ mà KHÔNG chèn bản ghi vào DB"""
+        r = self.q("SELECT expiryDate FROM batches WHERE productId=? AND lotNo=?", (product_id, lot_no))
+        if r:
+            if r[0]['expiryDate'] != expiry_date:
+                raise ValueError(
+                    f"Số lô '{lot_no}' đã tồn tại với HSD {r[0]['expiryDate']}, "
+                    f"không khớp {expiry_date}"
+                )
+
     def ensure_batch(self, product_id, lot_no, expiry_date):
-        """Lỗi 8: Validate lô hàng — cùng số lô phải cùng HSD"""
+        """Validate và lấy/tạo lô hàng mà không tự động commit transaction dở dang."""
         r = self.q("SELECT id, expiryDate FROM batches WHERE productId=? AND lotNo=?", (product_id, lot_no))
         if r:
             if r[0]['expiryDate'] != expiry_date:
-                raise Exception(
+                raise ValueError(
                     f"Số lô '{lot_no}' đã tồn tại với HSD {r[0]['expiryDate']}, "
-                    f"không khớp HSD mới {expiry_date}. "
-                    "Vui lòng kiểm tra lại hoặc điều chỉnh số lô."
+                    f"không khớp HSD mới {expiry_date}."
                 )
             return r[0]['id']
-        return self.ex("INSERT INTO batches(productId, lotNo, expiryDate) VALUES(?,?,?)", (product_id, lot_no, expiry_date))
+        cur = self.conn.execute("INSERT INTO batches(productId, lotNo, expiryDate) VALUES(?,?,?)", (product_id, lot_no, expiry_date))
+        return cur.lastrowid
+
+    def _assert_no_negative_stock(self):
+        """Kiểm tra bất biến: Tồn kho của bất kỳ sản phẩm, lô hàng và nguồn kinh phí nào không bao giờ bị âm."""
+        negative_rows = self.q("""
+            SELECT productId, batchId, COALESCE(fundSource, '') AS fundSource,
+                   SUM(COALESCE(qtyBase, qty)) AS balance
+            FROM stock_movements
+            GROUP BY productId, batchId, COALESCE(fundSource, '')
+            HAVING balance < -0.0001
+        """)
+        if negative_rows:
+            raise ValueError(f"Phát hiện tồn kho âm không hợp lệ trong hệ thống: {negative_rows}")
 
     # purchase
     def add_purchase(self, items):
@@ -348,6 +327,7 @@ class DB:
                     "INSERT INTO stock_movements(productId, batchId, unitCode, qty, qtyBase, originalQty, originalUnit, type, cost) VALUES(?,?,?,?,?,?,?, 'PURCHASE', ?)",
                     (it['productId'], bid, it['unitCode'], float(it['qty']), qty_base, float(it['qty']), it['unitCode'], float(it.get('cost') or 0))
                 )
+            self._assert_no_negative_stock()
             self.conn.commit()
         except Exception:
             self.conn.rollback(); raise
@@ -423,6 +403,7 @@ class DB:
             for it in finalized:
                 self.conn.execute("INSERT INTO sale_items(saleId, productId, unitCode, qty, price) VALUES(?,?,?,?,?)",
                                   (sale_id, it['productId'], it['unitCode'], it['qty'], it['price']))
+            self._assert_no_negative_stock()
             self.conn.commit()
             return sale_id, finalized, total, change
         except Exception:
@@ -447,7 +428,7 @@ class DB:
             next_seq = 1
         return f"{prefix}-{year}-{next_seq:06d}"
 
-    def dispatch(self, items, receiving_unit: str, reason: str = 'Cấp phát', note: str = '', date_str: str = None):
+    def dispatch(self, items, receiving_unit: str, reason: str = 'Cấp phát', note: str = '', date_str: str = None, audit_ip: str = 'Local'):
         """
         Xuất kho / cấp phát hàng theo FEFO.
         Lỗi 1: Sử dụng qtyBase cho mọi tính toán
@@ -642,12 +623,14 @@ class DB:
             # Lưu đơn vị nhận vào bảng receiving_units (nếu chưa có)
             self._save_receiving_unit(receiving_unit)
 
+            self._assert_no_negative_stock()
             self.conn.commit()
             try:
                 self.add_audit_log(
                     action="XUAT_KHO",
                     note_id=dispatch_id,
-                    details=f"Xuất kho thành công, số phiếu: {note_number}, đơn vị nhận: {receiving_unit}, số mặt hàng: {len(items)}"
+                    details=f"Xuất kho thành công, số phiếu: {note_number}, đơn vị nhận: {receiving_unit}, số mặt hàng: {len(items)}",
+                    ip=audit_ip
                 )
             except Exception as log_err:
                 print(f"Lỗi ghi log xuat kho: {log_err}")
@@ -704,7 +687,7 @@ class DB:
         ''', (dispatch_id,))
 
     # purchase (Nhập kho)
-    def record_purchase(self, items, supplier: str, reason: str = 'Nhập kho', note: str = '', date_str: str = None):
+    def record_purchase(self, items, supplier: str, reason: str = 'Nhập kho', note: str = '', date_str: str = None, audit_ip: str = 'Local'):
         """
         Nhập kho thuốc, vaccine, VTYT và lưu phiếu nhập.
         Lỗi 1: Ghi qtyBase, originalQty, originalUnit
@@ -778,12 +761,14 @@ class DB:
                     'batchId': bid
                 })
 
+            self._assert_no_negative_stock()
             self.conn.commit()
             try:
                 self.add_audit_log(
                     action="NHAP_KHO",
                     note_id=purchase_id,
-                    details=f"Nhập kho thành công, số phiếu: {note_number}, nhà cung cấp: {supplier}, số mặt hàng: {len(items)}"
+                    details=f"Nhập kho thành công, số phiếu: {note_number}, nhà cung cấp: {supplier}, số mặt hàng: {len(items)}",
+                    ip=audit_ip
                 )
             except Exception as log_err:
                 print(f"Lỗi ghi log nhap kho: {log_err}")

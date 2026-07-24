@@ -5153,9 +5153,9 @@ Hiện tại bạn vẫn có thể:
                     if fund_source.lower() in ('nan', 'none', ''):
                         fund_source = ''
                     
-                    # Gọi ensure_batch để validate ngay tại đây để bắt lỗi trùng lô khác HSD
+                    # Gọi validate_batch để kiểm tra ngay tại đây mà không chèn bản ghi dở dang vào DB
                     try:
-                        self.db.ensure_batch(product_id_db, lot_no, expiry_date)
+                        self.db.validate_batch(product_id_db, lot_no, expiry_date)
                         items_to_record.append({
                             'productId': product_id_db,
                             'lotNo': lot_no,
