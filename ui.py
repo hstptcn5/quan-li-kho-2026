@@ -1051,6 +1051,7 @@ Hiện tại bạn vẫn có thể:
 
         tb.Button(top, text='Làm mới', bootstyle='primary', command=self.refresh_report).pack(side='left', padx=6)
         tb.Button(top, text='Xuất CSV…', bootstyle='info', command=self.export_report_csv).pack(side='left', padx=6)
+        tb.Button(top, text='Xuất Excel…', bootstyle='success', command=self.export_report_excel).pack(side='left', padx=6)
         tb.Button(top, text='Xuất PDF…', bootstyle='danger', command=self.export_report_pdf).pack(side='left', padx=6)
         tb.Button(top, text='Biên bản kiểm kê (PDF)', bootstyle='warning', command=self.print_inventory_check_pdf).pack(side='left', padx=6)
 
@@ -2185,6 +2186,122 @@ Hiện tại bạn vẫn có thể:
 
         self.toast('Đã lưu báo cáo X–N–T')
 
+    def export_report_excel(self):
+        start_s, end_s = self._date_range_from_entries(self.de_from, self.de_to) if hasattr(self, 'de_from') and hasattr(self, 'de_to') else ('', '')
+        if not start_s or not end_s:
+            messagebox.showwarning('Thiếu ngày', 'Chọn đủ Từ ngày và Đến ngày'); return
+
+        fund_source = self.cmb_report_fund.get().strip() if hasattr(self, 'cmb_report_fund') else 'Tất cả'
+        rows = self.db.xnt_report(start_s, end_s, fund_source)
+        if not rows:
+            messagebox.showinfo('Thông báo', 'Không có dữ liệu báo cáo trong khoảng thời gian này'); return
+
+        start_display = format_date_display(start_s)
+        end_display = format_date_display(end_s)
+        path = filedialog.asksaveasfilename(
+            defaultextension='.xlsx',
+            filetypes=[('Excel files', '*.xlsx'), ('All files', '*.*')],
+            initialfile=f'bao_cao_xuat_nhap_ton_{start_display}_den_{end_display}.xlsx'
+        )
+        if not path:
+            return
+
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            messagebox.showerror(
+                'Thiếu thư viện',
+                "Hệ thống thiếu thư viện 'openpyxl' để xuất Excel.\nHãy chạy lệnh 'pip install openpyxl' trong terminal."
+            )
+            return
+
+        try:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = 'Bao cao XNT'
+
+            headers = [
+                'Mã SP', 'Tên sản phẩm', 'Đơn vị', 'Số lô', 'Hạn sử dụng',
+                'Nguồn kinh phí', 'Tồn đầu', 'Nhập', 'Xuất', 'Tồn cuối'
+            ]
+            last_col = len(headers)
+
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+            ws.cell(row=1, column=1, value='BÁO CÁO XUẤT - NHẬP - TỒN').font = Font(bold=True, size=15, color='1F2937')
+            ws.cell(row=1, column=1).alignment = Alignment(horizontal='center')
+            ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=last_col)
+            ws.cell(row=2, column=1, value=f'Từ ngày {start_display} đến ngày {end_display} | Nguồn: {fund_source or "Tất cả"}')
+            ws.cell(row=2, column=1).alignment = Alignment(horizontal='center')
+
+            header_row = 4
+            for col_idx, header in enumerate(headers, start=1):
+                cell = ws.cell(row=header_row, column=col_idx, value=header)
+                cell.font = Font(bold=True, color='FFFFFF')
+                cell.fill = PatternFill('solid', fgColor='2563EB')
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+
+            totals = {'opening': 0.0, 'inbound': 0.0, 'outbound': 0.0, 'closing': 0.0}
+            for row_idx, r in enumerate(rows, start=header_row + 1):
+                values = [
+                    r['productId'],
+                    r['productName'],
+                    r.get('unit') or '',
+                    r.get('lotNo') or '',
+                    format_date_display(r.get('expiryDate') or ''),
+                    r.get('fundSource') or '',
+                    float(r['opening']),
+                    float(r['inbound']),
+                    float(r['outbound']),
+                    float(r['closing']),
+                ]
+                ws.append(values)
+                totals['opening'] += values[6]
+                totals['inbound'] += values[7]
+                totals['outbound'] += values[8]
+                totals['closing'] += values[9]
+                if row_idx % 2 == 1:
+                    for col_idx in range(1, last_col + 1):
+                        ws.cell(row=row_idx, column=col_idx).fill = PatternFill('solid', fgColor='F8FAFC')
+
+            total_row = ws.max_row + 1
+            ws.cell(row=total_row, column=2, value='TỔNG CỘNG')
+            ws.cell(row=total_row, column=7, value=round(totals['opening'], 4))
+            ws.cell(row=total_row, column=8, value=round(totals['inbound'], 4))
+            ws.cell(row=total_row, column=9, value=round(totals['outbound'], 4))
+            ws.cell(row=total_row, column=10, value=round(totals['closing'], 4))
+
+            thin = Side(style='thin', color='CBD5E1')
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            for row in ws.iter_rows(min_row=header_row, max_row=total_row, min_col=1, max_col=last_col):
+                for cell in row:
+                    cell.border = border
+                    cell.alignment = Alignment(
+                        horizontal='right' if cell.column >= 7 else ('center' if cell.column in (1, 3, 4, 5) else 'left'),
+                        vertical='center',
+                        wrap_text=True
+                    )
+                    if cell.column >= 7:
+                        cell.number_format = '#,##0.####'
+
+            for cell in ws[total_row]:
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill('solid', fgColor='DCFCE7')
+
+            widths = [10, 34, 12, 16, 14, 24, 13, 13, 13, 13]
+            for col_idx, width in enumerate(widths, start=1):
+                ws.column_dimensions[get_column_letter(col_idx)].width = width
+            ws.row_dimensions[1].height = 24
+            ws.freeze_panes = 'A5'
+            ws.auto_filter.ref = f'A{header_row}:{get_column_letter(last_col)}{total_row}'
+
+            wb.save(path)
+            os.startfile(path)
+            self.toast('Đã xuất báo cáo XNT ra Excel và mở file thành công')
+        except Exception as e:
+            messagebox.showerror('Lỗi xuất Excel', f'Không thể xuất báo cáo Excel: {str(e)}')
+
     def export_report_pdf(self):
         start_s, end_s = self._date_range_from_entries(self.de_from, self.de_to) if hasattr(self, 'de_from') and hasattr(self, 'de_to') else ('', '')
         if not start_s or not end_s:
@@ -2424,7 +2541,11 @@ Hiện tại bạn vẫn có thể:
             messagebox.showerror("Lỗi in PDF", f"Không thể xuất báo cáo PDF: {str(e)}")
 
     def print_inventory_check_pdf(self):
-        end_s = parse_date_to_iso(self.de_to.entry.get()) if hasattr(self, 'de_to') else ''
+        try:
+            end_s = parse_date_to_iso(self.de_to.entry.get()) if hasattr(self, 'de_to') else ''
+        except ValueError:
+            messagebox.showerror('Lỗi ngày tháng', 'Ngày kết thúc kiểm kê không hợp lệ. Vui lòng nhập theo DD-MM-YYYY.')
+            return
         if not end_s:
             messagebox.showwarning('Thiếu ngày', 'Hãy chọn ngày đến (ngày kết thúc kiểm kê) ở ô Đến ngày'); return
 

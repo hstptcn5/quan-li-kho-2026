@@ -1354,13 +1354,13 @@ MOBILE_HTML = """<!DOCTYPE html>
             if (type === 'purchase') {
                 document.getElementById('print-modal-title').textContent = 'Nhập Kho Thành Công';
                 btnPhone.onclick = function() {
-                    window.open(`/api/print-purchase?id=${encodeURIComponent(noteId)}`, '_blank');
+                    window.open(withAuthToken(`/api/print-purchase?id=${encodeURIComponent(noteId)}`), '_blank');
                     closePrintModal();
                 };
             } else {
                 document.getElementById('print-modal-title').textContent = 'Xuất Kho Thành Công';
                 btnPhone.onclick = function() {
-                    window.open(`/api/print-dispatch?id=${encodeURIComponent(noteId)}`, '_blank');
+                    window.open(withAuthToken(`/api/print-dispatch?id=${encodeURIComponent(noteId)}`), '_blank');
                     closePrintModal();
                 };
             }
@@ -1370,6 +1370,13 @@ MOBILE_HTML = """<!DOCTYPE html>
         
         function closePrintModal() {
             document.getElementById('print-modal').style.display = 'none';
+        }
+
+        function withAuthToken(url) {
+            const token = localStorage.getItem('inventory_token') || '';
+            if (!token) return url;
+            const sep = url.includes('?') ? '&' : '?';
+            return `${url}${sep}token=${encodeURIComponent(token)}`;
         }
 
         function loadRecentActivities() {
@@ -1440,7 +1447,7 @@ MOBILE_HTML = """<!DOCTYPE html>
             const url = type === 'nhap'
                 ? `/api/print-purchase?id=${encodeURIComponent(noteId)}`
                 : `/api/print-dispatch?id=${encodeURIComponent(noteId)}`;
-            window.open(url, '_blank');
+            window.open(withAuthToken(url), '_blank');
         }
 
         let purchaseCart = JSON.parse(localStorage.getItem('mob_purchase_cart')) || [];
@@ -1711,7 +1718,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                         const printUrl = type === 'purchase'
                             ? `/api/print-purchase?id=${encodeURIComponent(noteId)}`
                             : `/api/print-dispatch?id=${encodeURIComponent(noteId)}`;
-                        window.open(printUrl, '_blank');
+                        window.open(withAuthToken(printUrl), '_blank');
                     }
                 } else {
                     showToast(data.message, "error");
@@ -1794,7 +1801,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                         const url = data.type === 'nhap'
                             ? `/api/print-purchase?id=${encodeURIComponent(noteId)}`
                             : `/api/print-dispatch?id=${encodeURIComponent(noteId)}`;
-                        window.open(url, '_blank');
+                        window.open(withAuthToken(url), '_blank');
                         modal.style.display = 'none';
                     };
                 })

@@ -4,6 +4,7 @@ import datetime as dt
 import os
 import shutil
 from config import BACKUP_DIR, SCHEMA_SQL, SCHEMA_VERSION
+from date_utils import parse_date_to_iso
 
 class DB:
     def __init__(self, path: str):
@@ -175,6 +176,98 @@ class DB:
 
     def unit_price(self, product_id, unit_code):
         _, price = self.unit_info(product_id, unit_code); return price or 0.0
+
+    def _normalize_business_date(self, value, default_today=False, field_name="Ngày"):
+        try:
+            return parse_date_to_iso(value, default_today=default_today)
+        except ValueError as exc:
+            raise ValueError(f"{field_name} không hợp lệ. Vui lòng nhập theo DD-MM-YYYY hoặc YYYY-MM-DD.") from exc
+
+    def _created_at_for_business_date(self, date_str=None):
+        business_date = self._normalize_business_date(date_str, default_today=True, field_name="Ngày chứng từ")
+        return f"{business_date} {dt.datetime.now().strftime('%H:%M:%S')}", business_date
+
+    def get_available_lots_as_of(self, product_id, reference_date, lot_no=None, fund_source=None, restrict_fund=False):
+        """Return available lots at the document date, ordered by FEFO."""
+        ref_date = self._normalize_business_date(reference_date, default_today=True, field_name="Ngày xuất")
+        where = ["sm.productId=?", "DATE(sm.createdAt) <= DATE(?)"]
+        params = [ref_date, product_id, ref_date]
+        if lot_no:
+            where.append("sm.batchId=(SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1)")
+            params.extend([product_id, lot_no])
+        if restrict_fund:
+            where.append("COALESCE(sm.fundSource, '')=?")
+            params.append(fund_source or "")
+
+        sql = f"""
+          SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
+                 COALESCE((
+                     SELECT sm2.cost FROM stock_movements sm2
+                     WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
+                       AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
+                       AND DATE(sm2.createdAt) <= DATE(?)
+                     ORDER BY datetime(sm2.createdAt) DESC, sm2.id DESC LIMIT 1
+                 ), 0) AS costBase
+          FROM (
+            SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
+            FROM stock_movements sm
+            WHERE {' AND '.join(where)}
+            GROUP BY sm.productId, sm.batchId
+          ) v
+          JOIN batches b ON b.id=v.batchId
+          WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE(?)
+          ORDER BY DATE(b.expiryDate), v.batchId
+        """
+        params.append(ref_date)
+        return self.q(sql, tuple(params))
+
+    def get_available_funds_as_of(self, product_id, batch_id, reference_date, fund_source=None, restrict_fund=False):
+        """Return fund balances for one product/batch at the document date."""
+        ref_date = self._normalize_business_date(reference_date, default_today=True, field_name="Ngày xuất")
+        where = [
+            "productId=?",
+            "batchId=?",
+            "DATE(createdAt) <= DATE(?)",
+        ]
+        params = [product_id, batch_id, ref_date]
+        if restrict_fund:
+            where.append("COALESCE(fundSource, '')=?")
+            params.append(fund_source or "")
+        return self.q(f"""
+            SELECT COALESCE(fundSource, '') AS fundSource, SUM(COALESCE(qtyBase, qty)) AS qb
+            FROM stock_movements
+            WHERE {' AND '.join(where)}
+            GROUP BY COALESCE(fundSource, '')
+            HAVING qb > 0
+            ORDER BY COALESCE(fundSource, '')
+        """, tuple(params))
+
+    def get_stock_as_of(self, reference_date, product_id=None, batch_id=None, fund_source=None):
+        """Return stock balances as of a date, separated by product, batch and fund source."""
+        ref_date = self._normalize_business_date(reference_date, default_today=True, field_name="Ngày tồn kho")
+        where = ["DATE(sm.createdAt) <= DATE(?)"]
+        params = [ref_date]
+        if product_id is not None:
+            where.append("sm.productId=?")
+            params.append(product_id)
+        if batch_id is not None:
+            where.append("sm.batchId=?")
+            params.append(batch_id)
+        if fund_source is not None:
+            where.append("COALESCE(sm.fundSource, '')=?")
+            params.append(fund_source or "")
+        return self.q(f"""
+            SELECT sm.productId, p.name AS productName, sm.batchId, b.lotNo, b.expiryDate,
+                   COALESCE(sm.fundSource, '') AS fundSource,
+                   ROUND(SUM(COALESCE(sm.qtyBase, sm.qty)), 4) AS stockBase
+            FROM stock_movements sm
+            JOIN products p ON p.id=sm.productId
+            JOIN batches b ON b.id=sm.batchId
+            WHERE {' AND '.join(where)}
+            GROUP BY sm.productId, p.name, sm.batchId, b.lotNo, b.expiryDate, COALESCE(sm.fundSource, '')
+            HAVING stockBase<>0
+            ORDER BY LOWER(p.name), DATE(b.expiryDate), COALESCE(sm.fundSource, '')
+        """, tuple(params))
 
     # views
     def stock_view(self):
@@ -479,14 +572,25 @@ class DB:
     def _assert_no_negative_stock(self):
         """Kiểm tra bất biến: Tồn kho của bất kỳ sản phẩm, lô hàng và nguồn kinh phí nào không bao giờ bị âm."""
         negative_rows = self.q("""
-            SELECT productId, batchId, COALESCE(fundSource, '') AS fundSource,
+            SELECT sm.productId, p.name AS productName, sm.batchId, b.lotNo,
+                   COALESCE(sm.fundSource, '') AS fundSource,
                    SUM(COALESCE(qtyBase, qty)) AS balance
-            FROM stock_movements
-            GROUP BY productId, batchId, COALESCE(fundSource, '')
+            FROM stock_movements sm
+            LEFT JOIN products p ON p.id=sm.productId
+            LEFT JOIN batches b ON b.id=sm.batchId
+            GROUP BY sm.productId, p.name, sm.batchId, b.lotNo, COALESCE(sm.fundSource, '')
             HAVING balance < -0.0001
         """)
         if negative_rows:
-            raise ValueError(f"Phát hiện tồn kho âm không hợp lệ trong hệ thống: {negative_rows}")
+            details = []
+            for row in negative_rows[:5]:
+                details.append(
+                    f"{row.get('productName') or '#' + str(row['productId'])}, "
+                    f"lô {row.get('lotNo') or row['batchId']}, "
+                    f"nguồn {row.get('fundSource') or '(không rõ)'}, "
+                    f"tồn {float(row['balance']):.4f}"
+                )
+            raise ValueError("Phát hiện tồn kho âm không hợp lệ: " + "; ".join(details))
 
     # purchase
     def add_purchase(self, items):
@@ -512,31 +616,18 @@ class DB:
     def sell(self, items):
         """Lỗi 1+2: Sử dụng qtyBase, bỏ fallback nguồn rỗng"""
         total = 0.0
+        ref_date = dt.datetime.now().strftime('%Y-%m-%d')
         for it in items:
             to_base, unit_price = self.unit_info(it['productId'], it['unitCode'])
             if to_base is None: raise Exception('Sản phẩm chưa có giá/đơn vị cơ sở')
             need_base = float(it['qty']) * to_base
-            ref_date = dt.datetime.now().strftime('%Y-%m-%d')
-            lots = self.q('''
-              SELECT v.batchId, v.qtyBase, b.expiryDate FROM (
-                SELECT sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
-              ) v JOIN batches b ON b.id=v.batchId
-              WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE(?)
-              ORDER BY DATE(b.expiryDate)
-            ''', (it['productId'], ref_date))
+            lots = self.get_available_lots_as_of(it['productId'], ref_date)
             for lot in lots:
                 if need_base <= 0: break
                 take_base = min(need_base, float(lot['qtyBase']))
                 
                 # Tìm các nguồn kinh phí khả dụng của lô hàng này
-                funds_avail = self.q('''
-                    SELECT fundSource, SUM(COALESCE(qtyBase, qty)) AS qb
-                    FROM stock_movements
-                    WHERE productId=? AND batchId=?
-                    GROUP BY fundSource
-                    HAVING qb > 0
-                ''', (it['productId'], lot['batchId']))
+                funds_avail = self.get_available_funds_as_of(it['productId'], lot['batchId'], ref_date)
                 
                 if not funds_avail:
                     raise Exception(f"Lô hàng #{lot['batchId']} không còn nguồn kinh phí khả dụng")
@@ -589,10 +680,8 @@ class DB:
     # dispatch (Xuất kho / Cấp phát — FEFO)
     def _next_note_number(self, prefix, date_str=None):
         """Sinh số phiếu theo ngày: PN-DDMMYY-001 / PX-DDMMYY-001."""
-        try:
-            note_date = dt.datetime.strptime((date_str or '').split()[0], '%Y-%m-%d')
-        except Exception:
-            note_date = dt.datetime.now()
+        note_date_str = self._normalize_business_date(date_str, default_today=True, field_name="Ngày chứng từ")
+        note_date = dt.datetime.strptime(note_date_str, '%Y-%m-%d')
         date_key = note_date.strftime('%d%m%y')
         table = 'purchase_notes' if prefix == 'PN' else 'dispatch_notes'
         row = self.q(
@@ -622,13 +711,10 @@ class DB:
             self.conn.execute("BEGIN IMMEDIATE")
 
             # Thời gian tạo phiếu xuất
-            if date_str:
-                created_at = f"{date_str} {dt.datetime.now().strftime('%H:%M:%S')}"
-            else:
-                created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            created_at, ref_date = self._created_at_for_business_date(date_str)
 
             # Lỗi 9: Tạo số phiếu tuần tự
-            note_number = self._next_note_number('PX', date_str)
+            note_number = self._next_note_number('PX', ref_date)
             cur = self.conn.execute(
                 "INSERT INTO dispatch_notes(noteNumber, receivingUnit, reason, note, createdAt) VALUES(?,?,?,?,?)",
                 (note_number, receiving_unit, reason, note, created_at)
@@ -639,85 +725,21 @@ class DB:
                 to_base, _ = self.unit_info(it['productId'], it['unitCode'])
                 if to_base is None:
                     raise Exception(f"Sản phẩm #{it['productId']} chưa có đơn vị cơ sở")
-                need_base = float(it['qty']) * to_base
                 original_qty = float(it['qty'])
+                if original_qty <= 0:
+                    raise ValueError(f"Số lượng xuất phải > 0 cho sản phẩm #{it['productId']}")
+                need_base = original_qty * to_base
                 original_unit = it['unitCode']
 
-                # Lấy lô hàng: thủ công nếu chọn trước, hoặc FEFO nếu để tự động
-                ref_date = date_str[:10] if date_str else dt.datetime.now().strftime('%Y-%m-%d')
+                # Lấy lô hàng tại đúng ngày chứng từ: thủ công nếu chọn trước, hoặc FEFO nếu để tự động
                 fund_source_val = it.get('fundSource')
-                if it.get('lotNo'):
-                    if fund_source_val is not None:
-                        lots = self.q('''
-                          SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
-                                 COALESCE((
-                                     SELECT sm2.cost FROM stock_movements sm2
-                                     WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
-                                       AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
-                                     ORDER BY sm2.id DESC LIMIT 1
-                                 ), 0) AS costBase
-                          FROM (
-                            SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                            FROM stock_movements sm 
-                            WHERE sm.productId=? AND sm.batchId=(
-                                SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
-                            ) AND COALESCE(sm.fundSource, '')=?
-                            GROUP BY sm.batchId
-                          ) v JOIN batches b ON b.id=v.batchId
-                        ''', (it['productId'], it['productId'], it['lotNo'], fund_source_val))
-                    else:
-                        lots = self.q('''
-                          SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
-                                 COALESCE((
-                                     SELECT sm2.cost FROM stock_movements sm2
-                                     WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
-                                       AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
-                                     ORDER BY sm2.id DESC LIMIT 1
-                                 ), 0) AS costBase
-                          FROM (
-                            SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                            FROM stock_movements sm 
-                            WHERE sm.productId=? AND sm.batchId=(
-                                SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
-                            )
-                            GROUP BY sm.batchId
-                          ) v JOIN batches b ON b.id=v.batchId
-                        ''', (it['productId'], it['productId'], it['lotNo']))
-                else:
-                    if fund_source_val is not None:
-                        lots = self.q('''
-                          SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
-                                 COALESCE((
-                                     SELECT sm2.cost FROM stock_movements sm2
-                                     WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
-                                       AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
-                                     ORDER BY sm2.id DESC LIMIT 1
-                                 ), 0) AS costBase
-                          FROM (
-                            SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                            FROM stock_movements sm 
-                            WHERE sm.productId=? AND COALESCE(sm.fundSource, '')=?
-                            GROUP BY sm.batchId
-                          ) v JOIN batches b ON b.id=v.batchId
-                          WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE(?)
-                          ORDER BY DATE(b.expiryDate)
-                        ''', (it['productId'], fund_source_val, ref_date))
-                    else:
-                        lots = self.q('''
-                          SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
-                                 COALESCE((
-                                     SELECT sm2.cost FROM stock_movements sm2
-                                     WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
-                                       AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
-                                     ORDER BY sm2.id DESC LIMIT 1
-                                 ), 0) AS costBase
-                          FROM (
-                            SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                            FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
-                          ) v JOIN batches b ON b.id=v.batchId
-                          WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE(?)
-                          ORDER BY DATE(b.expiryDate)
-                        ''', (it['productId'], ref_date))
+                lots = self.get_available_lots_as_of(
+                    it['productId'],
+                    ref_date,
+                    lot_no=it.get('lotNo') or None,
+                    fund_source=fund_source_val,
+                    restrict_fund=fund_source_val is not None,
+                )
 
                 for lot in lots:
                     if need_base <= 0:
@@ -726,26 +748,17 @@ class DB:
                     
                     # Lỗi 2: Tìm nguồn kinh phí — không fallback nguồn rỗng
                     if it.get('fundSource') is not None:
-                        funds_avail = self.q('''
-                            SELECT fundSource, SUM(COALESCE(qtyBase, qty)) AS qb
-                            FROM stock_movements
-                            WHERE productId=? AND batchId=? AND COALESCE(fundSource, '')=?
-                            GROUP BY fundSource
-                            HAVING qb > 0
-                        ''', (it['productId'], lot['batchId'], it['fundSource']))
+                        funds_avail = self.get_available_funds_as_of(
+                            it['productId'], lot['batchId'], ref_date,
+                            fund_source=it['fundSource'], restrict_fund=True
+                        )
                         if not funds_avail:
                             fund_label = it['fundSource'] or '(không rõ)'
                             raise Exception(
                                 f"Nguồn '{fund_label}' không còn tồn kho cho sản phẩm #{it['productId']}, lô {lot['lotNo']}"
                             )
                     else:
-                        funds_avail = self.q('''
-                            SELECT fundSource, SUM(COALESCE(qtyBase, qty)) AS qb
-                            FROM stock_movements
-                            WHERE productId=? AND batchId=?
-                            GROUP BY fundSource
-                            HAVING qb > 0
-                        ''', (it['productId'], lot['batchId']))
+                        funds_avail = self.get_available_funds_as_of(it['productId'], lot['batchId'], ref_date)
                     
                     if not funds_avail:
                         raise Exception(f"Lô {lot['lotNo']} không còn nguồn kinh phí khả dụng")
@@ -925,13 +938,10 @@ class DB:
             self.conn.execute("BEGIN IMMEDIATE")
 
             # Thời gian tạo phiếu nhập
-            if date_str:
-                created_at = f"{date_str} {dt.datetime.now().strftime('%H:%M:%S')}"
-            else:
-                created_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            created_at, purchase_date = self._created_at_for_business_date(date_str)
 
             # Lỗi 9: Tạo số phiếu nhập tuần tự
-            note_number = self._next_note_number('PN', date_str)
+            note_number = self._next_note_number('PN', purchase_date)
             cur = self.conn.execute(
                 "INSERT INTO purchase_notes(noteNumber, supplier, reason, note, createdAt) VALUES(?,?,?,?,?)",
                 (note_number, supplier, reason, note, created_at)
@@ -940,6 +950,7 @@ class DB:
 
             for it in items:
                 # Bảo đảm lô hàng tồn tại (Lỗi 8: validate HSD)
+                it['expiryDate'] = self._normalize_business_date(it.get('expiryDate'), default_today=False, field_name="Hạn sử dụng")
                 bid = self.ensure_batch(it['productId'], it['lotNo'], it['expiryDate'])
                 fund_src = it.get('fundSource') or ''
                 
@@ -948,6 +959,8 @@ class DB:
                 if to_base is None:
                     to_base = 1.0
                 qty_val = float(it['qty'])
+                if qty_val <= 0:
+                    raise ValueError(f"Số lượng nhập phải > 0 cho sản phẩm #{it['productId']}")
                 qty_base = qty_val * to_base
                 
                 # Lỗi 6: Ghi purchase_items trước để lấy ID
@@ -1086,6 +1099,9 @@ class DB:
 
                 s_info = rec.get('stock_info')
                 if s_info:
+                    s_info['expiryDate'] = self._normalize_business_date(s_info.get('expiryDate'), default_today=False, field_name="Hạn sử dụng")
+                    if float(s_info.get('qty') or 0) <= 0:
+                        raise ValueError(f"Số lượng nhập Excel phải > 0 cho sản phẩm '{name}'")
                     self.validate_batch(p_id, s_info['lotNo'], s_info['expiryDate'])
                     purchase_items.append({
                         'productId': p_id,

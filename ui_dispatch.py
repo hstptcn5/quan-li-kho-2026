@@ -180,14 +180,23 @@ class DispatchMixin:
         except Exception as e:
             print(f"Lỗi refresh đơn vị nhận: {e}")
 
-    def _parse_date_entry(self, date_entry):
+    def _parse_date_entry(self, date_entry, show_error=False):
         """Return YYYY-MM-DD for SQLite queries while accepting DD-MM-YYYY UI input."""
-        return parse_date_to_iso(date_entry.entry.get(), default_today=True)
+        try:
+            return parse_date_to_iso(date_entry.entry.get(), default_today=True)
+        except ValueError:
+            if show_error:
+                messagebox.showerror('Lỗi ngày tháng', 'Ngày không hợp lệ. Vui lòng nhập theo định dạng DD-MM-YYYY.')
+            return None
 
     def _date_range_from_entries(self, from_entry, to_entry):
-        start_date = parse_date_to_iso(from_entry.entry.get())
-        end_date = parse_date_to_iso(to_entry.entry.get())
-        return start_date, end_date
+        try:
+            start_date = parse_date_to_iso(from_entry.entry.get())
+            end_date = parse_date_to_iso(to_entry.entry.get())
+            return start_date, end_date
+        except ValueError:
+            messagebox.showerror('Lỗi ngày tháng', 'Khoảng ngày không hợp lệ. Vui lòng nhập theo định dạng DD-MM-YYYY.')
+            return '', ''
 
     def _date_range_label(self, start_date, end_date):
         return f"{format_date_display(start_date)} -> {format_date_display(end_date)}"
@@ -203,17 +212,16 @@ class DispatchMixin:
         du = self.db.default_unit_of(pid) or '-'
         
         ref_date = self._parse_date_entry(self.ent_dispatch_date)
+        if not ref_date:
+            return
+        if not ref_date:
+            self.lbl_unit_pos.config(text=f'Đơn vị tính: {du}  |  Ngày xuất không hợp lệ')
+            self.cmb_lot_pos['values'] = []
+            self.cmb_lot_pos.set('')
+            return
 
         # Lấy các lô hàng khả dụng theo FEFO
-        lots = self.db.q('''
-          SELECT b.lotNo, b.expiryDate, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-          FROM stock_movements sm
-          JOIN batches b ON b.id = sm.batchId
-          WHERE sm.productId=?
-          GROUP BY sm.batchId
-          HAVING qtyBase > 0 AND DATE(b.expiryDate) >= DATE(?)
-          ORDER BY DATE(b.expiryDate)
-        ''', (pid, ref_date))
+        lots = self.db.get_available_lots_as_of(pid, ref_date)
         
         lot_info_strs = []
         for lot in lots[:3]:
@@ -245,6 +253,10 @@ class DispatchMixin:
         pid = int(sel.split(' — ')[0])
         
         ref_date = self._parse_date_entry(self.ent_dispatch_date)
+        if not ref_date:
+            self.cmb_fund_pos['values'] = []
+            self.cmb_fund_pos.set('')
+            return
 
         # Lấy lô được chọn
         chosen_val = self.cmb_lot_pos.get()
@@ -254,24 +266,18 @@ class DispatchMixin:
             
         if chosen_lot:
             # Lọc nguồn theo lô cụ thể
-            funds = self.db.q('''
-                SELECT sm.fundSource, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                FROM stock_movements sm
-                JOIN batches b ON b.id = sm.batchId
-                WHERE sm.productId=? AND b.lotNo=?
-                GROUP BY sm.fundSource
-                HAVING qtyBase > 0
-            ''', (pid, chosen_lot))
+            chosen_lots = self.db.get_available_lots_as_of(pid, ref_date, lot_no=chosen_lot)
+            funds = []
+            for lot in chosen_lots:
+                funds.extend(self.db.get_available_funds_as_of(pid, lot['batchId'], ref_date))
         else:
             # Lọc nguồn theo sản phẩm nói chung (tổng tất cả các lô chưa hết hạn tại ref_date)
-            funds = self.db.q('''
-                SELECT sm.fundSource, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                FROM stock_movements sm
-                JOIN batches b ON b.id = sm.batchId
-                WHERE sm.productId=? AND DATE(b.expiryDate) >= DATE(?)
-                GROUP BY sm.fundSource
-                HAVING qtyBase > 0
-            ''', (pid, ref_date))
+            fund_totals = {}
+            for lot in self.db.get_available_lots_as_of(pid, ref_date):
+                for fund in self.db.get_available_funds_as_of(pid, lot['batchId'], ref_date):
+                    name = fund['fundSource'] or ''
+                    fund_totals[name] = fund_totals.get(name, 0.0) + float(fund['qb'])
+            funds = [{'fundSource': name, 'qtyBase': qty} for name, qty in sorted(fund_totals.items())]
             
         fund_options = ["[Tự động trừ kho]"]
         for f in funds:
@@ -352,16 +358,10 @@ class DispatchMixin:
         # Kiểm tra xem có lô hàng nào cận hạn hơn lô được chọn hay không
         if chosen_lot:
             ref_date = self._parse_date_entry(self.ent_dispatch_date)
+            if not ref_date:
+                return
 
-            lots = self.db.q('''
-              SELECT b.lotNo, b.expiryDate, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-              FROM stock_movements sm
-              JOIN batches b ON b.id = sm.batchId
-              WHERE sm.productId=?
-              GROUP BY sm.batchId
-              HAVING qtyBase > 0 AND DATE(b.expiryDate) >= DATE(?)
-              ORDER BY DATE(b.expiryDate)
-            ''', (pid, ref_date))
+            lots = self.db.get_available_lots_as_of(pid, ref_date)
             
             chosen_expiry = None
             for lot in lots:
@@ -467,78 +467,13 @@ class DispatchMixin:
                 to_base = 1.0
             need_base = qty * to_base
             
-            if it.get('lotNo'):
-                if fund_source_val is not None:
-                    lots = self.db.q('''
-                      SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
-                             COALESCE((
-                                 SELECT sm2.cost FROM stock_movements sm2
-                                 WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
-                                   AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
-                                 ORDER BY sm2.id DESC LIMIT 1
-                             ), 0) AS costBase
-                      FROM (
-                        SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                        FROM stock_movements sm 
-                        WHERE sm.productId=? AND sm.batchId=(
-                            SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
-                        ) AND COALESCE(sm.fundSource, '')=?
-                        GROUP BY sm.batchId
-                      ) v JOIN batches b ON b.id=v.batchId
-                    ''', (pid, pid, it['lotNo'], fund_source_val))
-                else:
-                    lots = self.db.q('''
-                      SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
-                             COALESCE((
-                                 SELECT sm2.cost FROM stock_movements sm2
-                                 WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
-                                   AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
-                                 ORDER BY sm2.id DESC LIMIT 1
-                             ), 0) AS costBase
-                      FROM (
-                        SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                        FROM stock_movements sm 
-                        WHERE sm.productId=? AND sm.batchId=(
-                            SELECT id FROM batches WHERE productId=? AND lotNo=? LIMIT 1
-                        )
-                        GROUP BY sm.batchId
-                      ) v JOIN batches b ON b.id=v.batchId
-                    ''', (pid, pid, it['lotNo']))
-            else:
-                if fund_source_val is not None:
-                    lots = self.db.q('''
-                      SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
-                             COALESCE((
-                                 SELECT sm2.cost FROM stock_movements sm2
-                                 WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
-                                   AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
-                                 ORDER BY sm2.id DESC LIMIT 1
-                             ), 0) AS costBase
-                      FROM (
-                        SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                        FROM stock_movements sm 
-                        WHERE sm.productId=? AND COALESCE(sm.fundSource, '')=?
-                        GROUP BY sm.batchId
-                      ) v JOIN batches b ON b.id=v.batchId
-                      WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE(?)
-                      ORDER BY DATE(b.expiryDate)
-                    ''', (pid, fund_source_val, ref_date))
-                else:
-                    lots = self.db.q('''
-                      SELECT v.batchId, v.qtyBase, b.expiryDate, b.lotNo,
-                             COALESCE((
-                                 SELECT sm2.cost FROM stock_movements sm2
-                                 WHERE sm2.productId=v.productId AND sm2.batchId=v.batchId
-                                   AND sm2.type='PURCHASE' AND sm2.cost IS NOT NULL
-                                 ORDER BY sm2.id DESC LIMIT 1
-                             ), 0) AS costBase
-                      FROM (
-                        SELECT sm.productId, sm.batchId, SUM(COALESCE(sm.qtyBase, sm.qty)) AS qtyBase
-                        FROM stock_movements sm WHERE sm.productId=? GROUP BY sm.batchId
-                      ) v JOIN batches b ON b.id=v.batchId
-                      WHERE v.qtyBase>0 AND DATE(b.expiryDate) >= DATE(?)
-                      ORDER BY DATE(b.expiryDate)
-                    ''', (pid, ref_date))
+            lots = self.db.get_available_lots_as_of(
+                pid,
+                ref_date,
+                lot_no=it.get('lotNo') or None,
+                fund_source=fund_source_val,
+                restrict_fund=fund_source_val is not None,
+            )
             
             allocated = []
             for lot in lots:
@@ -592,7 +527,9 @@ class DispatchMixin:
         if not receiving_unit:
             messagebox.showwarning('Thiếu thông tin', 'Vui lòng nhập Đơn vị nhận'); return
         
-        date_str = self._parse_date_entry(self.ent_dispatch_date)
+        date_str = self._parse_date_entry(self.ent_dispatch_date, show_error=True)
+        if not date_str:
+            return
 
                 
         reason = self.cmb_reason.get().strip()

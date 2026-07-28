@@ -31,11 +31,14 @@ def parse_date_to_iso(value, default_today=False):
             return dt.datetime.strptime(raw_date, fmt).strftime(ISO_DATE_FORMAT)
         except ValueError:
             continue
-    return dt.date.today().strftime(ISO_DATE_FORMAT) if default_today else raw_date
+    raise ValueError(f"Ngày không hợp lệ: {raw}")
 
 
 def format_date_display(value):
-    iso = parse_date_to_iso(value)
+    try:
+        iso = parse_date_to_iso(value)
+    except ValueError:
+        return str(value or "")
     if not iso:
         return ""
     try:

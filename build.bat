@@ -7,8 +7,8 @@ echo.
 REM Check if Python is installed
 set PYTHON_EXE=.venv\Scripts\python.exe
 if not exist "%PYTHON_EXE%" (
-    echo Creating Python 3.10 virtual environment...
-    py -3.10 -m venv .venv
+    call setup.bat
+    if errorlevel 1 exit /b 1
 )
 
 "%PYTHON_EXE%" --version >nul 2>&1
@@ -39,11 +39,15 @@ if exist "*.spec" del "*.spec"
 
 echo.
 echo Installing dependencies...
-"%PYTHON_EXE%" -m pip install -r requirements.txt
-if errorlevel 1 (
-    echo ERROR: Failed to install dependencies
-    pause
-    exit /b 1
+if not exist ".venv\requirements.installed" (
+    call setup.bat
+    if errorlevel 1 exit /b 1
+) else (
+    fc /b "requirements.txt" ".venv\requirements.installed" >nul
+    if errorlevel 1 (
+        call setup.bat
+        if errorlevel 1 exit /b 1
+    )
 )
 
 echo.
@@ -74,8 +78,10 @@ if not exist "_pyzbar_dlls\libiconv.dll" (
 )
 
 "%PYTHON_EXE%" -m PyInstaller ^
-    --onefile ^
-    --windowed ^
+    --onedir ^
+    --console ^
+    --noupx ^
+    --icon=NONE ^
     --name="QuanLyKho" ^
     --add-data="thuoc.csv;." ^
     --add-data="static;static" ^
@@ -110,21 +116,27 @@ if errorlevel 1 (
 
 echo.
 echo Creating documentation folder...
-if not exist "dist\docs" mkdir "dist\docs"
-if exist "docs" xcopy /E /I /Y "docs" "dist\docs" >nul
-copy "HUONG_DAN_SU_DUNG.md" "dist\docs\"
-copy "BARCODE_SETUP.md" "dist\docs\"
-copy "EXPORT_REPORTS.md" "dist\docs\"
+if not exist "dist\QuanLyKho\docs" mkdir "dist\QuanLyKho\docs"
+if exist "docs" xcopy /E /I /Y "docs" "dist\QuanLyKho\docs" >nul
+copy "HUONG_DAN_SU_DUNG.md" "dist\QuanLyKho\docs\"
+copy "BARCODE_SETUP.md" "dist\QuanLyKho\docs\"
+copy "EXPORT_REPORTS.md" "dist\QuanLyKho\docs\"
+copy "UAT_CHECKLIST.md" "dist\QuanLyKho\docs\"
+
+echo.
+echo Copying static assets...
+if exist "static" xcopy /E /I /Y "static" "dist\QuanLyKho\static" >nul
 
 echo.
 echo Creating README for distribution...
-echo Quần lý XNT thuốc, vaccine và VTYT (CDC) > "dist\README.txt"
-echo Phiên bản 2.0.0 >> "dist\README.txt"
-echo. >> "dist\README.txt"
-echo Cách khởi chạy: >> "dist\README.txt"
-echo 1. Chạy file QuanLyKho.exe để khởi chạy phần mềm >> "dist\README.txt"
-echo. >> "dist\README.txt"
-echo Tài liệu hướng dẫn: Xem chi tiết trong thư mục docs >> "dist\README.txt"
+echo Quan ly XNT thuoc, vaccine va VTYT (CDC) > "dist\QuanLyKho\README.txt"
+echo Phien ban 2.0.0 >> "dist\QuanLyKho\README.txt"
+echo. >> "dist\QuanLyKho\README.txt"
+echo Cach khoi chay: >> "dist\QuanLyKho\README.txt"
+echo 1. Chay file QuanLyKho.exe de khoi chay phan mem >> "dist\QuanLyKho\README.txt"
+echo 2. Khi gui cho may khac, gui nguyen thu muc QuanLyKho >> "dist\QuanLyKho\README.txt"
+echo. >> "dist\QuanLyKho\README.txt"
+echo Tai lieu huong dan: Xem chi tiet trong thu muc docs >> "dist\QuanLyKho\README.txt"
 
 echo.
 echo Cleaning up...
@@ -137,8 +149,8 @@ echo    BUILD COMPLETED SUCCESSFULLY!
 echo ========================================
 echo.
 echo Output files in 'dist' folder:
-dir /b dist
+dir /b dist\QuanLyKho
 echo.
-echo You can now distribute the 'dist' folder.
+echo You can now distribute the 'dist\QuanLyKho' folder.
 echo.
 pause

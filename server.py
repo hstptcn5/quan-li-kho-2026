@@ -13,11 +13,19 @@ from datetime import datetime
 import datetime as dt_module
 
 from config import DB_PATH
+from date_utils import parse_date_to_iso
 from database import DB
 from mobile_templates import MOBILE_HTML
 from print_templates import render_print_dispatch_html, render_print_purchase_html
 
 SESSION_COOKIE_NAME = "inventory_token"
+
+
+def normalize_api_date(value, field_name, default_today=False):
+    try:
+        return parse_date_to_iso(value, default_today=default_today)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} không hợp lệ. Vui lòng nhập theo DD-MM-YYYY hoặc YYYY-MM-DD.") from exc
 
 
 def open_db():
@@ -77,6 +85,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
         """Lỗi 3: Kiểm tra token hợp lệ cho LAN API"""
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
+        query = urllib.parse.parse_qs(parsed_url.query)
         # Không yêu cầu auth cho trang chủ, tĩnh và API đăng nhập
         if path in ["/", "/index.html", "/api/auth"] or path.startswith("/static/"):
             return True
@@ -87,6 +96,8 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             token = auth_header[7:].strip()
         else:
             token = self.get_cookie(SESSION_COOKIE_NAME)
+        if not token:
+            token = query.get("token", [""])[0].strip()
             
         if not token:
             self.send_json({"success": False, "message": "Yêu cầu xác thực PIN", "auth_required": True}, 401)
@@ -495,6 +506,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"success": False, "message": "Lỗi hệ thống khi tải hoạt động gần đây"}, 500)
 
         elif path == "/api/partners":
+            db = None
             try:
                 db = DB(DB_PATH)
                 suppliers = db.get_suppliers()
@@ -509,8 +521,12 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"Error in api/partners: {e}")
                 self.send_json({"success": False, "message": "Lỗi hệ thống khi tải danh sách đối tác"}, 500)
+            finally:
+                if db is not None:
+                    db.conn.close()
 
         elif path == "/api/temperature-locations":
+            db = None
             try:
                 db = DB(DB_PATH)
                 locations = db.get_temperature_locations()
@@ -521,10 +537,14 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"Error in api/temperature-locations: {e}")
                 self.send_json({"success": False, "message": "Lỗi hệ thống khi tải vị trí nhiệt độ"}, 500)
+            finally:
+                if db is not None:
+                    db.conn.close()
 
         elif path == "/api/temperature-logs":
             month = query.get("month", [None])[0]
             location = query.get("location", [None])[0]
+            db = None
             try:
                 db = DB(DB_PATH)
                 logs = db.get_temperature_logs(month, location)
@@ -535,12 +555,16 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"Error in api/temperature-logs: {e}")
                 self.send_json({"success": False, "message": "Lỗi hệ thống khi tải nhật ký nhiệt độ"}, 500)
+            finally:
+                if db is not None:
+                    db.conn.close()
 
         elif path == "/api/xnt-report":
             month = query.get("month", [None])[0]
             fund_source = query.get("fundSource", query.get("fund", [None]))[0]
             if not month or "-" not in month:
                 month = datetime.now().strftime("%Y-%m")
+            db = None
             try:
                 year_part, month_part = map(int, month.split("-"))
                 import calendar
@@ -557,6 +581,9 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"Error in api/xnt-report: {e}")
                 self.send_json({"success": False, "message": "Lỗi hệ thống khi tải báo cáo XNT"}, 500)
+            finally:
+                if db is not None:
+                    db.conn.close()
 
         else:
             self.send_response(404)
@@ -1035,6 +1062,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"success": False, "message": "Danh sách mặt hàng nhập trống"}, 400)
                 return
 
+            db = None
             try:
                 db = DB(DB_PATH)
                 conn = open_db()
@@ -1047,6 +1075,12 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     expiry_date = str(item.get("expiryDate", "")).strip()
                     if not p_id or qty is None or not lot_no or not expiry_date:
                         self.send_json({"success": False, "message": "Thông tin mặt hàng nhập không đầy đủ"}, 400)
+                        conn.close()
+                        return
+                    try:
+                        item["expiryDate"] = normalize_api_date(expiry_date, "Hạn sử dụng")
+                    except ValueError as ve:
+                        self.send_json({"success": False, "message": str(ve)}, 400)
                         conn.close()
                         return
                     try:
@@ -1073,8 +1107,18 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         item["fundSource"] = ""
                         
                 conn.close()
+
+                purchase_date = data.get("purchaseDate") or data.get("createdAt") or data.get("date")
+                if purchase_date:
+                    try:
+                        purchase_date = normalize_api_date(purchase_date, "Ngày nhập")
+                    except ValueError as ve:
+                        self.send_json({"success": False, "message": str(ve)}, 400)
+                        return
                 
-                purchase_id, note_num, details = db.record_purchase(items, supplier, reason, note, audit_ip=self.client_address[0])
+                purchase_id, note_num, details = db.record_purchase(items, supplier, reason, note, date_str=purchase_date, audit_ip=self.client_address[0])
+                db.conn.close()
+                db = None
                 
                 if hasattr(self.server, 'app_instance') and self.server.app_instance:
                     self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
@@ -1086,8 +1130,14 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     "noteNumber": note_num
                 })
             except Exception as e:
+                if db is not None:
+                    try:
+                        db.conn.close()
+                    except Exception:
+                        pass
                 print(f"Error in api/purchase: {e}")
-                self.send_json({"success": False, "message": "Lỗi hệ thống khi thực hiện nhập kho"}, 500)
+                status = 400 if isinstance(e, ValueError) else 500
+                self.send_json({"success": False, "message": str(e) if status == 400 else "Lỗi hệ thống khi thực hiện nhập kho"}, status)
                 
         elif path == "/api/dispatch":
             items = data.get("items")
@@ -1115,6 +1165,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"success": False, "message": "Danh sách mặt hàng xuất trống"}, 400)
                 return
 
+            db = None
             try:
                 db = DB(DB_PATH)
                 conn = open_db()
@@ -1160,9 +1211,15 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 
                 date_str = data.get("dispatchDate") or data.get("createdAt") or data.get("date")
                 if date_str:
-                    date_str = str(date_str).strip()[:10]
+                    try:
+                        date_str = normalize_api_date(date_str, "Ngày xuất")
+                    except ValueError as ve:
+                        self.send_json({"success": False, "message": str(ve)}, 400)
+                        return
                     
                 dispatch_id, note_num, details = db.dispatch(items, receiving_unit, reason_str, note, date_str=date_str, audit_ip=self.client_address[0])
+                db.conn.close()
+                db = None
                 
                 if hasattr(self.server, 'app_instance') and self.server.app_instance:
                     self.server.app_instance.after(0, self.server.app_instance.refresh_all_data)
@@ -1174,8 +1231,14 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                     "noteNumber": note_num
                 })
             except Exception as e:
+                if db is not None:
+                    try:
+                        db.conn.close()
+                    except Exception:
+                        pass
                 print(f"Error in api/dispatch: {e}")
-                self.send_json({"success": False, "message": "Lỗi hệ thống khi thực hiện xuất kho"}, 500)
+                status = 400 if isinstance(e, ValueError) else 500
+                self.send_json({"success": False, "message": str(e) if status == 400 else "Lỗi hệ thống khi thực hiện xuất kho"}, status)
                 
         elif path == "/api/update-barcode":
             product_id = data.get("productId")
@@ -1224,6 +1287,11 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             if not log_date or not location or temperature is None:
                 self.send_json({"success": False, "message": "Vui lòng nhập đầy đủ Ngày, Vị trí và Nhiệt độ"}, 400)
                 return
+            try:
+                log_date = normalize_api_date(log_date, "Ngày ghi nhận")
+            except ValueError as ve:
+                self.send_json({"success": False, "message": str(ve)}, 400)
+                return
 
             try:
                 temp_val = float(temperature)
@@ -1232,6 +1300,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"success": False, "message": "Nhiệt độ/Độ ẩm không hợp lệ"}, 400)
                 return
 
+            db = None
             try:
                 db = DB(DB_PATH)
                 db.add_temperature_log(log_date, session, location, temp_val, humidity_val, recorded_by)
@@ -1251,6 +1320,9 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"Error in api/temperature-log: {e}")
                 self.send_json({"success": False, "message": "Lỗi hệ thống khi ghi nhận nhiệt độ"}, 500)
+            finally:
+                if db is not None:
+                    db.conn.close()
 
         else:
             self.send_response(404)

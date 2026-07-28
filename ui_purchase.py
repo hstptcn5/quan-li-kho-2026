@@ -212,8 +212,8 @@ class PurchaseMixin:
         if not lot:
             messagebox.showerror('Lỗi', 'Vui lòng nhập số lô'); return
             
-        exp = parse_date_to_iso(self.ent_exp.entry.get())
         try:
+            exp = parse_date_to_iso(self.ent_exp.entry.get())
             dt.datetime.strptime(exp, '%Y-%m-%d')
         except:
             messagebox.showerror('Lỗi', 'Hạn sử dụng không hợp lệ (DD-MM-YYYY)'); return
@@ -311,7 +311,9 @@ class PurchaseMixin:
         if not supplier:
             messagebox.showwarning('Thiếu thông tin', 'Vui lòng nhập/chọn Nguồn cấp/Nhà cung cấp'); return
         
-        date_str = self._parse_date_entry(self.ent_purchase_date)
+        date_str = self._parse_date_entry(self.ent_purchase_date, show_error=True)
+        if not date_str:
+            return
                 
         reason = self.cmb_purchase_reason.get().strip()
         note = self.ent_purchase_note.get().strip()

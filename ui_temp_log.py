@@ -242,7 +242,11 @@ class TempLogMixin:
 
     def save_temp_log(self):
         """Lưu chỉ số nhiệt độ/độ ẩm mới nhập vào DB"""
-        log_date = parse_date_to_iso(self.temp_date.entry.get())
+        try:
+            log_date = parse_date_to_iso(self.temp_date.entry.get())
+        except ValueError:
+            messagebox.showerror("Sai định dạng", "Ngày ghi nhận không hợp lệ. Vui lòng nhập theo DD-MM-YYYY.")
+            return
         session = self.temp_session.get()
         location = self.temp_location.get().strip()
         temp_s = self.temp_val.get().strip()

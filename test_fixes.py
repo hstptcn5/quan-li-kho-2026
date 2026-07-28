@@ -3,11 +3,16 @@
 import os
 import sqlite3
 import unittest
+from unittest import mock
 import json
 import tempfile
 import shutil
 import gzip
 import base64
+import http.server
+import threading
+import urllib.error
+import urllib.request
 
 
 
@@ -15,6 +20,7 @@ from config import DB_PATH, SCHEMA_VERSION
 from date_utils import format_date_display, format_datetime_display, parse_date_to_iso
 from database import DB
 from managers import BackupManager
+import server as mobile_server_module
 
 class TestMedicalWarehouseFixes(unittest.TestCase):
     def setUp(self):
@@ -435,6 +441,132 @@ class TestMedicalWarehouseFixes(unittest.TestCase):
 
         self.assertNotIn(token, active_tokens, "Token phải bị xóa khi IP không trùng khớp")
 
+    def _start_mobile_test_server(self):
+        old_db_path = mobile_server_module.DB_PATH
+        old_pin = mobile_server_module.SERVER_PIN
+        old_tokens = dict(mobile_server_module.ACTIVE_TOKENS)
+        old_failed = dict(mobile_server_module.FAILED_ATTEMPTS)
+
+        mobile_server_module.DB_PATH = self.db_path
+        mobile_server_module.SERVER_PIN = "123456"
+        mobile_server_module.ACTIVE_TOKENS.clear()
+        mobile_server_module.FAILED_ATTEMPTS.clear()
+
+        httpd = http.server.HTTPServer(("127.0.0.1", 0), mobile_server_module.MobileInventoryRequestHandler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{httpd.server_port}"
+
+        def cleanup():
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=2)
+            mobile_server_module.DB_PATH = old_db_path
+            mobile_server_module.SERVER_PIN = old_pin
+            mobile_server_module.ACTIVE_TOKENS.clear()
+            mobile_server_module.ACTIVE_TOKENS.update(old_tokens)
+            mobile_server_module.FAILED_ATTEMPTS.clear()
+            mobile_server_module.FAILED_ATTEMPTS.update(old_failed)
+
+        self.addCleanup(cleanup)
+        return base_url
+
+    def _json_request(self, url, payload=None, token=None):
+        data = None
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST" if payload is not None else "GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def test_mobile_handler_auth_and_invalid_dispatch_date(self):
+        """Kiểm thử handler HTTP thật: auth, URL protected và validate ngày xuất mobile."""
+        base_url = self._start_mobile_test_server()
+
+        with self.assertRaises(urllib.error.HTTPError) as missing_auth:
+            self._json_request(f"{base_url}/api/products")
+        self.assertEqual(missing_auth.exception.code, 401)
+
+        status, auth_data = self._json_request(f"{base_url}/api/auth", {"pin": "123456"})
+        self.assertEqual(status, 200)
+        self.assertTrue(auth_data["success"])
+        token = auth_data["token"]
+
+        self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (501, 'Mobile Handler Drug', 'Vien')")
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (501, 'Vien', 1, 0)")
+        self.db.conn.commit()
+
+        with self.assertRaises(urllib.error.HTTPError) as invalid_date:
+            self._json_request(f"{base_url}/api/dispatch", {
+                "productId": 501,
+                "qty": 1,
+                "dispatchDate": "31/02/2026"
+            }, token=token)
+        self.assertEqual(invalid_date.exception.code, 400)
+        body = json.loads(invalid_date.exception.read().decode("utf-8"))
+        self.assertIn("Ngày xuất không hợp lệ", body["message"])
+
+    def test_mobile_handler_rejects_wrong_ip_token(self):
+        """Kiểm thử handler HTTP thật: token không đúng IP bị từ chối và vô hiệu hóa."""
+        base_url = self._start_mobile_test_server()
+        mobile_server_module.ACTIVE_TOKENS["bad_ip_token"] = {
+            "ip": "192.0.2.10",
+            "expiry": 9999999999.0,
+        }
+
+        req = urllib.request.Request(
+            f"{base_url}/api/products",
+            headers={"Authorization": "Bearer bad_ip_token"},
+            method="GET",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as wrong_ip:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(wrong_ip.exception.code, 401)
+        self.assertNotIn("bad_ip_token", mobile_server_module.ACTIVE_TOKENS)
+
+    def test_mobile_print_url_requires_and_accepts_query_token(self):
+        """Kiểm thử URL in mở bằng window.open: thiếu token bị chặn, token query hợp lệ được mở."""
+        self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (502, 'Print Token Drug', 'Vien')")
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (502, 'Vien', 1, 0)")
+        self.db.conn.commit()
+        purchase_id, _, _ = self.db.record_purchase([{
+            "productId": 502,
+            "productName": "Print Token Drug",
+            "qty": 3,
+            "unitCode": "Vien",
+            "lotNo": "PT01",
+            "expiryDate": "2028-12-31",
+            "cost": 100,
+            "fundSource": "N"
+        }], "NCC", "Nhap", "", date_str="2026-07-28")
+
+        base_url = self._start_mobile_test_server()
+        with self.assertRaises(urllib.error.HTTPError) as missing_auth:
+            urllib.request.urlopen(f"{base_url}/api/print-purchase?id={purchase_id}", timeout=5)
+        self.assertEqual(missing_auth.exception.code, 401)
+
+        status, auth_data = self._json_request(f"{base_url}/api/auth", {"pin": "123456"})
+        self.assertEqual(status, 200)
+        token = auth_data["token"]
+
+        with urllib.request.urlopen(f"{base_url}/api/print-purchase?id={purchase_id}&token={token}", timeout=5) as resp:
+            body = resp.read().decode("utf-8")
+            self.assertEqual(resp.status, 200)
+            self.assertIn("Print Token Drug", body)
+
+    def test_mobile_template_window_open_urls_include_token_helper(self):
+        """Kiểm thử template mobile không mở URL in protected thiếu token."""
+        from mobile_templates import MOBILE_HTML
+
+        self.assertIn("function withAuthToken(url)", MOBILE_HTML)
+        self.assertNotIn("window.open(`/api/print-purchase", MOBILE_HTML)
+        self.assertNotIn("window.open(`/api/print-dispatch", MOBILE_HTML)
+        self.assertNotIn("window.open(printUrl, '_blank')", MOBILE_HTML)
+        self.assertNotIn("window.open(url, '_blank')", MOBILE_HTML)
+
     def test_bulk_import_products_and_stock_atomic(self):
         """Kiểm thử Lỗi 1 mới: Nhập Excel Atomic — khi xảy ra lỗi ở bất kỳ bước nào, toàn bộ sản phẩm & đơn vị được rollback sạch"""
         records_with_error = [
@@ -574,6 +706,105 @@ class TestMedicalWarehouseFixes(unittest.TestCase):
         self.assertEqual(parse_date_to_iso("24/07/2026"), "2026-07-24")
         self.assertEqual(format_date_display("2026-07-24"), "24-07-2026")
         self.assertEqual(format_datetime_display("2026-07-24 09:15:30"), "24-07-2026 09:15:30")
+        with self.assertRaises(ValueError):
+            parse_date_to_iso("31/02/2026")
+        with self.assertRaises(ValueError):
+            parse_date_to_iso("2026-22-01")
+
+    def test_future_purchase_not_available_for_backdated_dispatch(self):
+        self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (205, 'Future Purchase Drug', 'Vien')")
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (205, 'Vien', 1, 0)")
+        self.db.conn.commit()
+
+        self.db.record_purchase([{
+            "productId": 205,
+            "productName": "Future Purchase Drug",
+            "qty": 10,
+            "unitCode": "Vien",
+            "lotNo": "FP01",
+            "expiryDate": "2028-12-31",
+            "cost": 100,
+            "fundSource": "N"
+        }], "NCC", "Nhap", "", date_str="2026-02-01")
+
+        with self.assertRaisesRegex(Exception, "Không đủ tồn kho"):
+            self.db.dispatch([{
+                "productId": 205,
+                "qty": 1,
+                "unitCode": "Vien",
+                "lotNo": None,
+                "fundSource": "N"
+            }], "Don vi", "Xuat lui ngay", "", date_str="2026-01-22")
+
+    def test_future_dispatch_does_not_reduce_historical_stock_lookup(self):
+        self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (206, 'Historical Stock Drug', 'Vien')")
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (206, 'Vien', 1, 0)")
+        self.db.conn.commit()
+
+        self.db.record_purchase([{
+            "productId": 206,
+            "productName": "Historical Stock Drug",
+            "qty": 10,
+            "unitCode": "Vien",
+            "lotNo": "HS01",
+            "expiryDate": "2028-12-31",
+            "cost": 100,
+            "fundSource": "N"
+        }], "NCC", "Nhap", "", date_str="2026-01-01")
+        self.db.dispatch([{
+            "productId": 206,
+            "qty": 8,
+            "unitCode": "Vien",
+            "lotNo": "HS01",
+            "fundSource": "N"
+        }], "Don vi", "Xuat sau", "", date_str="2026-02-01")
+
+        stock_on_jan_22 = self.db.get_stock_as_of("2026-01-22", product_id=206, fund_source="N")
+        self.assertEqual(stock_on_jan_22[0]["stockBase"], 10.0)
+
+        with self.assertRaisesRegex(Exception, "tồn kho âm|Không đủ tồn kho"):
+            self.db.dispatch([{
+                "productId": 206,
+                "qty": 5,
+                "unitCode": "Vien",
+                "lotNo": "HS01",
+                "fundSource": "N"
+            }], "Don vi", "Khong du ton hien tai", "", date_str="2026-01-22")
+
+    def test_backdated_dispatch_uses_historical_balance_before_future_dispatch(self):
+        self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (207, 'Backdated Drug', 'Vien')")
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (207, 'Vien', 1, 0)")
+        self.db.conn.commit()
+
+        self.db.record_purchase([{
+            "productId": 207,
+            "productName": "Backdated Drug",
+            "qty": 10,
+            "unitCode": "Vien",
+            "lotNo": "BD01",
+            "expiryDate": "2028-12-31",
+            "cost": 100,
+            "fundSource": "N"
+        }], "NCC", "Nhap", "", date_str="2026-01-01")
+        self.db.dispatch([{
+            "productId": 207,
+            "qty": 4,
+            "unitCode": "Vien",
+            "lotNo": "BD01",
+            "fundSource": "N"
+        }], "Don vi", "Xuat sau", "", date_str="2026-02-01")
+
+        dispatch_id, _, _ = self.db.dispatch([{
+            "productId": 207,
+            "qty": 5,
+            "unitCode": "Vien",
+            "lotNo": "BD01",
+            "fundSource": "N"
+        }], "Don vi", "Xuat lui ngay", "", date_str="2026-01-22")
+        self.assertGreater(dispatch_id, 0)
+        stock_now = self.db.get_inventory()
+        row = next(r for r in stock_now if r["productId"] == 207 and r["fundSource"] == "N")
+        self.assertEqual(row["stockBase"], 1.0)
 
     def test_note_details_keep_insert_order(self):
         self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (201, 'Zeta', 'Vien')")
@@ -653,6 +884,69 @@ class TestMedicalWarehouseFixes(unittest.TestCase):
         history = self.db.product_lot_history(product_id=204, lot_no="IC01")
         self.assertEqual(history[0]["type"], "ADJUSTMENT")
         self.assertTrue(self.db.dashboard_summary()["product_count"] >= 1)
+
+    def test_xnt_report_excel_export_creates_formatted_workbook(self):
+        import ui
+        from ui import App
+        from openpyxl import load_workbook
+
+        self.db.conn.execute("INSERT INTO products (id, name, defaultUnit) VALUES (208, 'Excel Export Drug', 'Vien')")
+        self.db.conn.execute("INSERT INTO product_units (productId, unitCode, toBaseQty, price) VALUES (208, 'Vien', 1, 0)")
+        self.db.conn.commit()
+        self.db.record_purchase([{
+            "productId": 208,
+            "productName": "Excel Export Drug",
+            "qty": 10,
+            "unitCode": "Vien",
+            "lotNo": "XNT01",
+            "expiryDate": "2028-12-31",
+            "cost": 100,
+            "fundSource": "N"
+        }], "NCC", "Nhap", "", date_str="2026-07-01")
+        self.db.dispatch([{
+            "productId": 208,
+            "qty": 4,
+            "unitCode": "Vien",
+            "lotNo": "XNT01",
+            "fundSource": "N"
+        }], "Don vi", "Xuat", "", date_str="2026-07-02")
+
+        class DummyEntry:
+            def __init__(self, value):
+                self.entry = self
+                self.value = value
+            def get(self):
+                return self.value
+
+        class DummyCombo:
+            def get(self):
+                return "N"
+
+        app = App.__new__(App)
+        app.db = self.db
+        app.de_from = DummyEntry("01-07-2026")
+        app.de_to = DummyEntry("31-07-2026")
+        app.cmb_report_fund = DummyCombo()
+        app.toast = lambda *args, **kwargs: None
+
+        export_path = os.path.join(self.temp_dir, "xnt_export.xlsx")
+        with mock.patch.object(ui.filedialog, "asksaveasfilename", return_value=export_path), \
+             mock.patch.object(ui.os, "startfile", return_value=None), \
+             mock.patch.object(ui.messagebox, "showerror") as showerror:
+            App.export_report_excel(app)
+
+        showerror.assert_not_called()
+        self.assertTrue(os.path.exists(export_path))
+
+        wb = load_workbook(export_path)
+        ws = wb.active
+        self.assertEqual(ws["A1"].value, "BÁO CÁO XUẤT - NHẬP - TỒN")
+        self.assertIn("01-07-2026", ws["A2"].value)
+        self.assertEqual(ws["E5"].value, "31-12-2028")
+        self.assertEqual(ws["H5"].value, 10)
+        self.assertEqual(ws["I5"].value, 4)
+        self.assertEqual(ws["J5"].value, 6)
+        self.assertEqual(ws.freeze_panes, "A5")
 
 if __name__ == '__main__':
     unittest.main()
