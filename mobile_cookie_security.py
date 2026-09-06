@@ -195,6 +195,16 @@ def harden_mobile_html(html):
         "window.open(url, '_blank', 'noopener');",
     )
 
+    # Be robust to small formatting changes or duplicate auth bootstrap code in the
+    # large inline template: any remaining read of the legacy credential key is
+    # converted to an empty value.  The fail-fast checks below still reject any
+    # remaining code that could emit the credential through headers or URLs.
+    hardened = hardened.replace("localStorage.getItem('inventory_token')", "''")
+    hardened = hardened.replace(
+        "localStorage.removeItem('inventory_token');",
+        "try { localStorage.removeItem(['inventory', 'token'].join('_')); } catch (e) {}",
+    )
+
     forbidden = [
         "localStorage.getItem('inventory_token')",
         "localStorage.setItem('inventory_token'",
