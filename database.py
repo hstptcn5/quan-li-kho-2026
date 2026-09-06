@@ -2,55 +2,136 @@
 import sqlite3
 import datetime as dt
 import os
-import shutil
 from config import BACKUP_DIR, SCHEMA_SQL, SCHEMA_VERSION
 from date_utils import parse_date_to_iso
 
+
 class DB:
+    _MIGRATION_REQUIRED_COLUMNS = {
+        'products': {'barcode', 'productType', 'registrationNumber'},
+        'stock_movements': {
+            'cost', 'receivingUnit', 'reason', 'fundSource',
+            'qtyBase', 'originalQty', 'originalUnit',
+            'referenceType', 'referenceId', 'referenceItemId',
+        },
+        'purchase_items': {'fundSource', 'totalAmount'},
+        'dispatch_items': {'cost', 'fundSource', 'totalAmount'},
+        'sales': {'createdAt', 'total', 'paid', 'change', 'note'},
+        'sale_items': {'saleId', 'productId', 'unitCode', 'qty', 'price'},
+    }
+
     def __init__(self, path: str):
         self.path = path
+        self._database_preexisted = bool(
+            self.path and os.path.exists(self.path) and os.path.getsize(self.path) > 0
+        )
         self.conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute('PRAGMA foreign_keys = ON')
         self.conn.execute("PRAGMA busy_timeout = 30000")
+
+        current_version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+        if current_version > SCHEMA_VERSION:
+            self.conn.close()
+            raise RuntimeError(
+                f"Database schema version {current_version} mới hơn phiên bản ứng dụng hỗ trợ "
+                f"({SCHEMA_VERSION}). Hãy dùng phiên bản ứng dụng mới hơn."
+            )
+
+        if self._database_preexisted and self._needs_schema_migration(current_version):
+            self._backup_before_schema_migration()
+
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
-        self.conn.executescript(SCHEMA_SQL)
-        self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
-        try: self.conn.execute("ALTER TABLE products ADD COLUMN barcode TEXT")
-        except sqlite3.OperationalError: pass
+        try:
+            # executescript() tự commit transaction đang mở trước khi chạy script.
+            # Vì vậy BEGIN phải nằm ngay trong script để toàn bộ schema + migration
+            # tiếp tục ở cùng một transaction và có thể rollback nếu thất bại.
+            self.conn.executescript("BEGIN IMMEDIATE;\n" + SCHEMA_SQL)
 
-        self._backup_before_schema_migration()
-        self.migrate_schema()
+            if not self._has_column('products', 'barcode'):
+                self.conn.execute("ALTER TABLE products ADD COLUMN barcode TEXT")
 
-        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode) WHERE barcode IS NOT NULL")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_sm_product_batch ON stock_movements(productId, batchId)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_batches_product ON batches(productId)")
-        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_units_unique ON product_units(productId, unitCode)")
-        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_notenum ON purchase_notes(noteNumber)")
-        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_notenum ON dispatch_notes(noteNumber)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_sm_reference ON stock_movements(referenceType, referenceId)")
-        self.conn.commit()
+            self.migrate_schema()
+
+            self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode) WHERE barcode IS NOT NULL")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_sm_product_batch ON stock_movements(productId, batchId)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_batches_product ON batches(productId)")
+            self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_units_unique ON product_units(productId, unitCode)")
+            self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_notenum ON purchase_notes(noteNumber)")
+            self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_notenum ON dispatch_notes(noteNumber)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_sm_reference ON stock_movements(referenceType, referenceId)")
+
+            self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            integrity = self.conn.execute("PRAGMA integrity_check").fetchone()
+            if not integrity or integrity[0] != 'ok':
+                raise RuntimeError("Integrity check database thất bại sau migration")
+            self.conn.commit()
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            self.conn.close()
+            raise
 
     def _has_column(self, table, col):
         return any(r[1] == col for r in self.conn.execute(f"PRAGMA table_info({table})"))
 
+    def _needs_schema_migration(self, current_version=None):
+        """Return True when an existing database needs any supported schema repair/migration."""
+        if current_version is None:
+            current_version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+        if current_version < SCHEMA_VERSION:
+            return True
+
+        for table, required_columns in self._MIGRATION_REQUIRED_COLUMNS.items():
+            actual_columns = {
+                row[1] for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if not actual_columns or not required_columns.issubset(actual_columns):
+                return True
+        return False
+
     def _backup_before_schema_migration(self):
-        """Create one DB file backup before applying additive schema migrations."""
+        """Create and verify a consistent SQLite snapshot before any schema mutation."""
+        if not self._database_preexisted:
+            return None
+
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        stamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        base_name = os.path.splitext(os.path.basename(self.path))[0]
+        target = os.path.join(BACKUP_DIR, f"{base_name}_pre_migration_{stamp}.db")
+
+        dst = None
         try:
-            if not self.path or not os.path.exists(self.path) or os.path.getsize(self.path) == 0:
-                return
-            os.makedirs(BACKUP_DIR, exist_ok=True)
-            stamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
-            base_name = os.path.splitext(os.path.basename(self.path))[0]
-            target = os.path.join(BACKUP_DIR, f"{base_name}_pre_migration_{stamp}.db")
-            if os.path.exists(target):
-                return
             self.conn.commit()
-            shutil.copy2(self.path, target)
-        except Exception as e:
-            print(f"Khong the tao backup truoc migration: {e}")
+            dst = sqlite3.connect(target, timeout=30)
+            self.conn.backup(dst)
+            dst.commit()
+            integrity = dst.execute("PRAGMA integrity_check").fetchone()
+            if not integrity or integrity[0] != 'ok':
+                raise RuntimeError("Pre-migration backup không vượt qua integrity_check")
+            return target
+        except Exception as exc:
+            if dst is not None:
+                try:
+                    dst.close()
+                except Exception:
+                    pass
+                dst = None
+            try:
+                if os.path.exists(target):
+                    os.remove(target)
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"Không thể tạo backup an toàn trước migration; migration đã bị hủy: {exc}"
+            ) from exc
+        finally:
+            if dst is not None:
+                dst.close()
 
     def migrate_schema(self):
         if not self._has_column('stock_movements', 'cost'):
@@ -144,7 +225,6 @@ class DB:
         for r in self.conn.execute("SELECT id, defaultUnit FROM products"):
             if not self.conn.execute("SELECT 1 FROM product_units WHERE productId=? AND unitCode=?", (r['id'], r['defaultUnit'])).fetchone():
                 self.conn.execute("INSERT INTO product_units(productId, unitCode, toBaseQty, price) VALUES(?,?,1,0)", (r['id'], r['defaultUnit']))
-        self.conn.commit()
 
     # utils
     def q(self, sql, params=()):
@@ -713,7 +793,7 @@ class DB:
             # Thời gian tạo phiếu xuất
             created_at, ref_date = self._created_at_for_business_date(date_str)
 
-            # Lỗi 9: Tạo số phiếu tuần tự
+            # Lỗi 9: Tạo số phiếu xuất tuần tự
             note_number = self._next_note_number('PX', ref_date)
             cur = self.conn.execute(
                 "INSERT INTO dispatch_notes(noteNumber, receivingUnit, reason, note, createdAt) VALUES(?,?,?,?,?)",
@@ -1312,4 +1392,3 @@ class DB:
         """Lấy danh sách các vị trí đã từng ghi nhận nhiệt độ"""
         rows = self.q("SELECT DISTINCT locationName FROM temperature_logs ORDER BY locationName")
         return [r['locationName'] for r in rows]
-
