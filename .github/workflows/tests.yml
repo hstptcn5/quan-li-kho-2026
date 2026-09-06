@@ -31,4 +31,4 @@ jobs:
         run: python -m unittest discover -v
 
       - name: Compile source files
-        run: python -m compileall date_utils.py database.py server.py admin_security.py ui_security.py ui.py ui_dispatch.py ui_purchase.py ui_temp_log.py quanly_xnt.py test_fixes.py test_migration_hardening.py test_admin_security.py
+        run: python -m compileall date_utils.py database.py server.py mobile_cookie_security.py admin_security.py ui_security.py ui.py ui_dispatch.py ui_purchase.py ui_temp_log.py quanly_xnt.py test_fixes.py test_migration_hardening.py test_admin_security.py test_mobile_cookie_security.py

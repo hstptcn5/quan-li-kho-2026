@@ -42,10 +42,17 @@ if sys.platform == 'win32':
 # Bây giờ mới import ứng dụng chính (config.py -> ui.py -> pyzbar)
 from ui import App as InventoryApp
 from ui_security import AdminSecurityMixin
+from mobile_cookie_security import install_mobile_cookie_security
 
 
 class App(AdminSecurityMixin, InventoryApp):
-    """Inventory desktop app with PIN-backed local admin hardening."""
+    """Inventory desktop app with desktop and mobile security hardening."""
+
+    def __init__(self, *args, **kwargs):
+        # H1.1 is applied only when the real desktop application is instantiated,
+        # keeping module-level server tests isolated from production runtime wiring.
+        install_mobile_cookie_security()
+        super().__init__(*args, **kwargs)
 
 
 if __name__ == '__main__':
