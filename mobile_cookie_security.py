@@ -7,6 +7,7 @@ with the larger HTTP server resilience refactor planned for H1.2.
 """
 
 import json
+import re
 import secrets
 import time
 import urllib.parse
@@ -171,9 +172,24 @@ def harden_mobile_html(html):
         "                    try { localStorage.removeItem(['inventory', 'token'].join('_')); } catch (e) {}",
     )
 
-    old_dom_auth = """            const token = localStorage.getItem('inventory_token');\n            if (!token) {\n                showAuthModal();\n            } else {\n                hideAuthModal();\n            }\n"""
-    new_dom_auth = """            showAuthModal();\n            originalFetch('/api/dashboard-stats', { credentials: 'same-origin', cache: 'no-store' })\n                .then(response => {\n                    if (response.status === 401) showAuthModal();\n                    else hideAuthModal();\n                })\n                .catch(() => showAuthModal());\n"""
-    hardened = hardened.replace(old_dom_auth, new_dom_auth)
+    new_dom_auth = """            showAuthModal();
+            originalFetch('/api/dashboard-stats', { credentials: 'same-origin', cache: 'no-store' })
+                .then(response => {
+                    if (response.status === 401) showAuthModal();
+                    else hideAuthModal();
+                })
+                .catch(() => showAuthModal());"""
+    legacy_dom_pattern = re.compile(
+        r"[ \t]*const token = localStorage\.getItem\('inventory_token'\);\r?\n"
+        r"[ \t]*if \(!token\) \{\r?\n"
+        r"[ \t]*showAuthModal\(\);\r?\n"
+        r"[ \t]*\} else \{\r?\n"
+        r"[ \t]*hideAuthModal\(\);\r?\n"
+        r"[ \t]*\}"
+    )
+    hardened, dom_replacements = legacy_dom_pattern.subn(new_dom_auth, hardened, count=1)
+    if dom_replacements != 1:
+        raise RuntimeError("Mobile auth bootstrap hardening failed: expected one legacy DOM auth block")
 
     old_helper = """        function withAuthToken(url) {\n            const token = localStorage.getItem('inventory_token') || '';\n            if (!token) return url;\n            const sep = url.includes('?') ? '&' : '?';\n            return `${url}${sep}token=${encodeURIComponent(token)}`;\n        }\n"""
     hardened = hardened.replace(old_helper, """        function withAuthToken(url) {\n            return url;\n        }\n""")
@@ -195,10 +211,10 @@ def harden_mobile_html(html):
         "window.open(url, '_blank', 'noopener');",
     )
 
-    # Be robust to small formatting changes or duplicate auth bootstrap code in the
-    # large inline template: any remaining read of the legacy credential key is
-    # converted to an empty value.  The fail-fast checks below still reject any
-    # remaining code that could emit the credential through headers or URLs.
+    # Catch duplicate/format-shifted reads introduced elsewhere in the large
+    # legacy template.  This never authorizes a request; it only removes access
+    # to the retired browser-visible credential.  Exfiltration paths still fail
+    # closed through the checks immediately below.
     hardened = hardened.replace("localStorage.getItem('inventory_token')", "''")
     hardened = hardened.replace(
         "localStorage.removeItem('inventory_token');",
@@ -214,6 +230,8 @@ def harden_mobile_html(html):
     leftovers = [marker for marker in forbidden if marker in hardened]
     if leftovers:
         raise RuntimeError("Mobile auth template hardening incomplete: " + ", ".join(leftovers))
+    if "originalFetch('/api/dashboard-stats', { credentials: 'same-origin', cache: 'no-store' })" not in hardened:
+        raise RuntimeError("Mobile cookie session bootstrap probe is missing")
 
     return hardened
 
