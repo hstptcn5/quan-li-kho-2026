@@ -42,11 +42,12 @@ if sys.platform == 'win32':
 # Bây giờ mới import ứng dụng chính (config.py -> ui.py -> pyzbar)
 from ui import App as InventoryApp
 from ui_security import AdminSecurityMixin
+from ui_shell import ClinicalShellMixin
 from mobile_cookie_security import install_mobile_cookie_security
 
 
-class App(AdminSecurityMixin, InventoryApp):
-    """Inventory desktop app with desktop and mobile security hardening."""
+class App(AdminSecurityMixin, ClinicalShellMixin, InventoryApp):
+    """Inventory desktop app with security hardening and the clinical UI shell."""
 
     def __init__(self, *args, **kwargs):
         # H1.1 is applied only when the real desktop application is instantiated,
