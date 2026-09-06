@@ -25,7 +25,7 @@ _ORIGINAL_MOBILE_HTML = None
 def authenticate_mobile_pin(client_ip, pin, now=None):
     """Validate the LAN PIN and return an HttpOnly cookie response tuple.
 
-    Returns ``(status_code, payload, set_cookie_or_none)``.  The session token
+    Returns ``(status_code, payload, set_cookie_or_none)``. The session token
     is intentionally never returned in the JSON payload.
     """
     if now is None:
@@ -42,8 +42,6 @@ def authenticate_mobile_pin(client_ip, pin, now=None):
             "message": f"IP bị tạm khóa. Vui lòng thử lại sau {secs_left} giây",
         }, None
 
-    # Once a lockout window has expired, start a fresh attempt window instead
-    # of immediately re-locking the client after one more typo.
     if block_info and float(block_info.get("blocked_until") or 0) <= now and int(block_info.get("count") or 0) >= 5:
         block_info = {"count": 0, "blocked_until": 0}
         _server.FAILED_ATTEMPTS[client_ip] = block_info
@@ -175,8 +173,14 @@ def harden_mobile_html(html):
     new_dom_auth = """            showAuthModal();
             originalFetch('/api/dashboard-stats', { credentials: 'same-origin', cache: 'no-store' })
                 .then(response => {
-                    if (response.status === 401) showAuthModal();
-                    else hideAuthModal();
+                    if (response.status === 401) {
+                        showAuthModal();
+                    } else {
+                        hideAuthModal();
+                        updateCartStatus();
+                        loadDashboardStats();
+                        loadPartnersAndFunds();
+                    }
                 })
                 .catch(() => showAuthModal());"""
     legacy_dom_pattern = re.compile(
@@ -211,11 +215,25 @@ def harden_mobile_html(html):
         "window.open(url, '_blank', 'noopener');",
     )
 
-    # Catch duplicate/format-shifted reads introduced elsewhere in the large
-    # legacy template.  This never authorizes a request; it only removes access
-    # to the retired browser-visible credential.  Exfiltration paths still fail
-    # closed through the checks immediately below.
-    hardened = hardened.replace("localStorage.getItem('inventory_token')", "''")
+    legacy_initialize_pattern = re.compile(
+        r"        function initializeApp\(\) \{\r?\n"
+        r"[ \t]*const token = localStorage\.getItem\('inventory_token'\);\r?\n"
+        r"[ \t]*if \(token\) \{\r?\n"
+        r"[ \t]*updateCartStatus\(\);\r?\n"
+        r"[ \t]*loadDashboardStats\(\);\r?\n"
+        r"[ \t]*loadPartnersAndFunds\(\);\r?\n"
+        r"[ \t]*\}\r?\n"
+        r"        \}\r?\n"
+        r"        initializeApp\(\);"
+    )
+    hardened, init_replacements = legacy_initialize_pattern.subn(
+        "        // Authenticated app bootstrap is handled by the cookie probe in DOMContentLoaded.",
+        hardened,
+        count=1,
+    )
+    if init_replacements != 1:
+        raise RuntimeError("Mobile auth bootstrap hardening failed: expected one legacy initializeApp block")
+
     hardened = hardened.replace(
         "localStorage.removeItem('inventory_token');",
         "try { localStorage.removeItem(['inventory', 'token'].join('_')); } catch (e) {}",
@@ -226,6 +244,7 @@ def harden_mobile_html(html):
         "localStorage.setItem('inventory_token'",
         "options.headers['Authorization']",
         "token=${encodeURIComponent(token)}",
+        "const token = '';",
     ]
     leftovers = [marker for marker in forbidden if marker in hardened]
     if leftovers:
