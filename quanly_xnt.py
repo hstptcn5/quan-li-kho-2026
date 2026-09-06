@@ -40,7 +40,13 @@ if sys.platform == 'win32':
                 continue
 
 # Bây giờ mới import ứng dụng chính (config.py -> ui.py -> pyzbar)
-from ui import App
+from ui import App as InventoryApp
+from ui_security import AdminSecurityMixin
+
+
+class App(AdminSecurityMixin, InventoryApp):
+    """Inventory desktop app with PIN-backed local admin hardening."""
+
 
 if __name__ == '__main__':
     app = App()
