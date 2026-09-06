@@ -114,6 +114,13 @@ class MobileCookieSecurityTests(unittest.TestCase):
         self.assertNotIn("token=${encodeURIComponent(token)}", hardened)
         self.assertIn("options.credentials = 'same-origin'", hardened)
         self.assertIn("window.open(printUrl, '_blank', 'noopener');", hardened)
+        # A reload must probe the existing HttpOnly cookie instead of assuming
+        # there is no authenticated session and forcing the PIN modal open.
+        self.assertIn(
+            "originalFetch('/api/dashboard-stats', { credentials: 'same-origin', cache: 'no-store' })",
+            hardened,
+        )
+        self.assertNotIn("const token = '';", hardened)
         # Cart persistence remains intentionally local-only and is unrelated to auth.
         self.assertIn("mob_purchase_cart", hardened)
         self.assertIn("mob_dispatch_cart", hardened)
