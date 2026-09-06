@@ -43,11 +43,12 @@ if sys.platform == 'win32':
 from ui import App as InventoryApp
 from ui_security import AdminSecurityMixin
 from ui_shell import ClinicalShellMixin
+from ui_dashboard import DashboardUiMixin
 from mobile_cookie_security import install_mobile_cookie_security
 
 
-class App(AdminSecurityMixin, ClinicalShellMixin, InventoryApp):
-    """Inventory desktop app with security hardening and the clinical UI shell."""
+class App(AdminSecurityMixin, ClinicalShellMixin, DashboardUiMixin, InventoryApp):
+    """Inventory app with hardening and the Stitch-aligned desktop presentation."""
 
     def __init__(self, *args, **kwargs):
         # H1.1 is applied only when the real desktop application is instantiated,
