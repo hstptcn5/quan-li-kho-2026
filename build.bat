@@ -23,7 +23,7 @@ REM Check if PyInstaller is installed
 "%PYTHON_EXE%" -m pip show pyinstaller >nul 2>&1
 if errorlevel 1 (
     echo Installing PyInstaller...
-    "%PYTHON_EXE%" -m pip install pyinstaller==6.6.0
+    "%PYTHON_EXE%" -m pip install pyinstaller==6.22.2
     if errorlevel 1 (
         echo ERROR: Failed to install PyInstaller
         pause
