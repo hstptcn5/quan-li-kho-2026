@@ -85,7 +85,9 @@ class XntExcelTemplateTests(unittest.TestCase):
         self.assertEqual(ws.page_setup.fitToWidth, 1)
         self.assertEqual(self._normalize_print_title_rows(ws.print_title_rows), "6:7")
         self.assertFalse(ws.sheet_view.showGridLines)
-        self.assertIn("K", ws.print_area)
+        print_area_text = " ".join(str(part) for part in ws.print_area)
+        self.assertIn("$A$1", print_area_text)
+        self.assertIn("$K$", print_area_text)
         self.assertIn("Trang &P / &N", ws.oddFooter.center.text)
 
         # The report is an operational form, not a claimed legal form number.
