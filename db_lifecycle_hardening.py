@@ -93,7 +93,7 @@ class DatabaseLifecycleMixin:
             try:
                 mobile_server.stop()
             except Exception as exc:
-                print(f"Lỗi khi dừng mobile server lúc thoát: {exc}")
+                print("Mobile server cleanup failed:", repr(exc))
 
         db = getattr(self, "db", None)
         if db is not None:
@@ -107,6 +107,6 @@ class DatabaseLifecycleMixin:
                         conn.close()
                         db.conn = None
             except Exception as exc:
-                print(f"Lỗi khi đóng database lúc thoát: {exc}")
+                print("Database cleanup failed:", repr(exc))
 
         self.destroy()
