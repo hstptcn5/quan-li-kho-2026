@@ -31,7 +31,7 @@ jobs:
         run: python -m unittest discover -v
 
       - name: Compile source files
-        run: python -m compileall date_utils.py database.py server.py mobile_cookie_security.py admin_security.py ui_security.py ui_design.py ui_shell.py ui_dashboard.py ui_catalog.py ui.py ui_dispatch.py ui_purchase.py ui_temp_log.py quanly_xnt.py ui_smoke_check.py test_fixes.py test_migration_hardening.py test_admin_security.py test_mobile_cookie_security.py test_ui_foundation.py test_ui_dashboard.py test_ui_catalog.py
+        run: python -m compileall date_utils.py database.py server.py mobile_cookie_security.py admin_security.py ui_security.py ui_design.py ui_shell.py ui_dashboard.py ui_catalog.py ui_transactions.py ui.py ui_dispatch.py ui_purchase.py ui_temp_log.py quanly_xnt.py ui_smoke_check.py test_fixes.py test_migration_hardening.py test_admin_security.py test_mobile_cookie_security.py test_ui_foundation.py test_ui_dashboard.py test_ui_catalog.py test_ui_transactions.py
 
       - name: Desktop UI smoke
         run: python ui_smoke_check.py
