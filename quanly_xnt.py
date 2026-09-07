@@ -41,6 +41,7 @@ from ui_alerts_reports import AlertsReportsUiMixin
 from ui_support_final import SupportFinalUiMixin
 from xnt_excel_export import XntExcelExportMixin
 from mobile_cookie_security import install_mobile_cookie_security
+from mobile_http_hardening import install_mobile_http_hardening
 
 
 class App(
@@ -59,6 +60,7 @@ class App(
 
     def __init__(self, *args, **kwargs):
         install_mobile_cookie_security()
+        install_mobile_http_hardening()
         super().__init__(*args, **kwargs)
 
 
