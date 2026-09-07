@@ -110,7 +110,7 @@ class TestXntExcelForm(unittest.TestCase):
             self.assertEqual(ws.freeze_panes, "A7")
             self.assertEqual(ws.page_setup.orientation, "landscape")
             self.assertEqual(ws.page_setup.fitToWidth, 1)
-            self.assertEqual(ws.print_title_rows, "$5:$6")
+            self.assertEqual(str(ws.print_title_rows).replace("$", ""), "5:6")
             self.assertIn("Người lập", ws["A12"].value)
             self.assertIn("Thủ kho", ws["E12"].value)
             self.assertIn("Phụ trách đơn vị", ws["I12"].value)
