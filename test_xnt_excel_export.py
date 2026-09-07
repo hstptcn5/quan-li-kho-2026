@@ -39,6 +39,10 @@ class XntExcelTemplateTests(unittest.TestCase):
             },
         ]
 
+    @staticmethod
+    def _normalize_print_title_rows(value):
+        return str(value or "").replace("$", "")
+
     def test_workbook_is_a_printable_form_not_raw_table(self):
         wb = XntExcelExportMixin._build_xnt_workbook(
             self._rows(), "2026-07-01", "2026-07-31", "Tất cả"
@@ -77,9 +81,9 @@ class XntExcelTemplateTests(unittest.TestCase):
         # Print contract: A4 landscape, fit to one page wide, repeat headers.
         self.assertEqual(ws.freeze_panes, "A8")
         self.assertEqual(ws.page_setup.orientation, "landscape")
-        self.assertEqual(ws.page_setup.paperSize, ws.PAPERSIZE_A4)
+        self.assertEqual(str(ws.page_setup.paperSize), str(ws.PAPERSIZE_A4))
         self.assertEqual(ws.page_setup.fitToWidth, 1)
-        self.assertEqual(ws.print_title_rows, "$6:$7")
+        self.assertEqual(self._normalize_print_title_rows(ws.print_title_rows), "6:7")
         self.assertFalse(ws.sheet_view.showGridLines)
         self.assertIn("K", ws.print_area)
         self.assertIn("Trang &P / &N", ws.oddFooter.center.text)
@@ -106,7 +110,7 @@ class XntExcelTemplateTests(unittest.TestCase):
             self.assertEqual(ws["A1"].value, "BÁO CÁO XUẤT - NHẬP - TỒN")
             self.assertIn("Nguồn A", ws["A4"].value)
             self.assertEqual(ws["H10"].value, "=SUM(H8:H9)")
-            self.assertEqual(ws.print_title_rows, "$6:$7")
+            self.assertEqual(self._normalize_print_title_rows(ws.print_title_rows), "6:7")
 
 
 if __name__ == "__main__":
