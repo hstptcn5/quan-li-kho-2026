@@ -4,11 +4,6 @@ import os
 import sys
 
 
-# =============================================================================
-# QUAN TRỌNG: Đoạn code dưới đây PHẢI chạy TRƯỚC mọi lệnh import khác
-# để đảm bảo Windows tìm thấy libzbar-64.dll và libiconv.dll khi
-# ứng dụng được đóng gói bằng PyInstaller (--onefile).
-# =============================================================================
 if sys.platform == 'win32':
     _meipass = getattr(sys, '_MEIPASS', None)
     if _meipass:
@@ -43,6 +38,7 @@ from ui_catalog import CatalogUiMixin
 from ui_transactions import TransactionUiMixin
 from ui_stock_history import StockHistoryUiMixin
 from ui_alerts_reports import AlertsReportsUiMixin
+from ui_support_final import SupportFinalUiMixin
 from mobile_cookie_security import install_mobile_cookie_security
 
 
@@ -54,6 +50,7 @@ class App(
     TransactionUiMixin,
     StockHistoryUiMixin,
     AlertsReportsUiMixin,
+    SupportFinalUiMixin,
     InventoryApp,
 ):
     """Inventory app with hardening and the Stitch-aligned desktop presentation."""
