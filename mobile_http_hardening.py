@@ -4,13 +4,14 @@
 This module composes after H1.1 cookie-only authentication. It intentionally
 patches only the runtime mobile server so the large legacy ``server.py`` stays
 unchanged while request handling gains bounded bodies, socket timeouts,
-threaded concurrency, serialized access to the in-memory auth state, and an
+threaded concurrency, serialized access to the in-memory auth state, an
 explicit no-shared-SQLite-connection boundary between the desktop UI and HTTP
-worker threads.
+worker threads, and fail-safe console logging on Windows legacy code pages.
 """
 
 from __future__ import annotations
 
+import builtins
 import http.server
 import os
 import secrets
@@ -26,12 +27,14 @@ REQUEST_SOCKET_TIMEOUT_SECONDS = 15.0
 REQUEST_QUEUE_SIZE = 32
 
 _AUTH_STATE_LOCK = threading.RLock()
+_MISSING = object()
 _INSTALLED = False
 _ORIGINAL_DO_POST = None
 _ORIGINAL_CHECK_AUTH = None
 _ORIGINAL_SERVER_RUN = None
 _ORIGINAL_SERVER_STOP = None
 _ORIGINAL_AUTHENTICATE_PIN = None
+_ORIGINAL_SERVER_PRINT = _MISSING
 
 
 class RequestBodyPolicyError(ValueError):
@@ -41,6 +44,42 @@ class RequestBodyPolicyError(ValueError):
         super().__init__(message)
         self.status_code = int(status_code)
         self.message = str(message)
+
+
+def safe_server_print(*args, **kwargs):
+    """Print legacy server diagnostics without allowing encoding to kill a worker.
+
+    Windows service/CI consoles can still expose a legacy code page such as
+    cp1252. Vietnamese exception text is valid application data and must never
+    turn a handled inventory error into ``UnicodeEncodeError`` before the HTTP
+    response is sent. Normal ``print`` behavior is preserved; only encoding
+    failures fall back to replacement-safe text on the same stream.
+    """
+    try:
+        return builtins.print(*args, **kwargs)
+    except UnicodeEncodeError:
+        target = kwargs.get("file") or sys.stdout
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        if sep is None:
+            sep = " "
+        if end is None:
+            end = "\n"
+        try:
+            text = str(sep).join(str(arg) for arg in args) + str(end)
+            encoding = getattr(target, "encoding", None) or "utf-8"
+            safe_text = text.encode(encoding, errors="replace").decode(
+                encoding, errors="strict"
+            )
+            target.write(safe_text)
+            if kwargs.get("flush"):
+                target.flush()
+        except Exception:
+            # Logging is diagnostic only. Never let a secondary console/file
+            # failure terminate an HTTP worker that still owes the client a
+            # structured response.
+            pass
+        return None
 
 
 def validate_request_body_headers(headers) -> int:
@@ -166,7 +205,7 @@ def _hardened_server_run(server_thread):
     os.makedirs(static_dir, exist_ok=True)
     js_path = os.path.join(static_dir, "html5-qrcode.min.js")
     if not os.path.exists(js_path):
-        print(f"Cảnh báo: Tệp tin thư viện QR ngoại tuyến không tồn tại tại: {js_path}")
+        safe_server_print(f"Cảnh báo: Tệp tin thư viện QR ngoại tuyến không tồn tại tại: {js_path}")
 
     attempts = 0
     while attempts < 10:
@@ -179,8 +218,10 @@ def _hardened_server_run(server_thread):
             # app_instance.db/db_instance to the HTTP server object.
             server_thread.server.app_instance = server_thread.app_instance
             server_thread.is_running = True
-            print(f"Mobile inventory server started on http://{server_thread.host}:{server_thread.port}")
-            print(f"Xác thực PIN di động: {_server.SERVER_PIN}")
+            safe_server_print(
+                f"Mobile inventory server started on http://{server_thread.host}:{server_thread.port}"
+            )
+            safe_server_print(f"Xác thực PIN di động: {_server.SERVER_PIN}")
             _server.write_audit_log(
                 action="BAT_SERVER",
                 details=f"Mobile server started on port {server_thread.port}",
@@ -188,7 +229,9 @@ def _hardened_server_run(server_thread):
             server_thread.server.serve_forever()
             break
         except Exception as exc:
-            print(f"Failed to start mobile server on port {server_thread.port}: {exc}")
+            safe_server_print(
+                f"Failed to start mobile server on port {server_thread.port}: {exc}"
+            )
             server_thread.port += 1
             attempts += 1
 
@@ -206,7 +249,7 @@ def _hardened_server_stop(server_thread):
         server_thread.server.shutdown()
         server_thread.server.server_close()
         server_thread.is_running = False
-        print("Mobile inventory server stopped")
+        safe_server_print("Mobile inventory server stopped")
 
 
 def install_mobile_http_hardening():
@@ -214,7 +257,7 @@ def install_mobile_http_hardening():
     global _INSTALLED
     global _ORIGINAL_DO_POST, _ORIGINAL_CHECK_AUTH
     global _ORIGINAL_SERVER_RUN, _ORIGINAL_SERVER_STOP
-    global _ORIGINAL_AUTHENTICATE_PIN
+    global _ORIGINAL_AUTHENTICATE_PIN, _ORIGINAL_SERVER_PRINT
 
     if _INSTALLED:
         return
@@ -230,12 +273,18 @@ def install_mobile_http_hardening():
     _ORIGINAL_SERVER_RUN = _server.MobileInventoryServer.run
     _ORIGINAL_SERVER_STOP = _server.MobileInventoryServer.stop
     _ORIGINAL_AUTHENTICATE_PIN = _cookie_security.authenticate_mobile_pin
+    _ORIGINAL_SERVER_PRINT = _server.__dict__.get("print", _MISSING)
 
     handler_cls.do_POST = _guarded_do_post
     handler_cls.check_auth = _locked_check_auth
     _cookie_security.authenticate_mobile_pin = _locked_authenticate_mobile_pin
     _server.MobileInventoryServer.run = _hardened_server_run
     _server.MobileInventoryServer.stop = _hardened_server_stop
+
+    # Legacy server.py contains diagnostic print() calls inside exception
+    # handlers. Resolve those globals to an encoding-safe print so a Windows
+    # console code page can never abort a request before send_json().
+    _server.print = safe_server_print
     _INSTALLED = True
 
 
@@ -244,7 +293,7 @@ def uninstall_mobile_http_hardening_for_tests():
     global _INSTALLED
     global _ORIGINAL_DO_POST, _ORIGINAL_CHECK_AUTH
     global _ORIGINAL_SERVER_RUN, _ORIGINAL_SERVER_STOP
-    global _ORIGINAL_AUTHENTICATE_PIN
+    global _ORIGINAL_AUTHENTICATE_PIN, _ORIGINAL_SERVER_PRINT
 
     if not _INSTALLED:
         return
@@ -256,9 +305,15 @@ def uninstall_mobile_http_hardening_for_tests():
     _server.MobileInventoryServer.stop = _ORIGINAL_SERVER_STOP
     _cookie_security.authenticate_mobile_pin = _ORIGINAL_AUTHENTICATE_PIN
 
+    if _ORIGINAL_SERVER_PRINT is _MISSING:
+        _server.__dict__.pop("print", None)
+    else:
+        _server.print = _ORIGINAL_SERVER_PRINT
+
     _ORIGINAL_DO_POST = None
     _ORIGINAL_CHECK_AUTH = None
     _ORIGINAL_SERVER_RUN = None
     _ORIGINAL_SERVER_STOP = None
     _ORIGINAL_AUTHENTICATE_PIN = None
+    _ORIGINAL_SERVER_PRINT = _MISSING
     _INSTALLED = False
