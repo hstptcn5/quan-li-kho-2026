@@ -42,10 +42,12 @@ from ui_support_final import SupportFinalUiMixin
 from xnt_excel_export import XntExcelExportMixin
 from mobile_cookie_security import install_mobile_cookie_security
 from mobile_http_hardening import install_mobile_http_hardening
+from db_lifecycle_hardening import DatabaseLifecycleMixin, install_database_lifecycle_hardening
 
 
 class App(
     AdminSecurityMixin,
+    DatabaseLifecycleMixin,
     ClinicalShellMixin,
     DashboardUiMixin,
     CatalogUiMixin,
@@ -59,6 +61,7 @@ class App(
     """Inventory app with hardening and the Stitch-aligned desktop presentation."""
 
     def __init__(self, *args, **kwargs):
+        install_database_lifecycle_hardening()
         install_mobile_cookie_security()
         install_mobile_http_hardening()
         super().__init__(*args, **kwargs)
