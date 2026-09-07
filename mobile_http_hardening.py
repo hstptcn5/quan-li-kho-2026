@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-"""H1.2 mobile HTTP resilience hardening.
+"""H1.2/H3.1 mobile HTTP resilience hardening.
 
-This module composes after H1.1 cookie-only authentication.  It intentionally
+This module composes after H1.1 cookie-only authentication. It intentionally
 patches only the runtime mobile server so the large legacy ``server.py`` stays
 unchanged while request handling gains bounded bodies, socket timeouts,
-threaded concurrency and serialized access to the in-memory auth state.
+threaded concurrency, serialized access to the in-memory auth state, and an
+explicit no-shared-SQLite-connection boundary between the desktop UI and HTTP
+worker threads.
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ class RequestBodyPolicyError(ValueError):
 def validate_request_body_headers(headers) -> int:
     """Return a safe Content-Length or raise ``RequestBodyPolicyError``.
 
-    The legacy request handlers understand fixed-length JSON bodies only.  An
+    The legacy request handlers understand fixed-length JSON bodies only. An
     unsupported Transfer-Encoding is therefore rejected instead of being
     ambiguously interpreted as an empty or partial request.
     """
@@ -94,6 +96,21 @@ class HardenedThreadingHTTPServer(http.server.ThreadingHTTPServer):
         return client_socket, client_address
 
 
+def detach_legacy_desktop_db_reference(server_thread):
+    """Drop the legacy desktop ``DB`` reference before HTTP workers can run.
+
+    ``MobileInventoryServer.__init__`` historically copied ``app_instance.db``
+    into ``db_instance``. That connection is owned by Tk's desktop thread and
+    must never be exposed to ``ThreadingHTTPServer`` workers. Production request
+    handlers already open their own SQLite/``DB`` objects inside the request
+    thread; H3.1 makes that boundary explicit and prevents accidental future use
+    of the legacy shared reference.
+    """
+    if hasattr(server_thread, "db_instance"):
+        server_thread.db_instance = None
+    return server_thread
+
+
 def _reject_request(handler, status_code: int, message: str):
     handler.close_connection = True
     handler.send_json(
@@ -131,6 +148,10 @@ def _locked_authenticate_mobile_pin(*args, **kwargs):
 
 def _hardened_server_run(server_thread):
     """Preserve the legacy lifecycle while using the hardened server class."""
+    # H3.1: never copy the desktop-owned sqlite connection to the threaded HTTP
+    # server. Every handler uses request-thread-local DB/open_db instances.
+    detach_legacy_desktop_db_reference(server_thread)
+
     with _AUTH_STATE_LOCK:
         _server.SERVER_PIN = "".join(secrets.choice("0123456789") for _ in range(6))
         _server.ACTIVE_TOKENS.clear()
@@ -154,7 +175,8 @@ def _hardened_server_run(server_thread):
                 (server_thread.host, server_thread.port),
                 _server.MobileInventoryRequestHandler,
             )
-            server_thread.server.db_instance = server_thread.db_instance
+            # Deliberately expose only the UI scheduler reference. Do not attach
+            # app_instance.db/db_instance to the HTTP server object.
             server_thread.server.app_instance = server_thread.app_instance
             server_thread.is_running = True
             print(f"Mobile inventory server started on http://{server_thread.host}:{server_thread.port}")
@@ -188,7 +210,7 @@ def _hardened_server_stop(server_thread):
 
 
 def install_mobile_http_hardening():
-    """Install H1.2 once, always after H1.1 cookie authentication."""
+    """Install H1.2/H3.1 once, always after H1.1 cookie authentication."""
     global _INSTALLED
     global _ORIGINAL_DO_POST, _ORIGINAL_CHECK_AUTH
     global _ORIGINAL_SERVER_RUN, _ORIGINAL_SERVER_STOP
@@ -198,7 +220,7 @@ def install_mobile_http_hardening():
         return
 
     # H1.2 must capture the H1.1 cookie-only handlers, not the legacy bearer /
-    # query-token handlers.  H1.1 is idempotent, so enforcing the order here is
+    # query-token handlers. H1.1 is idempotent, so enforcing the order here is
     # safe both in production and isolated tests.
     _cookie_security.install_mobile_cookie_security()
 
