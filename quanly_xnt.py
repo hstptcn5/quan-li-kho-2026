@@ -44,10 +44,11 @@ from ui import App as InventoryApp
 from ui_security import AdminSecurityMixin
 from ui_shell import ClinicalShellMixin
 from ui_dashboard import DashboardUiMixin
+from ui_catalog import CatalogUiMixin
 from mobile_cookie_security import install_mobile_cookie_security
 
 
-class App(AdminSecurityMixin, ClinicalShellMixin, DashboardUiMixin, InventoryApp):
+class App(AdminSecurityMixin, ClinicalShellMixin, DashboardUiMixin, CatalogUiMixin, InventoryApp):
     """Inventory app with hardening and the Stitch-aligned desktop presentation."""
 
     def __init__(self, *args, **kwargs):
