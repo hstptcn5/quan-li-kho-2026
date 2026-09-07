@@ -23,7 +23,7 @@ def main():
         from quanly_xnt import App
 
         app = App()
-        deadline = time.time() + 2.8
+        deadline = time.time() + 3.0
         while time.time() < deadline:
             app.update()
             time.sleep(0.02)
@@ -33,62 +33,32 @@ def main():
             raise AssertionError(f"Desktop UI fell back to initialization-error screen: {title}")
 
         required = [
-            "shell_sidebar",
-            "shell_header",
+            "shell_sidebar", "shell_header",
             "dashboard_warning_tree",
-            "catalog_tree",
-            "catalog_search",
-            "catalog_create_panel",
-            "product_detail_page",
-            "tree_purchase_cart",
-            "lbl_purchase_cart_total",
-            "cmb_supplier",
-            "ent_purchase_date",
-            "search_purchase",
-            "cmb_prod",
-            "ent_lot",
-            "ent_exp",
-            "cmb_item_fund",
-            "tree_cart",
-            "cmb_receiving_unit",
-            "ent_dispatch_date",
-            "ent_barcode",
-            "search_pos",
-            "cmb_prod_pos",
-            "cmb_lot_pos",
-            "cmb_fund_pos",
-            "ent_qty_pos",
-            "stock_workspace_nb",
-            "stock_current_tab",
-            "stock_purchase_tab",
-            "stock_dispatch_tab",
-            "stock_search",
-            "stock_fund_filter",
-            "stock_status_filter",
-            "tree_stock2",
-            "purchase_history_tree",
-            "purchase_preview_tree",
-            "dispatch_history_tree",
-            "dispatch_preview_tree",
+            "catalog_tree", "catalog_search", "catalog_create_panel", "product_detail_page",
+            "tree_purchase_cart", "lbl_purchase_cart_total", "cmb_supplier", "ent_purchase_date",
+            "search_purchase", "cmb_prod", "ent_lot", "ent_exp", "cmb_item_fund",
+            "tree_cart", "cmb_receiving_unit", "ent_dispatch_date", "ent_barcode", "search_pos",
+            "cmb_prod_pos", "cmb_lot_pos", "cmb_fund_pos", "ent_qty_pos",
+            "stock_workspace_nb", "stock_current_tab", "stock_purchase_tab", "stock_dispatch_tab",
+            "stock_search", "stock_fund_filter", "stock_status_filter", "tree_stock2",
+            "purchase_history_tree", "purchase_preview_tree", "dispatch_history_tree", "dispatch_preview_tree",
+            "ent_warn_days", "tree_alerts",
+            "de_from", "de_to", "cmb_report_fund", "tree_report",
         ]
         missing = [name for name in required if not hasattr(app, name)]
         if missing:
             raise AssertionError("Desktop UI smoke missing widgets: " + ", ".join(missing))
 
-        # Exercise the new catalog page and real refresh path on an empty DB.
         app.nb.select(app.tab_products)
         app.refresh_products()
         app.update_idletasks()
         if app.catalog_count_label.cget("text") != "Hiển thị 0 / 0 mặt hàng":
             raise AssertionError("Empty catalog did not render deterministically")
-
-        # Exercise shell search routing after the Notebook reordering in UI-0.
         app.focus_search()
         if app.focus_get() is not app.catalog_search:
             raise AssertionError("Ctrl+F routing did not focus the catalog search field")
 
-        # UI-3 must replace only page construction. The hardened transaction,
-        # FEFO, print and validation methods must still come from legacy mixins.
         if app.build_purchase_tab.__func__.__module__ != "ui_transactions":
             raise AssertionError("Purchase page did not resolve to UI-3 presentation mixin")
         if app.build_dispatch_tab.__func__.__module__ != "ui_transactions":
@@ -100,7 +70,6 @@ def main():
         if app.update_dispatch_unit_label.__func__.__module__ != "ui_dispatch":
             raise AssertionError("FEFO preview logic was unexpectedly overridden")
 
-        # Both transaction screens must remain reachable and keep Ctrl+F routing.
         app.nb.select(app.tab_purchase)
         app.update_idletasks()
         app.focus_search()
@@ -113,8 +82,6 @@ def main():
         if app.focus_get() is not app.search_pos:
             raise AssertionError("Ctrl+F did not focus dispatch product search")
 
-        # UI-4 owns only the stock/history presentation. PDF reprint remains
-        # delegated to the legacy methods in ui.py.
         if app.build_stock_tab.__func__.__module__ != "ui_stock_history":
             raise AssertionError("Stock page did not resolve to UI-4 presentation mixin")
         if app.refresh_stock.__func__.__module__ != "ui_stock_history":
@@ -131,6 +98,34 @@ def main():
             raise AssertionError("Empty FEFO stock workspace did not render deterministically")
         if app.purchase_history_tree.get_children() or app.dispatch_history_tree.get_children():
             raise AssertionError("Empty document history should not contain rows")
+
+        # UI-5 must own presentation only. Existing refresh and export methods
+        # remain on InventoryApp so XNT semantics are unchanged.
+        if app.build_alerts_tab.__func__.__module__ != "ui_alerts_reports":
+            raise AssertionError("Alerts page did not resolve to UI-5 presentation mixin")
+        if app.build_report_tab.__func__.__module__ != "ui_alerts_reports":
+            raise AssertionError("XNT report page did not resolve to UI-5 presentation mixin")
+        if app.refresh_alerts.__func__.__module__ != "ui":
+            raise AssertionError("Alert query logic was unexpectedly overridden")
+        if app.refresh_report.__func__.__module__ != "ui":
+            raise AssertionError("XNT calculation refresh was unexpectedly overridden")
+        if app.export_report_excel.__func__.__module__ != "ui":
+            raise AssertionError("XNT Excel export was unexpectedly overridden")
+        if app.export_report_pdf.__func__.__module__ != "ui":
+            raise AssertionError("XNT PDF export was unexpectedly overridden")
+
+        app.nb.select(app.tab_alerts)
+        app.refresh_alerts()
+        app.update_idletasks()
+        if app.tree_alerts.get_children():
+            raise AssertionError("Empty expiry-alert workspace should not contain rows")
+
+        app.nb.select(app.tab_report)
+        app.refresh_report_funds_combo()
+        app.refresh_report()
+        app.update_idletasks()
+        if not hasattr(app, "tree_report"):
+            raise AssertionError("XNT report workspace did not render")
 
         print("DESKTOP_UI_SMOKE_OK")
     finally:
