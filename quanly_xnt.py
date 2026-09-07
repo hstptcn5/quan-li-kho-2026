@@ -39,6 +39,7 @@ from ui_transactions import TransactionUiMixin
 from ui_stock_history import StockHistoryUiMixin
 from ui_alerts_reports import AlertsReportsUiMixin
 from ui_support_final import SupportFinalUiMixin
+from xnt_excel_export import XntExcelExportMixin
 from mobile_cookie_security import install_mobile_cookie_security
 
 
@@ -51,6 +52,7 @@ class App(
     StockHistoryUiMixin,
     AlertsReportsUiMixin,
     SupportFinalUiMixin,
+    XntExcelExportMixin,
     InventoryApp,
 ):
     """Inventory app with hardening and the Stitch-aligned desktop presentation."""
