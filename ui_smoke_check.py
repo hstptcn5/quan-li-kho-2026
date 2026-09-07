@@ -108,8 +108,8 @@ def main():
             raise AssertionError("Alert query logic was unexpectedly overridden")
         if app.refresh_report.__func__.__module__ != "ui":
             raise AssertionError("XNT calculation refresh was unexpectedly overridden")
-        if app.export_report_excel.__func__.__module__ != "ui":
-            raise AssertionError("XNT Excel export was unexpectedly overridden")
+        if app.export_report_excel.__func__.__module__ != "xnt_excel_export":
+            raise AssertionError("Printable XNT Excel exporter was not wired into the runtime app")
         if app.export_report_pdf.__func__.__module__ != "ui":
             raise AssertionError("XNT PDF export was unexpectedly overridden")
 
