@@ -23,7 +23,7 @@ def main():
         from quanly_xnt import App
 
         app = App()
-        deadline = time.time() + 2.5
+        deadline = time.time() + 2.8
         while time.time() < deadline:
             app.update()
             time.sleep(0.02)
@@ -58,6 +58,18 @@ def main():
             "cmb_lot_pos",
             "cmb_fund_pos",
             "ent_qty_pos",
+            "stock_workspace_nb",
+            "stock_current_tab",
+            "stock_purchase_tab",
+            "stock_dispatch_tab",
+            "stock_search",
+            "stock_fund_filter",
+            "stock_status_filter",
+            "tree_stock2",
+            "purchase_history_tree",
+            "purchase_preview_tree",
+            "dispatch_history_tree",
+            "dispatch_preview_tree",
         ]
         missing = [name for name in required if not hasattr(app, name)]
         if missing:
@@ -100,6 +112,25 @@ def main():
         app.focus_search()
         if app.focus_get() is not app.search_pos:
             raise AssertionError("Ctrl+F did not focus dispatch product search")
+
+        # UI-4 owns only the stock/history presentation. PDF reprint remains
+        # delegated to the legacy methods in ui.py.
+        if app.build_stock_tab.__func__.__module__ != "ui_stock_history":
+            raise AssertionError("Stock page did not resolve to UI-4 presentation mixin")
+        if app.refresh_stock.__func__.__module__ != "ui_stock_history":
+            raise AssertionError("Stock refresh did not resolve to UI-4 presentation mixin")
+        if app.reprint_selected_purchase.__func__.__module__ != "ui":
+            raise AssertionError("Purchase reprint implementation was unexpectedly replaced")
+        if app.reprint_selected_dispatch.__func__.__module__ != "ui":
+            raise AssertionError("Dispatch reprint implementation was unexpectedly replaced")
+
+        app.nb.select(app.tab_stock)
+        app.refresh_stock()
+        app.update_idletasks()
+        if app.stock_count_label.cget("text") != "Hiển thị 0 / 0 số dư tồn":
+            raise AssertionError("Empty FEFO stock workspace did not render deterministically")
+        if app.purchase_history_tree.get_children() or app.dispatch_history_tree.get_children():
+            raise AssertionError("Empty document history should not contain rows")
 
         print("DESKTOP_UI_SMOKE_OK")
     finally:

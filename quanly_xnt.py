@@ -46,6 +46,7 @@ from ui_shell import ClinicalShellMixin
 from ui_dashboard import DashboardUiMixin
 from ui_catalog import CatalogUiMixin
 from ui_transactions import TransactionUiMixin
+from ui_stock_history import StockHistoryUiMixin
 from mobile_cookie_security import install_mobile_cookie_security
 
 
@@ -55,6 +56,7 @@ class App(
     DashboardUiMixin,
     CatalogUiMixin,
     TransactionUiMixin,
+    StockHistoryUiMixin,
     InventoryApp,
 ):
     """Inventory app with hardening and the Stitch-aligned desktop presentation."""
