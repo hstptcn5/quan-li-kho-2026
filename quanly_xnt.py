@@ -43,6 +43,7 @@ from xnt_excel_export import XntExcelExportMixin
 from mobile_cookie_security import install_mobile_cookie_security
 from mobile_http_hardening import install_mobile_http_hardening
 from db_lifecycle_hardening import DatabaseLifecycleMixin, install_database_lifecycle_hardening
+from backup_restore_hardening import install_backup_restore_hardening
 
 
 class App(
@@ -62,6 +63,7 @@ class App(
 
     def __init__(self, *args, **kwargs):
         install_database_lifecycle_hardening()
+        install_backup_restore_hardening()
         install_mobile_cookie_security()
         install_mobile_http_hardening()
         super().__init__(*args, **kwargs)
