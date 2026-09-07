@@ -34,7 +34,10 @@ def _connect(path: str, *, read_only: bool = False):
 
 
 def _fsync_file(path: str) -> None:
-    with open(path, "rb") as fh:
+    # Windows' CRT rejects fsync() on a read-only descriptor.  Open read/write
+    # without truncation so durability works consistently on Windows and POSIX.
+    with open(path, "r+b") as fh:
+        fh.flush()
         os.fsync(fh.fileno())
 
 
