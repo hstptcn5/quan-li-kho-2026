@@ -23,7 +23,7 @@ def main():
         from quanly_xnt import App
 
         app = App()
-        deadline = time.time() + 3.0
+        deadline = time.time() + 3.2
         while time.time() < deadline:
             app.update()
             time.sleep(0.02)
@@ -45,6 +45,7 @@ def main():
             "purchase_history_tree", "purchase_preview_tree", "dispatch_history_tree", "dispatch_preview_tree",
             "ent_warn_days", "tree_alerts",
             "de_from", "de_to", "cmb_report_fund", "tree_report",
+            "support_workspace_headers",
         ]
         missing = [name for name in required if not hasattr(app, name)]
         if missing:
@@ -99,8 +100,6 @@ def main():
         if app.purchase_history_tree.get_children() or app.dispatch_history_tree.get_children():
             raise AssertionError("Empty document history should not contain rows")
 
-        # UI-5 must own presentation only. Existing refresh and export methods
-        # remain on InventoryApp so XNT semantics are unchanged.
         if app.build_alerts_tab.__func__.__module__ != "ui_alerts_reports":
             raise AssertionError("Alerts page did not resolve to UI-5 presentation mixin")
         if app.build_report_tab.__func__.__module__ != "ui_alerts_reports":
@@ -124,8 +123,21 @@ def main():
         app.refresh_report_funds_combo()
         app.refresh_report()
         app.update_idletasks()
-        if not hasattr(app, "tree_report"):
-            raise AssertionError("XNT report workspace did not render")
+
+        # UI-6 wrappers must render on all four support workspaces while still
+        # delegating their real forms/actions to legacy builders.
+        expected_headers = {"temp", "data", "advanced", "admin"}
+        if set(app.support_workspace_headers) != expected_headers:
+            raise AssertionError("Final support workspace headers are incomplete")
+        for method_name in (
+            "build_temp_log_tab", "build_backup_tab", "build_advanced_reports_tab", "build_mobile_tab"
+        ):
+            if getattr(app, method_name).__func__.__module__ != "ui_support_final":
+                raise AssertionError(f"{method_name} did not resolve to UI-6 wrapper")
+
+        for tab in (app.tab_temp_log, app.tab_backup, app.tab_advanced_reports, app.tab_mobile):
+            app.nb.select(tab)
+            app.update_idletasks()
 
         print("DESKTOP_UI_SMOKE_OK")
     finally:
