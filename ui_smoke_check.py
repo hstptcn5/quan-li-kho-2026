@@ -23,7 +23,7 @@ def main():
         from quanly_xnt import App
 
         app = App()
-        deadline = time.time() + 3.2
+        deadline = time.time() + 3.0
         while time.time() < deadline:
             app.update()
             time.sleep(0.02)
@@ -45,7 +45,6 @@ def main():
             "purchase_history_tree", "purchase_preview_tree", "dispatch_history_tree", "dispatch_preview_tree",
             "ent_warn_days", "tree_alerts",
             "de_from", "de_to", "cmb_report_fund", "tree_report",
-            "support_workspace_headers",
         ]
         missing = [name for name in required if not hasattr(app, name)]
         if missing:
@@ -108,8 +107,8 @@ def main():
             raise AssertionError("Alert query logic was unexpectedly overridden")
         if app.refresh_report.__func__.__module__ != "ui":
             raise AssertionError("XNT calculation refresh was unexpectedly overridden")
-        if app.export_report_excel.__func__.__module__ != "ui":
-            raise AssertionError("XNT Excel export was unexpectedly overridden")
+        if app.export_report_excel.__func__.__module__ != "xnt_excel_export":
+            raise AssertionError("Formatted XNT Excel exporter was not wired")
         if app.export_report_pdf.__func__.__module__ != "ui":
             raise AssertionError("XNT PDF export was unexpectedly overridden")
 
@@ -124,8 +123,6 @@ def main():
         app.refresh_report()
         app.update_idletasks()
 
-        # UI-6 wrappers must render on all four support workspaces while still
-        # delegating their real forms/actions to legacy builders.
         expected_headers = {"temp", "data", "advanced", "admin"}
         if set(app.support_workspace_headers) != expected_headers:
             raise AssertionError("Final support workspace headers are incomplete")
