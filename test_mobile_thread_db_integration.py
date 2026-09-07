@@ -9,7 +9,6 @@ import json
 import os
 import tempfile
 import threading
-import time
 import unittest
 
 from database import DB
@@ -34,8 +33,14 @@ class _FakeDesktopApp:
         pass
 
 
+class _LegacyServerHolder:
+    def __init__(self, db):
+        self.db_instance = db
+
+
 class MobileThreadDatabaseIntegrationTests(unittest.TestCase):
     PIN = "246810"
+    EXPECTED_CONNECTIONS = 3  # login + two concurrent dispatch requests
 
     def setUp(self):
         # Start from the unpatched legacy module, independent of test order.
@@ -78,23 +83,37 @@ class MobileThreadDatabaseIntegrationTests(unittest.TestCase):
 
         self.app = _FakeDesktopApp(self.desktop_db)
         hardening.install_mobile_http_hardening()
-        self.mobile = server.MobileInventoryServer(self.app, host="127.0.0.1", port=0)
-        self.mobile.start()
-
-        deadline = time.time() + 10
-        while self.mobile.server is None and time.time() < deadline:
-            time.sleep(0.01)
-        if self.mobile.server is None:
-            self.fail("Threaded mobile server did not start")
-
-        self.port = int(self.mobile.server.server_address[1])
         server.SERVER_PIN = self.PIN
+
+        # Use the production threaded HTTP class, but make the listener finite:
+        # exactly three accepted connections are enough for this test. This
+        # avoids a serve_forever/shutdown lifecycle inside unittest while still
+        # exercising real BaseHTTPRequestHandler worker threads and sockets.
+        self.httpd = hardening.HardenedThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            server.MobileInventoryRequestHandler,
+        )
+        self.httpd.app_instance = self.app
+        self.httpd.timeout = 10
+        self.port = int(self.httpd.server_address[1])
+
+        def serve_expected_connections():
+            for _ in range(self.EXPECTED_CONNECTIONS):
+                self.httpd.handle_request()
+
+        self.listener_thread = threading.Thread(
+            target=serve_expected_connections,
+            name="h3.1-finite-http-listener",
+            daemon=True,
+        )
+        self.listener_thread.start()
 
     def tearDown(self):
         try:
-            if getattr(self, "mobile", None) is not None and self.mobile.server is not None:
-                self.mobile.stop()
-                self.mobile.join(timeout=10)
+            if getattr(self, "listener_thread", None) is not None:
+                self.listener_thread.join(timeout=15)
+            if getattr(self, "httpd", None) is not None:
+                self.httpd.server_close()
         finally:
             hardening.uninstall_mobile_http_hardening_for_tests()
             mobile_cookie_security.uninstall_mobile_cookie_security_for_tests()
@@ -140,10 +159,18 @@ class MobileThreadDatabaseIntegrationTests(unittest.TestCase):
         """Two real HTTP workers race stock without sharing Tk's DB connection."""
         cookie = self._login_cookie()
 
-        # H3.1 contract: the server thread drops the legacy copied DB reference,
-        # and the HTTP server itself never exposes a desktop sqlite connection.
-        self.assertIsNone(self.mobile.db_instance)
-        self.assertFalse(hasattr(self.mobile.server, "db_instance"))
+        # H3.1 production contract: the legacy copied DB reference is actively
+        # detached before MobileInventoryServer starts workers, and neither the
+        # handler nor the hardened HTTP server carries that connection.
+        legacy_holder = _LegacyServerHolder(self.desktop_db)
+        self.assertIs(hardening.detach_legacy_desktop_db_reference(legacy_holder), legacy_holder)
+        self.assertIsNone(legacy_holder.db_instance)
+        self.assertFalse(hasattr(self.httpd, "db_instance"))
+
+        run_source = inspect.getsource(hardening._hardened_server_run)
+        self.assertIn("detach_legacy_desktop_db_reference(server_thread)", run_source)
+        self.assertNotIn("server_thread.server.db_instance", run_source)
+
         handler_source = inspect.getsource(server.MobileInventoryRequestHandler)
         self.assertNotIn("self.server.db_instance", handler_source)
         self.assertNotIn("self.server.app_instance.db", handler_source)
@@ -187,6 +214,9 @@ class MobileThreadDatabaseIntegrationTests(unittest.TestCase):
         for thread in threads:
             thread.join(timeout=20)
             self.assertFalse(thread.is_alive())
+
+        self.listener_thread.join(timeout=10)
+        self.assertFalse(self.listener_thread.is_alive(), "Finite HTTP listener did not consume all expected requests")
 
         self.assertEqual(len(results), 2, results)
         successes = [r for r in results if r[0] == 200 and r[1].get("success") is True]
