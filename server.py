@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import os
 import time
+import math
 import secrets
 import html
 from datetime import datetime
@@ -1085,12 +1086,12 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         return
                     try:
                         item["qty"] = float(qty)
-                        if item["qty"] <= 0: raise ValueError()
+                        if not math.isfinite(item["qty"]) or item["qty"] <= 0: raise ValueError()
                     except ValueError:
                         self.send_json({"success": False, "message": "Số lượng phải là số dương lớn hơn 0"}, 400)
                         conn.close()
                         return
-                        
+
                     if not item.get("unitCode"):
                         prod = conn.execute("SELECT defaultUnit FROM products WHERE id=?", (p_id,)).fetchone()
                         if not prod:
@@ -1098,7 +1099,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                             conn.close()
                             return
                         item["unitCode"] = prod["defaultUnit"]
-                        
+
                     if "cost" not in item:
                         item["cost"] = 0.0
                     if item.get("totalAmount") not in (None, ""):
@@ -1183,12 +1184,12 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                         return
                     try:
                         item["qty"] = float(qty)
-                        if item["qty"] <= 0: raise ValueError()
+                        if not math.isfinite(item["qty"]) or item["qty"] <= 0: raise ValueError()
                     except ValueError:
                         self.send_json({"success": False, "message": "Số lượng phải là số dương lớn hơn 0"}, 400)
                         conn.close()
                         return
-                        
+
                     if not item.get("unitCode"):
                         prod = conn.execute("SELECT defaultUnit FROM products WHERE id=?", (p_id,)).fetchone()
                         if not prod:
@@ -1196,7 +1197,7 @@ class MobileInventoryRequestHandler(http.server.BaseHTTPRequestHandler):
                             conn.close()
                             return
                         item["unitCode"] = prod["defaultUnit"]
-                        
+
                     if not lot_no or lot_no == "[Tự động - FEFO]":
                         item["lotNo"] = None
                     else:

@@ -2161,8 +2161,8 @@ MOBILE_HTML = """<!DOCTYPE html>
                         html += `
                             <div class="product-item" onclick="selectProductFromCatalog(${p.id})">
                                 <div class="product-item-details">
-                                    <span class="product-item-name">${p.name}</span>
-                                    <span class="product-item-sub">ĐVT: ${p.unit} ${p.barcode ? ' | Mã vạch: ' + p.barcode : ''}</span>
+                                    <span class="product-item-name">${escapeHtml(p.name)}</span>
+                                    <span class="product-item-sub">ĐVT: ${escapeHtml(p.unit)} ${p.barcode ? ' | Mã vạch: ' + escapeHtml(p.barcode) : ''}</span>
                                 </div>
                                 <span class="product-item-arrow">➔</span>
                             </div>
@@ -2573,7 +2573,7 @@ MOBILE_HTML = """<!DOCTYPE html>
                             <div class="card ${alertClass}" style="margin: 0; padding: 10px; border-radius: 8px; border: 1px solid var(--glass-border); font-size: 0.8rem;">
                                 <div style="display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 4px;">
                                     <span>📍 ${escapeHtml(log.location)}</span>
-                                    <span>📅 ${log.logDate} (${log.session})</span>
+                                    <span>📅 ${escapeHtml(log.logDate)} (${escapeHtml(log.session)})</span>
                                 </div>
                                 <div style="display: flex; justify-content: space-between; color: var(--text-light);">
                                     <span>🌡️ Nhiệt độ: <strong>${log.temperature}°C</strong></span>

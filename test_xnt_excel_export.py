@@ -85,7 +85,9 @@ class XntExcelTemplateTests(unittest.TestCase):
         self.assertEqual(ws.page_setup.fitToWidth, 1)
         self.assertEqual(self._normalize_print_title_rows(ws.print_title_rows), "6:7")
         self.assertFalse(ws.sheet_view.showGridLines)
-        print_area_text = " ".join(str(part) for part in ws.print_area)
+        # openpyxl 3.0 returns an iterable of ranges, 3.1+ returns one string.
+        print_area = ws.print_area
+        print_area_text = print_area if isinstance(print_area, str) else " ".join(str(part) for part in print_area)
         self.assertIn("$A$1", print_area_text)
         self.assertIn("$K$", print_area_text)
         self.assertIn("Trang &P / &N", ws.oddFooter.center.text)
