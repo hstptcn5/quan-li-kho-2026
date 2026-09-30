@@ -71,17 +71,14 @@ Hệ thống được phát triển trên nền tảng **Python & SQLite**, sử
 
 ### 1. Yêu cầu hệ thống
 *   Hệ điều hành: Windows 10 hoặc 11 (64-bit).
-*   Python: Phiên bản 3.8 đến 3.11.
+*   Python: Phiên bản 3.10 (phiên bản được CI kiểm thử). Các thư viện ghim trong `requirements.txt` không hỗ trợ Python 3.8/3.9 và không có bản cài sẵn cho Python 3.12 trở lên.
 
 ### 2. Cài đặt thư viện dependencies
 Mở Terminal hoặc Command Prompt tại thư mục dự án và chạy:
 ```bash
 pip install -r requirements.txt
 ```
-*Hoặc cài đặt thủ công các thư viện chính:*
-```bash
-pip install ttkbootstrap matplotlib pandas openpyxl opencv-python pyzbar Pillow reportlab
-```
+Luôn cài đúng các phiên bản đã ghim trong `requirements.txt` (đây là tổ hợp đã được CI kiểm thử và quét lỗ hổng bằng `pip-audit`); không cài thủ công từng thư viện ở phiên bản mới nhất.
 
 ### 3. Khởi chạy ứng dụng
 Chạy tệp tin điều phối khởi động:

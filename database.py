@@ -1,9 +1,26 @@
 # database.py — Lớp cơ sở dữ liệu cho phần mềm Quản lý XNT
 import sqlite3
 import datetime as dt
+import math
 import os
 from config import BACKUP_DIR, SCHEMA_SQL, SCHEMA_VERSION
 from date_utils import parse_date_to_iso
+
+
+def finite_number(value, label: str) -> float:
+    """float(value) that rejects NaN/Infinity.
+
+    ``nan <= 0`` is False and ``inf > 0`` is True, so a bare sign check lets
+    both through; "inf"/"nan"/"1e309" strings and the JSON literals Infinity/NaN
+    all reach here. Raises ValueError (mapped to HTTP 400 by the mobile API).
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} không hợp lệ")
+    if not math.isfinite(number):
+        raise ValueError(f"{label} phải là số hữu hạn")
+    return number
 
 
 class DB:
@@ -805,10 +822,10 @@ class DB:
                 to_base, _ = self.unit_info(it['productId'], it['unitCode'])
                 if to_base is None:
                     raise Exception(f"Sản phẩm #{it['productId']} chưa có đơn vị cơ sở")
-                original_qty = float(it['qty'])
+                original_qty = finite_number(it['qty'], f"Số lượng xuất của sản phẩm #{it['productId']}")
                 if original_qty <= 0:
                     raise ValueError(f"Số lượng xuất phải > 0 cho sản phẩm #{it['productId']}")
-                need_base = original_qty * to_base
+                need_base = finite_number(original_qty * to_base, f"Số lượng xuất của sản phẩm #{it['productId']}")
                 original_unit = it['unitCode']
 
                 # Lấy lô hàng tại đúng ngày chứng từ: thủ công nếu chọn trước, hoặc FEFO nếu để tự động
@@ -1038,13 +1055,17 @@ class DB:
                 to_base, _ = self.unit_info(it['productId'], it['unitCode'])
                 if to_base is None:
                     to_base = 1.0
-                qty_val = float(it['qty'])
+                qty_val = finite_number(it['qty'], f"Số lượng nhập của sản phẩm #{it['productId']}")
                 if qty_val <= 0:
                     raise ValueError(f"Số lượng nhập phải > 0 cho sản phẩm #{it['productId']}")
-                qty_base = qty_val * to_base
-                
+                qty_base = finite_number(qty_val * to_base, f"Số lượng nhập của sản phẩm #{it['productId']}")
+
                 # Lỗi 6: Ghi purchase_items trước để lấy ID
-                total_amount = float(it.get('totalAmount') if it.get('totalAmount') is not None else qty_val * float(it.get('cost') or 0))
+                if it.get('totalAmount') is not None:
+                    total_amount = finite_number(it['totalAmount'], "Thành tiền nhập")
+                else:
+                    unit_price = finite_number(it.get('cost') or 0, "Đơn giá nhập")
+                    total_amount = finite_number(qty_val * unit_price, "Thành tiền nhập")
                 unit_cost = total_amount / qty_val if qty_val else 0.0
                 pi_cur = self.conn.execute(
                     "INSERT INTO purchase_items(purchaseId, productId, batchId, unitCode, qty, lotNo, expiryDate, cost, fundSource, totalAmount) VALUES(?,?,?,?,?,?,?,?,?,?)",
