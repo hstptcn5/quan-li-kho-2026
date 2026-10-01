@@ -43,3 +43,45 @@ class Harness:
         assert status == 302, status
         self.cookie = headers["set-cookie"].split(";", 1)[0]
         return self.cookie
+
+
+def seed_demo_database(db_path):
+    """DB mẫu cho smoke test và kiểm tra thủ công: 1 hết hạn, 1 cận hạn, 1 tồn thấp, 1 bình thường.
+
+    Tên sản phẩm đầu tiên chứa thẻ HTML và dấu nháy để kiểm tra hiển thị an toàn.
+    """
+    import datetime as dt
+    import os
+
+    from database import DB
+
+    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+    today = dt.date.today()
+    products = [
+        (1, '<b>x</b> Thuốc hết hạn & "q"', "L-EXP", -10, 20),
+        (2, "Thuốc cận hạn", "L-NEAR", 30, 50),
+        (3, "Vật tư tồn thấp", "L-LOW", 800, 5),
+        (4, "Thuốc bình thường", "L-OK", 900, 100),
+    ]
+    db = DB(db_path)
+    try:
+        for product_id, name, lot, offset_days, qty in products:
+            db.conn.execute(
+                "INSERT INTO products(id, name, defaultUnit) VALUES(?, ?, 'Viên')", (product_id, name)
+            )
+            db.conn.execute(
+                "INSERT INTO product_units(productId, unitCode, toBaseQty, price) VALUES(?, 'Viên', 1, 0)",
+                (product_id,),
+            )
+            db.conn.commit()
+            db.record_purchase(
+                [{
+                    "productId": product_id, "productName": name, "qty": qty, "unitCode": "Viên",
+                    "lotNo": lot, "expiryDate": (today + dt.timedelta(days=offset_days)).isoformat(),
+                    "cost": 1000, "fundSource": "BHYT",
+                }],
+                "NCC", "Nhập kho", "",
+            )
+    finally:
+        db.conn.close()
+    return {"counts": {"all": 3, "expired": 1, "near": 1, "low": 1}, "literal": "<b>x</b>"}
