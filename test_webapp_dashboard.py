@@ -1,11 +1,14 @@
-# -*- coding: utf-8 -*-
 import datetime as dt
 import os
+import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 
 from database import DB
+from webapp.app import build_router
 from webapp.services import dashboard as service
+from webapp_testkit import Harness
 
 HOSTILE_NAME = "<img src=x onerror=alert(1)> \"quote\" & 'apos' " + "Ư" * 300
 
@@ -176,6 +179,87 @@ class WarningCategoryTests(unittest.TestCase):
         self.assertEqual(service.warning_category(1), "expired")
         self.assertEqual(service.warning_category(2), "near")
         self.assertEqual(service.warning_category(3), "low")
+
+
+class DashboardApiTests(SeededDatabaseCase):
+    def setUp(self):
+        super().setUp()
+        self.web_root = Path(self.tmp.name) / "web"
+        self.web_root.mkdir()
+        self.harness = Harness(self, build_router(lambda: DB(self.db_path)), self.web_root)
+        self.harness.login()
+
+    def get(self, query=""):
+        return self.harness.json("GET", "/api/dashboard" + query)
+
+    def test_requires_authentication(self):
+        status, _, payload = self.harness.json("GET", "/api/dashboard", cookie="")
+        self.assertEqual(status, 401)
+        self.assertTrue(payload["auth_required"])
+
+    def test_returns_the_documented_contract(self):
+        status, headers, payload = self.get()
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["success"])
+        self.assertEqual(
+            set(payload),
+            {"success", "warningDays", "lowStockThreshold", "cards", "warnings", "activities", "runtime"},
+        )
+        self.assertEqual(set(payload["warnings"]), {"counts", "rows"})
+        self.assertEqual(payload["warnings"]["counts"], {"all": 3, "expired": 1, "near": 1, "low": 1})
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertIn("default-src 'self'", headers["content-security-policy"])
+
+    def test_filter_and_limit_query_parameters(self):
+        _, _, payload = self.get("?filter=near&limit=5")
+        self.assertEqual([r["severity"] for r in payload["warnings"]["rows"]], [2])
+        _, _, payload = self.get("?filter=low&limit=1")
+        self.assertEqual([r["productName"] for r in payload["warnings"]["rows"]], ["Vật tư tồn thấp"])
+        _, _, payload = self.get("?limit=500")
+        self.assertEqual(len(payload["warnings"]["rows"]), 3)
+
+    def test_invalid_query_parameters_are_400(self):
+        for query in (
+            "?filter=bogus", "?filter=", "?limit=0", "?limit=501", "?limit=abc",
+            "?limit=", "?limit=2.5", "?limit=-3",
+        ):
+            with self.subTest(query=query):
+                status, _, payload = self.get(query)
+                self.assertEqual(status, 400)
+                self.assertFalse(payload["success"])
+                self.assertTrue(payload["message"])
+
+    def test_database_error_is_reported_without_internal_details(self):
+        def broken_factory():
+            raise sqlite3.OperationalError(r"database is locked: C:\Users\secret\pharm.db")
+
+        harness = Harness(self, build_router(broken_factory), self.web_root)
+        harness.login()
+        with self.assertLogs("webapp.routing", level="ERROR"):
+            status, _, payload = harness.json("GET", "/api/dashboard")
+        self.assertEqual(status, 500)
+        self.assertEqual(payload, {"success": False, "message": "Lỗi hệ thống"})
+
+    def test_hostile_text_survives_the_json_round_trip(self):
+        self.add_product(5, HOSTILE_NAME, "L-<b>", -5, 7)
+        _, _, payload = self.get("?filter=expired&limit=500")
+        names = [row["productName"] for row in payload["warnings"]["rows"]]
+        self.assertIn(HOSTILE_NAME, names)
+
+    def test_database_connection_is_closed_after_each_request(self):
+        opened = []
+
+        def tracking_factory():
+            db = DB(self.db_path)
+            opened.append(db)
+            return db
+
+        harness = Harness(self, build_router(tracking_factory), self.web_root)
+        harness.login()
+        self.assertEqual(harness.json("GET", "/api/dashboard")[0], 200)
+        self.assertEqual(len(opened), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            opened[0].conn.execute("SELECT 1")
 
 
 if __name__ == "__main__":
