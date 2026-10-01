@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="vi"><head><meta charset="utf-8">
+<title>Tổng quan - bố cục B (mockup tham chiếu, dữ liệu mẫu)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+.qlk{font-family:"Segoe UI",system-ui,sans-serif;color:#0B1C30;background:#F3F6F9;border:1px solid #D1D9E2;border-radius:6px;display:flex;font-size:12px;line-height:1.35;overflow:hidden;text-align:left}
+.qlk *{box-sizing:border-box}
+.qlk .side{width:176px;flex:none;background:#F3F6F9;border-right:1px solid #E2E8F0;padding:10px 8px}
+.qlk .brand{font-weight:700;color:#0D3B66;font-size:13px;padding:4px 8px 10px}
+.qlk .nav{padding:6px 10px;border-radius:5px;color:#475569;display:flex;justify-content:space-between;align-items:center;gap:6px;white-space:nowrap}
+.qlk .nav.on{background:#DCE9FF;color:#0D3B66;font-weight:700}
+.qlk .nav.off{color:#94A3B8}
+.qlk .nav small{font-size:9px;background:#EDF2F7;color:#64748B;border-radius:8px;padding:1px 6px}
+.qlk .main{flex:1;min-width:0;padding:10px 12px}
+.qlk .top{display:flex;align-items:baseline;gap:10px;margin-bottom:8px;flex-wrap:wrap}
+.qlk h4{margin:0;font-size:15px;color:#0B1C30}
+.qlk .sub{color:#64748B;font-size:11px}
+.qlk .sp{flex:1}
+.qlk .btn{border:1px solid #D1D9E2;background:#fff;border-radius:5px;padding:5px 10px;font-weight:600;font-size:11px;color:#0B1C30;white-space:nowrap}
+.qlk .btn.p{background:#0D3B66;border-color:#0D3B66;color:#fff}
+.qlk .cards{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:8px}
+.qlk .card{border:1px solid #D1D9E2;background:#fff;border-radius:6px;padding:8px 10px}
+.qlk .card .t{font-size:9px;font-weight:700;letter-spacing:.03em}
+.qlk .card .v{font-size:20px;font-weight:700;margin:2px 0}
+.qlk .card .d{font-size:10px;color:#64748B}
+.qlk .card.s{background:#DCFCE7;border-color:#BBF7D0}.qlk .card.s .t{color:#166534}
+.qlk .card.w{background:#FEF3C7;border-color:#FDE68A}.qlk .card.w .t{color:#B45309}
+.qlk .card.d2{background:#FEE2E2;border-color:#FECACA}.qlk .card.d2 .t{color:#B91C1C}
+.qlk .quick{background:#fff;border:1px solid #D1D9E2;border-radius:6px;padding:6px 10px;display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.qlk .grid{display:grid;gap:8px}
+.qlk .panel{background:#fff;border:1px solid #D1D9E2;border-radius:6px;overflow:hidden}
+.qlk .ph{padding:7px 10px;font-weight:700;font-size:11px;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;gap:8px}
+.qlk table{width:100%;border-collapse:collapse}
+.qlk th{background:#EDF2F7;color:#475569;font-size:9px;text-align:left;padding:5px 8px;letter-spacing:.02em}
+.qlk td{padding:5px 8px;border-top:1px solid #EDF2F7;font-size:11px}
+.qlk tr.x td{background:#FEE2E2;color:#B91C1C}
+.qlk tr.n td{background:#FFF9E8}
+.qlk .bd{display:inline-block;border-radius:9px;padding:1px 7px;font-size:10px;font-weight:700}
+.qlk .bd.x{background:#FEE2E2;color:#B91C1C}.qlk .bd.n{background:#FEF3C7;color:#B45309}.qlk .bd.l{background:#DBEAFE;color:#1D4ED8}
+.qlk .chip{border:1px solid #D1D9E2;border-radius:12px;padding:2px 9px;font-size:10px;background:#fff;color:#475569}
+.qlk .chip.on{background:#0D3B66;border-color:#0D3B66;color:#fff}
+.qlk .row{padding:6px 10px;border-top:1px solid #EDF2F7;font-size:11px;color:#475569}
+.qlk .row:first-of-type{border-top:0}
+.qlk .ok{color:#166534}.qlk .wn{color:#B45309}
+.qlk .foot{margin-top:6px;color:#64748B;font-size:10px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.qlk .kpi{display:flex;align-items:center;gap:8px;padding:6px 10px;border-top:1px solid #EDF2F7}
+.qlk .kpi:first-of-type{border-top:0}
+.qlk .dot{width:8px;height:8px;border-radius:50%;flex:none}
+.qlk .kpi b{margin-left:auto;font-size:15px}
+</style>
+<style>body{margin:0;padding:16px;background:#fff;font-family:"Segoe UI",system-ui,sans-serif}.note{font-size:12px;color:#64748B;margin:0 0 10px}</style>
+</head><body>
+<p class="note">Mockup tham chiếu cho spec P1 (docs/superpowers/specs/2026-10-01-web-ui-foundation-design.md). Dữ liệu là dữ liệu mẫu; đây không phải mã sản xuất.</p>
+<div class="qlk">
+  <div class="side">
+    <div class="brand">QUẢN LÝ KHO 2026</div>
+    <div class="nav on">▦ Tổng quan <span>F4</span></div>
+    <div class="nav off">▤ Danh mục hàng hóa <small>sắp có</small></div>
+    <div class="nav off">↧ Nhập kho <small>sắp có</small></div>
+    <div class="nav off">↥ Xuất kho <small>sắp có</small></div>
+    <div class="nav off">⌛ Tồn kho (FEFO) <small>sắp có</small></div>
+    <div class="nav off">⚠ Cảnh báo HSD <small>sắp có</small></div>
+    <div class="nav off">▧ Báo cáo XNT <small>sắp có</small></div>
+    <div class="nav off">♨ Nhiệt độ &amp; độ ẩm <small>sắp có</small></div>
+    <div class="nav off">⌘ Công cụ dữ liệu <small>sắp có</small></div>
+    <div class="nav off">▥ Báo cáo nâng cao <small>sắp có</small></div>
+    <div class="nav off">⚙ Quản trị hệ thống <small>sắp có</small></div>
+  </div>
+  <div class="main">
+    <div class="top"><h4>Tổng quan vận hành kho</h4><span class="sub">FEFO theo lô và HSD</span><span class="sp"></span><span class="btn p">+ Nhập kho</span><span class="btn p">− Xuất kho</span><span class="btn">Tra cứu tồn</span><span class="btn">Báo cáo XNT</span><span class="btn">↻</span></div>
+    <div class="grid" style="grid-template-columns:2fr 1fr">
+      <div class="panel"><div class="ph">⚠ CẦN XỬ LÝ HÔM NAY <span class="sp"></span><span class="chip on">Tất cả 43</span><span class="chip">Hết hạn 3</span><span class="chip">Cận hạn 27</span><span class="chip">Tồn thấp 19</span></div>
+        <table><tr><th>THUỐC - VẬT TƯ</th><th>LÔ</th><th>HẠN DÙNG</th><th>TỒN</th><th>NGUỒN</th><th>TRẠNG THÁI</th></tr>
+        <tr class="x"><td>#118 Paracetamol 500mg</td><td>PA2209</td><td>30-09-2026</td><td>40</td><td>BHYT</td><td><span class="bd x">Đã hết hạn</span></td></tr>
+        <tr class="x"><td>#240 Dung dịch NaCl 0,9% 500ml</td><td>NC2301</td><td>01-10-2026</td><td>12</td><td>Viện phí</td><td><span class="bd x">Hết hạn hôm nay</span></td></tr>
+        <tr class="n"><td>#12 Amoxicillin 500mg</td><td>AM2301</td><td>12-10-2026</td><td>120</td><td>BHYT</td><td><span class="bd n">Cận hạn 11 ngày</span></td></tr>
+        <tr class="n"><td>#77 Vaccine viêm gan B</td><td>VG2402</td><td>04-11-2026</td><td>35</td><td>Chương trình</td><td><span class="bd n">Cận hạn 34 ngày</span></td></tr>
+        <tr class="n"><td>#91 Insulin hòa tan 100IU/ml</td><td>IN2405</td><td>20-11-2026</td><td>22</td><td>BHYT</td><td><span class="bd n">Cận hạn 50 ngày</span></td></tr>
+        <tr><td>#305 Gạc phẫu thuật 10x10</td><td>GP2501</td><td>15-08-2028</td><td>8</td><td>Viện phí</td><td><span class="bd l">Tồn thấp ≤10</span></td></tr>
+        <tr><td>#312 Bơm tiêm 5ml</td><td>BT2503</td><td>02-02-2029</td><td>6</td><td>Viện phí</td><td><span class="bd l">Tồn thấp ≤10</span></td></tr></table>
+      </div>
+      <div style="display:grid;gap:8px;align-content:start">
+        <div class="panel"><div class="ph">SỐ LIỆU KHO</div>
+          <div class="kpi"><span class="dot" style="background:#0D3B66"></span>Tổng mặt hàng<b>1.284</b></div>
+          <div class="kpi"><span class="dot" style="background:#166534"></span>Lô đang tồn<b>412</b></div>
+          <div class="kpi"><span class="dot" style="background:#B45309"></span>Cận hạn ≤90 ngày<b>27</b></div>
+          <div class="kpi"><span class="dot" style="background:#B91C1C"></span>Đã hết hạn<b>3</b></div>
+          <div class="kpi"><span class="dot" style="background:#B45309"></span>Tồn thấp ≤10<b>19</b></div></div>
+        <div class="panel"><div class="ph">↶ HOẠT ĐỘNG GẦN ĐÂY</div>
+          <div class="row">16:42 • NHAP_KHO • PN-300926-001</div>
+          <div class="row">15:10 • XUAT_KHO • PX-300926-004</div></div>
+        <div class="panel"><div class="ph">✓ TRẠNG THÁI</div>
+          <div class="row ok">✓ Sao lưu: 28-07-2026 23:08</div>
+          <div class="row">24°C • 55% • Kho lạnh 1</div></div>
+      </div>
+    </div>
+    <div class="foot"><span>Ngưỡng tồn thấp hiện là ≤10 đơn vị cơ sở, không phải định mức cấu hình.</span></div>
+  </div>
+</div>
+</body></html>
