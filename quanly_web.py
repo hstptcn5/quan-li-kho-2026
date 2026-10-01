@@ -63,8 +63,11 @@ def run_window(listener, on_ready=None) -> int:
         return 1
 
     listener.start()
+    # text_select=True: với False (mặc định) pywebview chèn một <style> nội tuyến để tắt bôi chọn chữ,
+    # bị CSP chặt của giao diện chặn; cho bôi chọn cũng tiện sao chép số lô, tên thuốc từ bảng.
     window = webview.create_window(
-        WINDOW_TITLE, listener.boot_url(), width=1366, height=800, min_size=(1024, 640)
+        WINDOW_TITLE, listener.boot_url(), width=1366, height=800, min_size=(1024, 640),
+        text_select=True,
     )
     outcome = {"code": 0}
     callback = None
@@ -84,9 +87,14 @@ def run_window(listener, on_ready=None) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Quản lý kho 2026 (giao diện web)")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--serve", action="store_true",
         help="chỉ mở cổng cục bộ và in địa chỉ boot một lần (phát triển/kiểm thử), không mở cửa sổ",
+    )
+    mode.add_argument(
+        "--smoke", action="store_true",
+        help="mở cửa sổ, chạy smoke test rồi thoát (mã 0 khi đạt); dùng qua release_web_smoke_check.py",
     )
     return parser
 
@@ -102,6 +110,10 @@ def main(argv=None) -> int:
     try:
         if args.serve:
             return run_serve_only(listener)
+        if args.smoke:
+            from webapp.smoke import run_smoke
+
+            return run_window(listener, on_ready=run_smoke)
         return run_window(listener)
     finally:
         listener.stop()

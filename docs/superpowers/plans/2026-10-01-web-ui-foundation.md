@@ -2575,8 +2575,11 @@ def run_window(listener, on_ready=None) -> int:
         return 1
 
     listener.start()
+    # text_select=True: với False (mặc định) pywebview chèn một <style> nội tuyến để tắt bôi chọn chữ,
+    # bị CSP chặt của giao diện chặn; cho bôi chọn cũng tiện sao chép số lô, tên thuốc từ bảng.
     window = webview.create_window(
-        WINDOW_TITLE, listener.boot_url(), width=1366, height=800, min_size=(1024, 640)
+        WINDOW_TITLE, listener.boot_url(), width=1366, height=800, min_size=(1024, 640),
+        text_select=True,
     )
     outcome = {"code": 0}
     callback = None
@@ -2622,6 +2625,8 @@ def main(argv=None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 ```
+
+**Ghi chú thực thi (phát hiện ở Task 12):** smoke thật trong WebView2 cho thấy pywebview 6.2.1 chèn một `<style>` nội tuyến khi `text_select=False` (mặc định), bị CSP chặt chặn. Vì vậy `create_window` truyền `text_select=True` (đã khóa bằng test `test_window_allows_text_selection_so_pywebview_injects_no_inline_style` trong `test_quanly_web.py`).
 
 - [ ] **Step 8: Chạy test để thấy đạt**
 
