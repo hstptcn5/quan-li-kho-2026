@@ -15,6 +15,7 @@ Ngày: 2026-10-01 · Trạng thái: chờ duyệt · Dự án con 1/5 của chư
 | Chiến lược chuyển đổi | **Song song, cuốn chiếu**: Tkinter vẫn là bản chính cho tới khi UI web đạt ngang tính năng và qua UAT |
 | Kiến trúc | **Một backend, hai cổng**: cổng `127.0.0.1` đủ quyền cho cửa sổ desktop; cổng LAN chỉ lộ tập API di động |
 | Thị giác P1 | Giữ nguyên bảng màu "Clinical Logistics Authority" đã duyệt 07/09 (chuyển 1:1 sang CSS) |
+| Bố cục Tổng quan | **Bố cục B "ưu tiên cảnh báo"** (chọn qua mockup, xem `2026-10-01-dashboard-layout-b-mockup.html` cùng thư mục): bỏ hàng thẻ lớn, bảng cảnh báo cao có chip lọc, số liệu thành danh sách gọn ở cột phải, tác nghiệp nhanh ở góc tiêu đề |
 
 **Giả định (chưa xác nhận riêng):** chỉ đổi lớp giao diện, nghiệp vụ/DB/API di động giữ nguyên; tiếng Việt; Windows; vẫn đóng gói `.exe`.
 
@@ -38,7 +39,7 @@ Mỗi dự án con có spec, kế hoạch và đợt kiểm thử riêng.
 - Thư mục `web/`: token thiết kế, CSS nền, component cơ sở, router băm, thư viện đặt sẵn.
 - Gói `webapp/`: router có `scope`, xác thực phiên cục bộ, phục vụ file tĩnh, API `/api/dashboard`, service tổng quan.
 - `quanly_web.py` (điểm vào) và `run_web.bat`.
-- Màn hình **Tổng quan** (chỉ đọc), khung điều hướng đủ 11 mục.
+- Màn hình **Tổng quan** (chỉ đọc) theo bố cục B, khung điều hướng đủ 11 mục.
 - Bản build `dist/QuanLyKhoWeb/` và smoke test đóng gói trong CI.
 
 **Ngoài phạm vi:** mọi endpoint ghi dữ liệu; PIN admin trên web; cổng LAN và thay thế giao diện di động; chế độ tối; đổi nghiệp vụ hoặc lược đồ DB; tính năng mới; tài khoản nhiều người dùng. `server.py`, `mobile_templates.py` và toàn bộ `ui*.py` giữ nguyên hành vi.
@@ -55,7 +56,7 @@ web/                          # giao diện dùng chung, đóng gói vào .exe
   js/app.js                   # router băm (#/dashboard), store, phím tắt F1–F12
   js/api.js                   # bọc fetch, xử lý 401 và lỗi JSON
   js/nav.js                   # 11 mục điều hướng (nguồn dữ liệu duy nhất phía web)
-  js/components/*.js          # AppShell, Button, Panel, MetricCard, Badge, DataTable, Toast, EmptyState, ErrorState
+  js/components/*.js          # AppShell, Button, Panel, StatList, FilterChips, Badge, DataTable, Toast, EmptyState, ErrorState
   js/views/dashboard.js
 webapp/                       # backend mới, chỉ dùng thư viện chuẩn
   routing.py                  # Router nhỏ; mỗi route khai báo scope = "local" | "lan"
@@ -95,6 +96,10 @@ quanly_web.py                 # điểm vào: mở cổng cục bộ + cửa s�
 
 `GET /api/dashboard` (scope `local`). Trả `200` và JSON; ngày/giờ giữ dạng ISO, định dạng `DD-MM-YYYY` do frontend (khớp `date_utils.format_date_display`).
 
+Tham số truy vấn (tùy chọn):
+- `filter` = `all` (mặc định) | `expired` | `near` | `low`. Lọc `warnings.rows` theo nhóm: `expired` là `severity` ≤ 1 ("Đã hết hạn", "Hết hạn hôm nay"), `near` là `severity` 2, `low` là `severity` 3.
+- `limit` mặc định 80, tối đa 500, áp dụng **sau** khi lọc. Giá trị không hợp lệ trả 400.
+
 ```json
 {
   "success": true,
@@ -103,8 +108,9 @@ quanly_web.py                 # điểm vào: mở cổng cục bộ + cửa s�
     "productCount": 0, "activeLotCount": 0, "nearExpiryCount": 0,
     "expiredCount": 0, "lowStockCount": 0
   },
+  "lowStockThreshold": 10,
   "warnings": {
-    "total": 0,
+    "counts": { "all": 0, "expired": 0, "near": 0, "low": 0 },
     "rows": [{
       "productId": 1, "batchId": 1, "productName": "", "lotNo": "",
       "expiryDate": "2030-12-31", "fundSource": "", "stockBase": 12.5,
@@ -123,7 +129,9 @@ quanly_web.py                 # điểm vào: mở cổng cục bộ + cửa s�
 }
 ```
 
-- `warnings.rows` tối đa 80 dòng, `warnings.total` là tổng; `activities` tối đa 10 dòng mới nhất từ `audit_logs`.
+- `warnings.counts` luôn tính trên **toàn bộ** tập cảnh báo, không phụ thuộc `filter` và `limit`; `counts.all` = `expired` + `near` + `low`. `warnings.rows` là phần đã lọc rồi cắt theo `limit`. `lowStockThreshold` lấy từ hằng `LOW_STOCK_THRESHOLD` của service để câu ghi chú ngưỡng không bị lệch.
+- **Hai loại số khác nhau, giống bản Tkinter:** `counts` đếm *dòng* cảnh báo (mỗi dòng là một sản phẩm/lô/nguồn kinh phí, và một dòng vừa cận hạn vừa tồn thấp chỉ tính ở nhóm `near`), còn `cards` đếm *lô*. Vì vậy chip "Tồn thấp" có thể nhỏ hơn số "Tồn thấp ≤10" ở danh sách số liệu. Giao diện ghi rõ đơn vị: chip là "dòng", danh sách số liệu là "lô".
+- `activities` tối đa 10 dòng mới nhất từ `audit_logs`.
 - `lastBackup` và `latestTemperature` là `null` khi chưa có.
 - Số thẻ lấy từ `dashboard_summary(90)` (`product_count`) và `build_dashboard_snapshot(get_inventory(), warning_days=90)`, **giống bản Tkinter**.
 - **Khác biệt có chủ ý:** `negativeStockRows` lấy từ `dashboard_summary()["negative_count"]` (đếm thật). Bản Tkinter đếm trên danh sách tồn dương nên luôn gần như 0 (chính code đã ghi chú). Test parity loại trường này.
@@ -133,7 +141,14 @@ quanly_web.py                 # điểm vào: mở cổng cục bộ + cửa s�
 
 - `tokens.css` hai lớp: **nguyên thủy** (dải màu, thang khoảng cách) và **ngữ nghĩa** (`--surface`, `--text`, `--primary`, `--success-bg`…). Component chỉ dùng lớp ngữ nghĩa. Giá trị chuyển 1:1 từ `ui_design.py` (nền `#F3F6F9`, chủ đạo `#0D3B66`, hàng bảng 34px, chữ Segoe UI hệ thống, không tải font web).
 - Đơn vị `rem`; ở màn hình dưới 640px, vùng chạm tối thiểu 44px (để P4 dùng lại).
-- Component P1: `AppShell`, `Button` (primary/secondary), `Panel`, `MetricCard`, `Badge` (success/warning/danger/info), `DataTable` (tiêu đề dính, điều hướng bàn phím), `Toast`, `EmptyState`, `ErrorState`. `Modal` và `FormField` để P2.
+- Component P1: `AppShell`, `Button` (primary/secondary), `Panel`, `StatList`, `FilterChips`, `Badge` (success/warning/danger/info), `DataTable` (tiêu đề dính, điều hướng bàn phím), `Toast`, `EmptyState`, `ErrorState`. `Modal` và `FormField` để P2. (Không dùng `MetricCard` lớn vì bố cục B bỏ hàng thẻ.)
+- **Bố cục màn hình Tổng quan (B):**
+  - Tiêu đề "Tổng quan vận hành kho" kèm phụ đề "FEFO theo lô và HSD"; bên phải là các nút tác nghiệp nhanh **+ Nhập kho**, **− Xuất kho** (primary), **Tra cứu tồn**, **Báo cáo XNT** và nút **↻** tải lại. Bản Tkinter có thanh "Tác nghiệp nhanh" riêng; ở đây chuyển lên góc tiêu đề.
+  - Lưới hai cột 2:1. Cột trái: panel "⚠ CẦN XỬ LÝ HÔM NAY" có `FilterChips` (Tất cả / Hết hạn / Cận hạn / Tồn thấp, kèm số dòng từ `warnings.counts`) và `DataTable` các cột Thuốc-vật tư, Lô, Hạn dùng, Tồn, Nguồn, Trạng thái (dòng hết hạn nền đỏ nhạt, cận hạn nền vàng nhạt, tồn thấp nền trắng). Chọn chip gọi lại API với `filter`.
+  - Cột phải xếp dọc: "SỐ LIỆU KHO" (5 dòng chấm màu: Tổng mặt hàng, Lô đang tồn, Cận hạn ≤90 ngày, Đã hết hạn, Tồn thấp ≤10), "↶ HOẠT ĐỘNG GẦN ĐÂY", "✓ TRẠNG THÁI" (sao lưu, nhiệt độ gần nhất, tồn âm).
+  - Chân trang: "Ngưỡng tồn thấp hiện là ≤{lowStockThreshold} đơn vị cơ sở, không phải định mức cấu hình." (giữ nguyên ý của bản Tkinter).
+  - Trong P1 các nút tác nghiệp nhanh trỏ tới màn hình chưa có bản web nên hiển thị **vô hiệu hóa** kèm gợi ý "Chưa có trong giao diện mới", giống các mục điều hướng tương ứng.
+  - Màn hình hẹp (dưới 1024px): cột phải xuống dưới bảng; thanh bên thu gọn.
 - Điều hướng đủ 11 mục như `ui_design.NAV_ITEMS`; phím F1–F12 giữ nguyên, chặn mặc định F5 (tải lại) và F12 (devtools). Chỉ "Tổng quan" hoạt động; các mục khác hiện "Chưa có trong giao diện mới, mở bằng bản Tkinter".
 - Truy cập: vòng focus rõ (`:focus-visible`), tương phản chữ/nền tối thiểu 4.5:1.
 
@@ -153,7 +168,7 @@ Test Python (không cần Node), chạy trong `unittest discover`:
 | `test_webapp_routing.py` | Route `local` bị từ chối từ listener `lan`; 404/405 |
 | `test_webapp_local_auth.py` | Boot token dùng một lần; cookie; chặn Host/Origin sai; request thiếu cookie → 401 |
 | `test_webapp_static.py` | Chặn `..`, đường dẫn tuyệt đối, liên kết tượng trưng, phần mở rộng lạ; header bảo mật |
-| `test_webapp_dashboard.py` | Số liệu API khớp `build_dashboard_snapshot` trên DB tạm (trừ `negativeStockRows`); hợp đồng JSON; thông báo lỗi không rò nội bộ |
+| `test_webapp_dashboard.py` | Số liệu API khớp `build_dashboard_snapshot` trên DB tạm (trừ `negativeStockRows`); hợp đồng JSON; `filter`/`limit` (lọc trước, cắt sau; `counts` không đổi theo `filter`; `counts.all` = tổng ba nhóm; tham số sai trả 400); thông báo lỗi không rò nội bộ |
 | `test_web_assets_policy.py` | Tương phản các cặp màu trong `tokens.css` đạt WCAG AA; cấm `innerHTML`/`eval`/`new Function`/`on*=`/script inline trong `web/`; `nav.js` khớp `ui_design.NAV_ITEMS` |
 
 Cộng smoke test đóng gói ở mục 8. Test Tkinter hiện có (kể cả `test_ui_dashboard.py`) giữ nguyên và phải xanh.
