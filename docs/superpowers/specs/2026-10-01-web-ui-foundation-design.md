@@ -86,7 +86,7 @@ quanly_web.py                 # điểm vào: mở cổng cục bộ + cửa s�
 - `Host` chỉ chấp nhận `127.0.0.1:<port>` hoặc `localhost:<port>` (chống DNS rebinding).
 - Request không phải GET/HEAD phải cùng origin (`Origin`, `Sec-Fetch-Site: same-origin`).
 - File tĩnh chỉ lấy trong `web/`; từ chối `..`, đường dẫn tuyệt đối, liên kết tượng trưng; không liệt kê thư mục; chỉ phục vụ phần mở rộng trong danh sách cho phép (`.html .css .js .svg .png .ico .woff2`).
-- Header: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` cho API.
+- Header: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` cho API và `Cache-Control: no-cache` cho file tĩnh (luôn xác thực lại, tránh giữ giao diện cũ sau khi cập nhật ứng dụng).
 - Không `innerHTML`, không `eval`/`new Function`, không thuộc tính `on*=`, không script/style inline. Mọi chuỗi động đi qua Preact (tự escape).
 - `style-src 'self'` chặn thuộc tính `style="..."` viết sẵn trong HTML, nên giao diện dùng class CSS. Gán style động qua CSSOM của Preact (`element.style`) vẫn được phép khi cần.
 
@@ -139,7 +139,7 @@ Tham số truy vấn (tùy chọn):
 
 ## 7. Hệ thiết kế và component
 
-- `tokens.css` hai lớp: **nguyên thủy** (dải màu, thang khoảng cách) và **ngữ nghĩa** (`--surface`, `--text`, `--primary`, `--success-bg`…). Component chỉ dùng lớp ngữ nghĩa. Giá trị chuyển 1:1 từ `ui_design.py` (nền `#F3F6F9`, chủ đạo `#0D3B66`, hàng bảng 34px, chữ Segoe UI hệ thống, không tải font web).
+- `tokens.css` hai lớp: **nguyên thủy** (dải màu, thang khoảng cách) và **ngữ nghĩa** (`--surface`, `--text`, `--primary`, `--success-bg`…). Component chỉ dùng lớp ngữ nghĩa. Giá trị chuyển 1:1 từ `ui_design.py` (nền `#F3F6F9`, chủ đạo `#0D3B66`, hàng bảng 34px, chữ Segoe UI hệ thống, không tải font web). **Ngoại lệ duy nhất:** `--text-muted` là `#5F6F85` thay cho `#64748B`, vì giá trị cũ chỉ đạt 4,39:1 trên nền `#F3F6F9` và 4,23:1 trên `#EDF2F7`, dưới ngưỡng AA 4,5:1 (giá trị mới đạt tối thiểu 4,55:1). Token của bản Tkinter không đổi.
 - Đơn vị `rem`; ở màn hình dưới 640px, vùng chạm tối thiểu 44px (để P4 dùng lại).
 - Component P1: `AppShell`, `Button` (primary/secondary), `Panel`, `StatList`, `FilterChips`, `Badge` (success/warning/danger/info), `DataTable` (tiêu đề dính, điều hướng bàn phím), `Toast`, `EmptyState`, `ErrorState`. `Modal` và `FormField` để P2. (Không dùng `MetricCard` lớn vì bố cục B bỏ hàng thẻ.)
 - **Bố cục màn hình Tổng quan (B):**
@@ -154,10 +154,10 @@ Tham số truy vấn (tùy chọn):
 
 ## 8. Khởi chạy, đóng gói và CI
 
-- Chạy: `python quanly_web.py` hoặc `run_web.bat`. Cửa sổ 1366×800, tối thiểu 1024×640. Đóng cửa sổ thì dừng server. Thiếu WebView2: in hướng dẫn cài bằng tiếng Việt và thoát mã 1.
+- Chạy: `python quanly_web.py` hoặc `run_web.bat`. Cờ `--serve` chỉ mở cổng cục bộ và in địa chỉ boot một lần để mở bằng trình duyệt (phục vụ phát triển và kiểm thử, không mở cửa sổ pywebview). Cửa sổ 1366×800, tối thiểu 1024×640. Đóng cửa sổ thì dừng server. Thiếu WebView2: in hướng dẫn cài bằng tiếng Việt và thoát mã 1.
 - Thêm `pywebview` (phiên bản ghim, chốt trong kế hoạch) vào `requirements.txt`; `pip-audit` trong CI vẫn là cổng chặn.
 - Build: bản mới `dist/QuanLyKhoWeb/` (PyInstaller onedir, kèm `web/`, hidden-import `webview`), tách khỏi `dist/QuanLyKho/` của Tkinter, dùng chung DB. Tái dùng SHA256 manifest và bộ kiểm tra bản phát hành.
-- Smoke test đóng gói: `QuanLyKhoWeb.exe --smoke` khởi cổng cục bộ, mở cửa sổ, chờ Tổng quan render, đọc DOM qua `evaluate_js`, xác nhận không có lỗi console hay vi phạm CSP, thoát mã 0.
+- Smoke test đóng gói: `QuanLyKhoWeb.exe --smoke` khởi cổng cục bộ, mở cửa sổ, chờ Tổng quan render, đọc DOM qua `evaluate_js`, xác nhận không có lỗi console hay vi phạm CSP (ứng dụng ghi chúng vào `window.__qlk` để smoke test đọc), thoát mã 0. Trên DB mẫu có sẵn dữ liệu, smoke test còn bấm các chip lọc (kể cả bấm liên tiếp nhanh), kiểm tra tên thuốc chứa `<b>` hiện ra dạng chữ chứ không thành thẻ, và kiểm tra địa chỉ `#/products` (chưa có bản web) vẫn giữ màn hình Tổng quan.
 
 ## 9. Kiểm thử
 
