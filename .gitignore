@@ -183,3 +183,5 @@ private_key.pem
 
 # Visual brainstorming companion (mockups, local only)
 .superpowers/
+# Build giao diện web
+build_web/
