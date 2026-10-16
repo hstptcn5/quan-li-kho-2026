@@ -180,3 +180,8 @@ Thumbs.db
 private_key.pem
 *.pem
 *.key
+
+# Visual brainstorming companion (mockups, local only)
+.superpowers/
+# Build giao diện web
+build_web/

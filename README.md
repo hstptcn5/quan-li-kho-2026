@@ -88,6 +88,18 @@ python quanly_xnt.py
 
 ---
 
+## 🌐 Giao diện web (thử nghiệm)
+
+Bản giao diện web chạy song song với bản Tkinter và dùng chung dữ liệu (`pharm.db`). Hiện mới có màn hình **Tổng quan**; các màn hình còn lại vẫn dùng bản Tkinter (`run.bat`).
+
+*   Yêu cầu: Windows có Microsoft Edge WebView2 Runtime (sẵn trên Windows 11; Windows 10 cần cài nếu chưa có, ứng dụng sẽ hiện hướng dẫn).
+*   Chạy: `run_web.bat` hoặc `python quanly_web.py`.
+*   Chế độ phát triển (không mở cửa sổ, mở bằng trình duyệt): `python quanly_web.py --serve`, rồi mở địa chỉ được in ra (chỉ dùng được một lần).
+*   Đóng gói: `python build_web_release.py` tạo `dist/QuanLyKhoWeb/`; kiểm tra bản đóng gói bằng `python release_web_smoke_check.py`.
+*   Thiết kế: `docs/superpowers/specs/2026-10-01-web-ui-foundation-design.md`.
+
+---
+
 ## 📦 Hướng dẫn đóng gói File chạy (.exe) độc lập
 
 Để đóng gói phần mềm thành tệp `.exe` duy nhất cho thủ kho chạy trực tiếp không cần cài Python:
